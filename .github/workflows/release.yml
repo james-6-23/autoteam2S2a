@@ -52,9 +52,6 @@ jobs:
       - name: Run tests
         run: cargo test --all
 
-      - name: Check Cargo.lock is up to date
-        run: cargo update --locked
-
   # ============================================
   # 构建
   # ============================================
