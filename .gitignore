@@ -1,0 +1,15 @@
+target/
+free-accounts-*.json
+accounts-free-with-rt-*.json
+accounts-free-no-rt-*.json
+accounts-s2a-failed-*.json
+
+# 可执行文件 / Executables
+*.exe
+*.dll
+*.so
+*.dylib
+gpt-free-tool-rs
+gpt-free-tool-rs-v1.0.0-stable
+d1_cleanup.py
+proxy_failures.json

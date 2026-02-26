@@ -1,0 +1,74 @@
+proxy_pool = [
+  "http://127.0.0.1:7890",
+]
+
+email_domains = [
+  "@ic.loopkit.de5.net",
+  "@kr.loopkit.de5.net",
+  "@pm.kyyx.us.ci",
+  "@pn.kyyx.us.ci",
+  "@apexly.kyx03.de",
+  "@axissys.kyx03.de",
+  "@veloux.114514222.de",
+  "@atomix.114514222.de",
+]
+
+[defaults]
+target_count = 4
+register_workers = 4
+rt_workers = 4
+rt_retries = 2
+
+[register]
+mail_api_token = "99ddf3a7-f83c-4867-973b-5bf4e8399d00"
+mail_api_base = "https://kyx-cloud-email.kkyyxx.top"
+mail_api_path = "/api/public/emailList"
+mail_request_timeout_sec = 12
+use_proxy_for_mail = false
+init_retries = 3
+otp_max_retries = 20
+otp_interval_ms = 1000
+request_timeout_sec = 30
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+tls_emulation = "auto"
+
+[codex]
+client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+redirect_uri = "http://localhost:1455/auth/callback"
+scope = "openid profile email offline_access"
+request_timeout_sec = 35
+otp_max_retries = 30
+otp_interval_ms = 1000
+max_redirects = 10
+sentinel_enabled = true
+strict_sentinel = false
+pow_max_iterations = 3000000
+
+[[s2a]]
+name = "agmn"
+api_base = "https://agmn.chuangzuoli.com"
+admin_key = "admin-4c9363fd2a2622059ebca325e7d5d1bb65cf0bda1db65231737e7a9b55a41931"
+concurrency = 200
+priority = 50
+group_ids = [2]
+
+[d1_cleanup]
+enabled = true
+account_id = "99d35d5645d7669895d1e00a92b8f71d"
+api_key = "9jEhlre49FfMRaYAa6tv-YYuwcmfgIgRS3K3eSij"
+keep_percent = 0.1
+batch_size = 5000
+
+[[d1_cleanup.databases]]
+name = "kyx-cloud-email"
+id = "8a782f99-f0e7-4a8d-9038-e7b52f31c89d"
+
+[payment]
+enabled = true
+stripe_public_key = "pk_live_51Pj377KslHRdbaPgTJYjThzH3f5dt1N1vK7LUp0qh0yNSarhfZ6nfbG7FFlh8KLxVkvdMWN5o6Mc4Vda6NHaSnaV00C2Sbl8Zs"
+stripe_version = "2020-08-27;custom_checkout_beta=v1"
+stripe_js_version = "c8cd270e71"
+seat_quantity = 5
+payment_retries = 3
+poll_max_attempts = 15
+poll_interval_ms = 500
