@@ -59,10 +59,29 @@ pub fn now_hms() -> String {
 }
 
 pub fn log_worker(worker_id: usize, stage: &str, message: &str) {
-    println!("[{}] [W{}] [{}] {}", now_hms(), worker_id, stage, message);
+    let ts = now_hms();
+    match stage {
+        "OK" => {
+            // 绿色：成功信息
+            println!(
+                "\x1b[32m[{}] [W{}] [{}] {}\x1b[0m",
+                ts, worker_id, stage, message
+            );
+        }
+        "ERR" => {
+            // 红色：错误信息
+            println!(
+                "\x1b[31m[{}] [W{}] [{}] {}\x1b[0m",
+                ts, worker_id, stage, message
+            );
+        }
+        _ => {
+            println!("[{}] [W{}] [{}] {}", ts, worker_id, stage, message);
+        }
+    }
 }
 
-/// 绿色高亮日志，用于关键成功信息（如 RT 获取成功）
+/// 绿色高亮日志（兼容旧调用）
 pub fn log_worker_green(worker_id: usize, stage: &str, message: &str) {
     println!(
         "\x1b[32m[{}] [W{}] [{}] {}\x1b[0m",
