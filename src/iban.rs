@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rand::Rng;
 
@@ -30,7 +31,43 @@ pub const GERMAN_ADDRESSES: &[(&str, &str, &str)] = &[
     ("Königstraße 26", "70173", "Stuttgart"),
     ("Mönckebergstraße 7", "20095", "Hamburg"),
     ("Breite Straße 25", "40213", "Düsseldorf"),
+    ("Kurfürstendamm 92", "10709", "Berlin"),
+    ("Friedrichstraße 128", "10117", "Berlin"),
+    ("Leopoldstraße 45", "80802", "München"),
+    ("Sendlinger Straße 39", "80331", "München"),
+    ("Goethestraße 18", "60313", "Frankfurt am Main"),
+    ("Mainzer Landstraße 61", "60329", "Frankfurt am Main"),
+    ("Schildergasse 85", "50667", "Köln"),
+    ("Aachener Straße 12", "50674", "Köln"),
+    ("Theodor-Heuss-Straße 21", "70174", "Stuttgart"),
+    ("Rotebühlplatz 14", "70173", "Stuttgart"),
+    ("Spitalerstraße 3", "20095", "Hamburg"),
+    ("Jungfernstieg 40", "20354", "Hamburg"),
+    ("Königsallee 60", "40212", "Düsseldorf"),
+    ("Graf-Adolf-Straße 41", "40210", "Düsseldorf"),
+    ("Bahnhofstraße 24", "90402", "Nürnberg"),
+    ("Kaiserstraße 33", "90403", "Nürnberg"),
+    ("Georgstraße 52", "30159", "Hannover"),
+    ("Lister Meile 11", "30161", "Hannover"),
+    ("Bergstraße 25", "01069", "Dresden"),
+    ("Prager Straße 9", "01069", "Dresden"),
+    ("Universitätsstraße 13", "04109", "Leipzig"),
+    ("Petersstraße 20", "04109", "Leipzig"),
+    ("Obernstraße 44", "28195", "Bremen"),
+    ("Sögestraße 71", "28195", "Bremen"),
+    ("Lorenzstraße 17", "76133", "Karlsruhe"),
+    ("Kaiserstraße 120", "76133", "Karlsruhe"),
+    ("Ludwigstraße 22", "86152", "Augsburg"),
+    ("Maximilianstraße 36", "86150", "Augsburg"),
+    ("Hauptstraße 105", "69117", "Heidelberg"),
+    ("Bismarckplatz 10", "69115", "Heidelberg"),
+    ("Schlossplatz 4", "65183", "Wiesbaden"),
+    ("Rheinstraße 56", "65185", "Wiesbaden"),
+    ("Flinger Straße 33", "40213", "Düsseldorf"),
+    ("Kampstraße 29", "44137", "Dortmund"),
+    ("Hansastraße 14", "44137", "Dortmund"),
 ];
+static GERMAN_ADDRESS_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 /// 德国 IBAN 生成器
 ///
@@ -121,9 +158,9 @@ fn mod97(s: &str) -> u64 {
     remainder
 }
 
-/// 获取随机德国地址
+/// 轮询获取德国地址（并发安全）
 pub fn random_german_address() -> (&'static str, &'static str, &'static str) {
-    let idx = rand::rng().random_range(0..GERMAN_ADDRESSES.len());
+    let idx = GERMAN_ADDRESS_INDEX.fetch_add(1, Ordering::Relaxed) % GERMAN_ADDRESSES.len();
     GERMAN_ADDRESSES[idx]
 }
 

@@ -1,5 +1,6 @@
 use chrono::Local;
 use rand::Rng;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::models::AccountSeed;
 
@@ -14,11 +15,57 @@ const DEFAULT_DOMAINS: [&str; 8] = [
     "@atomix.114514222.de",
 ];
 
-const FIRST_NAMES: [&str; 10] = [
-    "James", "Robert", "John", "Michael", "David", "William", "Richard", "Joseph", "Thomas",
+const FIRST_NAMES: [&str; 48] = [
+    "James",
+    "Robert",
+    "John",
+    "Michael",
+    "David",
+    "William",
+    "Richard",
+    "Joseph",
+    "Thomas",
     "Charles",
+    "Christopher",
+    "Daniel",
+    "Matthew",
+    "Anthony",
+    "Mark",
+    "Donald",
+    "Steven",
+    "Paul",
+    "Andrew",
+    "Joshua",
+    "Kenneth",
+    "Kevin",
+    "Brian",
+    "George",
+    "Timothy",
+    "Ronald",
+    "Edward",
+    "Jason",
+    "Jeffrey",
+    "Ryan",
+    "Jacob",
+    "Gary",
+    "Nicholas",
+    "Eric",
+    "Jonathan",
+    "Stephen",
+    "Larry",
+    "Justin",
+    "Scott",
+    "Brandon",
+    "Benjamin",
+    "Samuel",
+    "Gregory",
+    "Frank",
+    "Alexander",
+    "Patrick",
+    "Raymond",
+    "Dennis",
 ];
-const LAST_NAMES: [&str; 10] = [
+const LAST_NAMES: [&str; 48] = [
     "Smith",
     "Johnson",
     "Williams",
@@ -29,7 +76,47 @@ const LAST_NAMES: [&str; 10] = [
     "Davis",
     "Rodriguez",
     "Martinez",
+    "Hernandez",
+    "Lopez",
+    "Gonzalez",
+    "Wilson",
+    "Anderson",
+    "Taylor",
+    "Moore",
+    "Jackson",
+    "Martin",
+    "Lee",
+    "Perez",
+    "Thompson",
+    "White",
+    "Harris",
+    "Sanchez",
+    "Clark",
+    "Ramirez",
+    "Lewis",
+    "Robinson",
+    "Walker",
+    "Young",
+    "Allen",
+    "King",
+    "Wright",
+    "Scott",
+    "Torres",
+    "Nguyen",
+    "Hill",
+    "Flores",
+    "Green",
+    "Adams",
+    "Nelson",
+    "Baker",
+    "Hall",
+    "Rivera",
+    "Campbell",
+    "Mitchell",
+    "Carter",
 ];
+static FIRST_NAME_INDEX: AtomicUsize = AtomicUsize::new(0);
+static LAST_NAME_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 pub fn generate_account_seed(email_domains: &[String]) -> AccountSeed {
     AccountSeed {
@@ -165,8 +252,10 @@ pub fn generate_real_name_pub() -> String {
 }
 
 fn generate_real_name() -> String {
-    let first = FIRST_NAMES[rand::rng().random_range(0..FIRST_NAMES.len())];
-    let last = LAST_NAMES[rand::rng().random_range(0..LAST_NAMES.len())];
+    let first_idx = FIRST_NAME_INDEX.fetch_add(1, Ordering::Relaxed) % FIRST_NAMES.len();
+    let last_idx = LAST_NAME_INDEX.fetch_add(1, Ordering::Relaxed) % LAST_NAMES.len();
+    let first = FIRST_NAMES[first_idx];
+    let last = LAST_NAMES[last_idx];
     format!("{first} {last}")
 }
 
