@@ -10,6 +10,7 @@ base64 = "0.22.1"
 clap = { version = "4.5.41", features = ["derive"] }
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 futures = "0.3.31"
+fake = "2.10.0"
 rand = "0.9.2"
 regex = "1.11.1"
 rquest = { version = "5", features = ["cookies", "json", "gzip", "brotli", "deflate", "zstd"] }

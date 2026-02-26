@@ -777,9 +777,9 @@ impl LiveRegisterService {
                     &iban_number,
                     &billing_name,
                     email,
-                    street,
-                    city,
-                    postal_code,
+                    &street,
+                    &city,
+                    &postal_code,
                     "DE",
                     worker_id,
                 )

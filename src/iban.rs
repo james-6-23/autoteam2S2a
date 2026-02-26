@@ -1,6 +1,7 @@
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
+use fake::Fake;
+use fake::faker::address::en::{CityName, StreetName};
 use rand::Rng;
 
 /// 德国 BLZ (Bankleitzahl) 列表 — 仅大型可靠银行
@@ -20,54 +21,6 @@ const DEFAULT_BLZ_LIST: &[&str] = &[
     "10020900", "20020200", // Volksbank
     "10090000", "20090500", "30060601", "50060400", "60090100", "70090100",
 ];
-
-/// 德国地址 (街道, 邮编, 城市)
-pub const GERMAN_ADDRESSES: &[(&str, &str, &str)] = &[
-    ("Alexanderplatz 1", "10178", "Berlin"),
-    ("Unter den Linden 77", "10117", "Berlin"),
-    ("Marienplatz 8", "80331", "München"),
-    ("Zeil 106", "60313", "Frankfurt am Main"),
-    ("Hohe Straße 111", "50667", "Köln"),
-    ("Königstraße 26", "70173", "Stuttgart"),
-    ("Mönckebergstraße 7", "20095", "Hamburg"),
-    ("Breite Straße 25", "40213", "Düsseldorf"),
-    ("Kurfürstendamm 92", "10709", "Berlin"),
-    ("Friedrichstraße 128", "10117", "Berlin"),
-    ("Leopoldstraße 45", "80802", "München"),
-    ("Sendlinger Straße 39", "80331", "München"),
-    ("Goethestraße 18", "60313", "Frankfurt am Main"),
-    ("Mainzer Landstraße 61", "60329", "Frankfurt am Main"),
-    ("Schildergasse 85", "50667", "Köln"),
-    ("Aachener Straße 12", "50674", "Köln"),
-    ("Theodor-Heuss-Straße 21", "70174", "Stuttgart"),
-    ("Rotebühlplatz 14", "70173", "Stuttgart"),
-    ("Spitalerstraße 3", "20095", "Hamburg"),
-    ("Jungfernstieg 40", "20354", "Hamburg"),
-    ("Königsallee 60", "40212", "Düsseldorf"),
-    ("Graf-Adolf-Straße 41", "40210", "Düsseldorf"),
-    ("Bahnhofstraße 24", "90402", "Nürnberg"),
-    ("Kaiserstraße 33", "90403", "Nürnberg"),
-    ("Georgstraße 52", "30159", "Hannover"),
-    ("Lister Meile 11", "30161", "Hannover"),
-    ("Bergstraße 25", "01069", "Dresden"),
-    ("Prager Straße 9", "01069", "Dresden"),
-    ("Universitätsstraße 13", "04109", "Leipzig"),
-    ("Petersstraße 20", "04109", "Leipzig"),
-    ("Obernstraße 44", "28195", "Bremen"),
-    ("Sögestraße 71", "28195", "Bremen"),
-    ("Lorenzstraße 17", "76133", "Karlsruhe"),
-    ("Kaiserstraße 120", "76133", "Karlsruhe"),
-    ("Ludwigstraße 22", "86152", "Augsburg"),
-    ("Maximilianstraße 36", "86150", "Augsburg"),
-    ("Hauptstraße 105", "69117", "Heidelberg"),
-    ("Bismarckplatz 10", "69115", "Heidelberg"),
-    ("Schlossplatz 4", "65183", "Wiesbaden"),
-    ("Rheinstraße 56", "65185", "Wiesbaden"),
-    ("Flinger Straße 33", "40213", "Düsseldorf"),
-    ("Kampstraße 29", "44137", "Dortmund"),
-    ("Hansastraße 14", "44137", "Dortmund"),
-];
-static GERMAN_ADDRESS_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 /// 德国 IBAN 生成器
 ///
@@ -158,10 +111,16 @@ fn mod97(s: &str) -> u64 {
     remainder
 }
 
-/// 轮询获取德国地址（并发安全）
-pub fn random_german_address() -> (&'static str, &'static str, &'static str) {
-    let idx = GERMAN_ADDRESS_INDEX.fetch_add(1, Ordering::Relaxed) % GERMAN_ADDRESSES.len();
-    GERMAN_ADDRESSES[idx]
+/// 使用 fake 动态生成德国账单地址（街道, 邮编, 城市）
+pub fn random_german_address() -> (String, String, String) {
+    let mut street: String = StreetName().fake();
+    if !street.chars().any(|c| c.is_ascii_digit()) {
+        let no = rand::rng().random_range(1..=220);
+        street = format!("{street} {no}");
+    }
+    let postal_code = format!("{:05}", rand::rng().random_range(10000..=99999));
+    let city: String = CityName().fake();
+    (street, postal_code, city)
 }
 
 #[cfg(test)]
