@@ -52,6 +52,14 @@ pub struct RegisterConfig {
     pub user_agent: Option<String>,
     pub tls_emulation: Option<String>,
     pub chatgpt_mail_api_key: Option<String>,
+    /// 支付后 plan 激活轮询最大次数
+    pub plan_poll_max_attempts: Option<usize>,
+    /// 支付后 plan 激活轮询初始等待（毫秒）
+    pub plan_poll_initial_delay_ms: Option<u64>,
+    /// 支付后 plan 激活轮询最大等待（毫秒）
+    pub plan_poll_max_delay_ms: Option<u64>,
+    /// 单次账号状态检查超时（秒）
+    pub plan_status_timeout_sec: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -107,6 +115,10 @@ pub struct RegisterRuntimeConfig {
     pub user_agent: String,
     pub tls_emulation: String,
     pub chatgpt_mail_api_key: String,
+    pub plan_poll_max_attempts: usize,
+    pub plan_poll_initial_delay_ms: u64,
+    pub plan_poll_max_delay_ms: u64,
+    pub plan_status_timeout_sec: u64,
     pub payment: crate::stripe::PaymentRuntimeConfig,
 }
 
@@ -232,6 +244,19 @@ impl AppConfig {
     }
 
     pub fn register_runtime(&self) -> RegisterRuntimeConfig {
+        let plan_poll_max_attempts = self.register.plan_poll_max_attempts.unwrap_or(6).max(1);
+        let plan_poll_initial_delay_ms = self
+            .register
+            .plan_poll_initial_delay_ms
+            .unwrap_or(1000)
+            .max(200);
+        let plan_poll_max_delay_ms = self
+            .register
+            .plan_poll_max_delay_ms
+            .unwrap_or(6000)
+            .max(plan_poll_initial_delay_ms);
+        let plan_status_timeout_sec = self.register.plan_status_timeout_sec.unwrap_or(8).max(3);
+
         RegisterRuntimeConfig {
             mail_api_base: self
                 .register
@@ -265,6 +290,10 @@ impl AppConfig {
                 .chatgpt_mail_api_key
                 .clone()
                 .unwrap_or_else(|| "sk-HQ5kHZao".to_string()),
+            plan_poll_max_attempts,
+            plan_poll_initial_delay_ms,
+            plan_poll_max_delay_ms,
+            plan_status_timeout_sec,
             payment: self.payment_runtime(),
         }
     }

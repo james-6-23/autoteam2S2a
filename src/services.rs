@@ -268,38 +268,11 @@ impl LiveRegisterService {
         // 支付后轮询等待 plan_type 更新（Stripe → OpenAI 同步需要时间）
         let paid = self.cfg.payment.payment_retries > 0;
         let (account_id, plan_type) = if paid {
-            log_worker(input.worker_id, "验证", "等待 plan 激活...");
-            let mut final_id = String::new();
-            let mut final_plan = "free".to_string();
-            for poll in 0..6 {
-                if poll > 0 {
-                    sleep(Duration::from_secs(3)).await;
-                }
-                match self.check_account_status(client, &access_token).await {
-                    Ok((id, plan)) => {
-                        final_id = id;
-                        final_plan = plan.clone();
-                        if plan != "free" {
-                            break;
-                        }
-                        if poll < 5 {
-                            log_worker(
-                                input.worker_id,
-                                "验证",
-                                &format!("plan 仍为 free，等待中 ({}/6)...", poll + 1),
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        if poll == 5 {
-                            return Err(e);
-                        }
-                    }
-                }
-            }
-            (final_id, final_plan)
+            self.wait_for_plan_activation(client, &access_token, input.worker_id)
+                .await?
         } else {
-            self.check_account_status(client, &access_token).await?
+            self.check_account_status_with_timeout(client, &access_token)
+                .await?
         };
         log_worker(input.worker_id, "OK", "注册成功");
         log_worker(
@@ -316,6 +289,110 @@ impl LiveRegisterService {
             plan_type,
             proxy: input.proxy.clone(),
         })
+    }
+
+    fn next_plan_poll_delay_ms(&self, retry_index: usize) -> u64 {
+        let exp = (retry_index as u32).min(6);
+        let base_delay_ms = self
+            .cfg
+            .plan_poll_initial_delay_ms
+            .saturating_mul(1u64 << exp)
+            .min(self.cfg.plan_poll_max_delay_ms);
+        let min_ms = (base_delay_ms.saturating_mul(8) / 10).max(100);
+        let max_ms = (base_delay_ms.saturating_mul(12) / 10).max(min_ms);
+        random_delay_ms(min_ms, max_ms)
+    }
+
+    fn is_account_check_fatal_error(err_text: &str) -> bool {
+        err_text.contains("account_check: token_expired")
+            || err_text.contains("account_check: banned")
+            || (err_text.contains("account_check: HTTP 4")
+                && !err_text.contains("account_check: HTTP 429"))
+    }
+
+    async fn check_account_status_with_timeout(
+        &self,
+        client: &rquest::Client,
+        access_token: &str,
+    ) -> Result<(String, String)> {
+        let timeout = Duration::from_secs(self.cfg.plan_status_timeout_sec.max(3));
+        match tokio::time::timeout(timeout, self.check_account_status(client, access_token)).await {
+            Ok(result) => result,
+            Err(_) => bail!("account_check: timeout({}s)", timeout.as_secs()),
+        }
+    }
+
+    async fn wait_for_plan_activation(
+        &self,
+        client: &rquest::Client,
+        access_token: &str,
+        worker_id: usize,
+    ) -> Result<(String, String)> {
+        log_worker(worker_id, "验证", "等待 plan 激活...");
+        let max_attempts = self.cfg.plan_poll_max_attempts.max(1);
+        let mut final_id = String::new();
+        let mut final_plan = "free".to_string();
+        let mut has_status = false;
+        let mut last_err: Option<anyhow::Error> = None;
+
+        for poll in 0..max_attempts {
+            if poll > 0 {
+                let wait_ms = self.next_plan_poll_delay_ms(poll - 1);
+                sleep(Duration::from_millis(wait_ms)).await;
+            }
+            match self
+                .check_account_status_with_timeout(client, access_token)
+                .await
+            {
+                Ok((id, plan)) => {
+                    has_status = true;
+                    final_id = id;
+                    final_plan = plan.clone();
+                    if plan != "free" {
+                        break;
+                    }
+                    if poll + 1 < max_attempts {
+                        log_worker(
+                            worker_id,
+                            "验证",
+                            &format!("plan 仍为 free，等待中 ({}/{})...", poll + 1, max_attempts),
+                        );
+                    }
+                }
+                Err(e) => {
+                    let err_text = format!("{e:#}");
+                    if Self::is_account_check_fatal_error(&err_text) {
+                        return Err(e);
+                    }
+                    if poll + 1 < max_attempts {
+                        let preview = if err_text.len() > 120 {
+                            format!("{}...", &err_text[..120])
+                        } else {
+                            err_text
+                        };
+                        log_worker(
+                            worker_id,
+                            "验证",
+                            &format!(
+                                "plan 状态检查异常，准备重试 ({}/{}): {}",
+                                poll + 1,
+                                max_attempts,
+                                preview
+                            ),
+                        );
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        if has_status {
+            return Ok((final_id, final_plan));
+        }
+        if let Some(err) = last_err {
+            return Err(err);
+        }
+        bail!("account_check: no_result");
     }
 
     async fn init_session(
