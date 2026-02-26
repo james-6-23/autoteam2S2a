@@ -955,6 +955,7 @@ impl LiveCodexService {
         Ok(url.to_string())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn get_authorization_code(
         &self,
         client: &rquest::Client,
@@ -1933,7 +1934,7 @@ impl S2aService for S2aHttpService {
         const MAX_RETRIES: usize = 3;
         const RETRY_DELAYS_MS: [u64; 3] = [800, 2000, 4000];
 
-        for attempt in 0..MAX_RETRIES {
+        for (attempt, _) in RETRY_DELAYS_MS.iter().enumerate().take(MAX_RETRIES) {
             let modes = self.mode_candidates(&base);
             let mut failures = Vec::new();
             let mut got_server_error = false;

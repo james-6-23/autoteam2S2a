@@ -122,6 +122,7 @@ impl StripePaymentService {
 
     // ── Step 1: 创建支付方式 ─────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_payment_method(
         &self,
         iban: &str,
@@ -339,6 +340,7 @@ impl StripePaymentService {
     // ── 完整支付编排 ─────────────────────────────────────────
 
     /// 执行完整的 Stripe SEPA 支付流程
+    #[allow(clippy::too_many_arguments)]
     pub async fn complete_payment(
         &mut self,
         iban: &str,

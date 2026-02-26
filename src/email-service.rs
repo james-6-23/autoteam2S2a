@@ -460,7 +460,7 @@ impl EmailService {
             let result = {
                 tokio::select! {
                     _ = &mut *cancel_rx => return Err(anyhow!("邮箱轮询已取消")),
-                    fetch_result = Self::try_extract_code_static(&provider, target_email, proxy, options, &regex) => fetch_result
+                    fetch_result = Self::try_extract_code_static(&provider, target_email, proxy, options, regex) => fetch_result
                 }
             };
             drop(permit);
@@ -522,7 +522,7 @@ impl EmailService {
                     .acquire()
                     .await
                     .map_err(|_| anyhow::anyhow!("邮件 API 信号量已关闭"))?;
-                self.try_extract_code(target_email, proxy, &options, &regex)
+                self.try_extract_code(target_email, proxy, &options, regex)
                     .await
             };
             match result {

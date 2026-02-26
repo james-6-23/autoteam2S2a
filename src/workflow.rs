@@ -309,7 +309,7 @@ impl WorkflowRunner {
                     tokio::time::sleep(Duration::from_secs(S2A_RETRY_DELAY_SECS)).await;
                 }
 
-                let s2a_results = stream::iter(pending.into_iter())
+                let s2a_results = stream::iter(pending)
                     .map(|acc| {
                         let s2a_service = Arc::clone(&self.s2a_service);
                         let team = team.clone();

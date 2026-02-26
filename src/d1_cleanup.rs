@@ -77,14 +77,12 @@ impl D1Client {
         let data = self
             .query(db_id, &format!("SELECT COUNT(*) as cnt FROM {table};"))
             .await?;
-        if let Some(results) = data.result.and_then(|r| r.into_iter().next()) {
-            if let Some(rows) = results.results {
-                if let Some(row) = rows.first() {
-                    if let Some(cnt) = row.get("cnt").and_then(|v| v.as_u64()) {
-                        return Ok(cnt);
-                    }
-                }
-            }
+        if let Some(results) = data.result.and_then(|r| r.into_iter().next())
+            && let Some(rows) = results.results
+            && let Some(row) = rows.first()
+            && let Some(cnt) = row.get("cnt").and_then(|v| v.as_u64())
+        {
+            return Ok(cnt);
         }
         Ok(0)
     }
@@ -95,12 +93,12 @@ impl D1Client {
             .query(db_id, &format!("PRAGMA table_info({table});"))
             .await?;
         let mut cols = Vec::new();
-        if let Some(results) = data.result.and_then(|r| r.into_iter().next()) {
-            if let Some(rows) = results.results {
-                for row in rows {
-                    if let Some(name) = row.get("name").and_then(|v| v.as_str()) {
-                        cols.push(name.to_string());
-                    }
+        if let Some(results) = data.result.and_then(|r| r.into_iter().next())
+            && let Some(rows) = results.results
+        {
+            for row in rows {
+                if let Some(name) = row.get("name").and_then(|v| v.as_str()) {
+                    cols.push(name.to_string());
                 }
             }
         }

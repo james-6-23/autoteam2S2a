@@ -212,8 +212,8 @@ async fn run(
         Arc<dyn services::CodexService>,
     ) = if dry_run {
         (
-            Arc::new(DryRunRegisterService::default()),
-            Arc::new(DryRunCodexService::default()),
+            Arc::new(DryRunRegisterService),
+            Arc::new(DryRunCodexService),
         )
     } else if use_chatgpt_mail {
         let api_key = register_runtime.chatgpt_mail_api_key.clone();
@@ -250,7 +250,7 @@ async fn run(
         )
     };
     let s2a_service: Arc<dyn services::S2aService> = if dry_run {
-        Arc::new(DryRunS2aService::default())
+        Arc::new(DryRunS2aService)
     } else {
         Arc::new(S2aHttpService::new())
     };

@@ -59,7 +59,7 @@ pub fn load_from_file(path: &Path) -> Result<Vec<String>> {
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| normalize_proxy(l))
+        .map(normalize_proxy)
         .collect();
     if proxies.is_empty() {
         bail!("代理文件 {} 中没有有效的代理地址", path.display());
@@ -128,7 +128,7 @@ pub fn resolve_proxies(
     #[cfg(not(target_os = "windows"))]
     {
         println!("代理来源: 直连 (未找到代理配置)");
-        return Ok(vec![]);
+        Ok(vec![])
     }
 }
 
@@ -149,7 +149,7 @@ struct ProxyCheckResult {
 /// 1. httpbin.org/ip — 基础连通性（GET, 期望 200）
 /// 2. auth.openai.com — OpenAI 认证服务可达性
 /// 3. chatgpt.com — ChatGPT 前端可达性
-/// 默认并发上限 64，避免代理规模较大时一次性打满运行时和网络资源
+///    默认并发上限 64，避免代理规模较大时一次性打满运行时和网络资源
 pub async fn health_check(
     proxies: &[String],
     timeout_sec: u64,
@@ -178,7 +178,6 @@ pub async fn health_check(
 
     for proxy in proxies {
         let proxy = proxy.clone();
-        let timeout = timeout;
         let permit = semaphore
             .clone()
             .acquire_owned()
@@ -292,7 +291,7 @@ async fn check_proxy_multilayer(proxy: &str, timeout: Duration) -> ProxyCheckRes
             {
                 Err("连接被拒绝".to_string())
             } else {
-                Err(format!("{}", &err_str[..err_str.len().min(80)]))
+                Err(err_str[..err_str.len().min(80)].to_string())
             }
         }
     };
@@ -415,14 +414,14 @@ fn update_failure_tracking(
     // 从 proxy.txt 移除失效代理
     if !to_remove.is_empty() {
         let file_path = resolve_proxy_file_path(proxy_file);
-        if let Some(path) = file_path {
-            if remove_proxies_from_file(&path, &to_remove).is_ok() {
-                println!(
-                    "  已从 {} 移除 {} 个失效代理",
-                    path.display(),
-                    to_remove.len()
-                );
-            }
+        if let Some(path) = file_path
+            && remove_proxies_from_file(&path, &to_remove).is_ok()
+        {
+            println!(
+                "  已从 {} 移除 {} 个失效代理",
+                path.display(),
+                to_remove.len()
+            );
         }
         // 移除后从计数中也删除
         for proxy in &to_remove {

@@ -263,10 +263,8 @@ fn pick_platform_version(name: &str, salt: usize) -> Option<String> {
         Some(MAC_PLATFORM_VERSIONS[salt / 7 % MAC_PLATFORM_VERSIONS.len()].to_string())
     } else if name.contains("_linux") {
         Some(LINUX_PLATFORM_VERSIONS[salt / 7 % LINUX_PLATFORM_VERSIONS.len()].to_string())
-    } else if name.starts_with("firefox") {
-        None // Firefox 不发送 sec-ch-ua
-    } else if name.starts_with("safari") {
-        None // Safari 不发送 sec-ch-ua
+    } else if name.starts_with("firefox") || name.starts_with("safari") {
+        None // Firefox / Safari 不发送 sec-ch-ua
     } else {
         // Windows 默认
         Some(WIN_PLATFORM_VERSIONS[salt / 7 % WIN_PLATFORM_VERSIONS.len()].to_string())
@@ -291,12 +289,20 @@ fn pick_arch(name: &str, salt: usize) -> Option<&'static str> {
         return None;
     }
     if name.contains("_mac") {
-        Some(if salt % 3 == 0 { "\"arm\"" } else { "\"x86\"" })
+        Some(if salt.is_multiple_of(3) {
+            "\"arm\""
+        } else {
+            "\"x86\""
+        })
     } else if name.contains("_linux") {
         Some("\"x86\"")
     } else {
         // Windows
-        Some(if salt % 11 == 0 { "\"arm\"" } else { "\"x86\"" })
+        Some(if salt.is_multiple_of(11) {
+            "\"arm\""
+        } else {
+            "\"x86\""
+        })
     }
 }
 
