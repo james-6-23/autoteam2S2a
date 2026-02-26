@@ -214,6 +214,7 @@ impl WorkflowRunner {
                 let codex_service = Arc::clone(&self.codex_service);
                 let proxy_pool = Arc::clone(&self.proxy_pool);
                 let rt_retry_max = options.rt_retry_max;
+                let cancel = cancel_flag.clone();
                 tokio::spawn(async move {
                     Self::rt_pipeline_consumer(
                         rt_rx,
@@ -221,6 +222,7 @@ impl WorkflowRunner {
                         proxy_pool,
                         rt_concurrency,
                         rt_retry_max,
+                        cancel,
                     )
                     .await
                 })
@@ -382,6 +384,7 @@ impl WorkflowRunner {
         proxy_pool: Arc<ProxyPool>,
         rt_concurrency: usize,
         rt_retry_max: usize,
+        cancel_flag: Arc<AtomicBool>,
     ) -> (Vec<AccountWithRt>, Vec<crate::models::RegisteredAccount>) {
         use tokio::sync::Semaphore;
 
@@ -390,13 +393,25 @@ impl WorkflowRunner {
         let mut worker_counter = 0usize;
 
         // 持续从 channel 接收注册成功的账号
-        while let Some(acc) = rx.recv().await {
+        loop {
+            let recv_result = tokio::select! {
+                acc = rx.recv() => acc,
+                _ = Self::wait_for_cancel(cancel_flag.clone()) => {
+                    println!("\n已收到中断信号，停止接收新的 RT 任务...");
+                    None
+                }
+            };
+            let Some(acc) = recv_result else {
+                break;
+            };
+
             worker_counter += 1;
             let worker_id = (worker_counter - 1) % rt_concurrency + 1;
             let permit = semaphore.clone().acquire_owned().await.unwrap();
             let codex_service = Arc::clone(&codex_service);
             let proxy = proxy_pool.next();
             let retry_max = rt_retry_max;
+            let cancel = cancel_flag.clone();
 
             join_set.spawn(async move {
                 let _permit = permit; // 持有信号量直到任务完成
@@ -410,10 +425,18 @@ impl WorkflowRunner {
                 let mut last_err = None;
                 let retries = retry_max.max(1);
                 for round in 0..retries {
-                    match codex_service
-                        .fetch_refresh_token(&acc, proxy.clone(), worker_id)
-                        .await
-                    {
+                    if cancel.load(Ordering::Relaxed) {
+                        log_worker(worker_id, "RT", &format!("RT中断 {}", acc.account));
+                        return Err(acc);
+                    }
+                    let fetch_result = tokio::select! {
+                        res = codex_service.fetch_refresh_token(&acc, proxy.clone(), worker_id) => res,
+                        _ = Self::wait_for_cancel(cancel.clone()) => {
+                            log_worker(worker_id, "RT", &format!("RT中断 {}", acc.account));
+                            return Err(acc);
+                        }
+                    };
+                    match fetch_result {
                         Ok(rt) => {
                             let elapsed_sec = started.elapsed().as_secs_f32();
                             log_worker_green(
@@ -447,7 +470,13 @@ impl WorkflowRunner {
                                         backoff_ms
                                     ),
                                 );
-                                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                                tokio::select! {
+                                    _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
+                                    _ = Self::wait_for_cancel(cancel.clone()) => {
+                                        log_worker(worker_id, "RT", &format!("RT中断 {}", acc.account));
+                                        return Err(acc);
+                                    }
+                                }
                             }
                             last_err = Some(err);
                         }
@@ -482,5 +511,11 @@ impl WorkflowRunner {
             }
         }
         (rt_success, rt_failed)
+    }
+
+    async fn wait_for_cancel(cancel_flag: Arc<AtomicBool>) {
+        while !cancel_flag.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }
