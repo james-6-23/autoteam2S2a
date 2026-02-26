@@ -1,0 +1,197 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ============================================
+  # 代码质量检查
+  # ============================================
+  check:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+
+      # BoringSSL build dependencies (rquest)
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build golang-go
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: Linux-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            Linux-cargo-registry-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all
+
+      - name: Check Cargo.lock is up to date
+        run: cargo update --locked
+
+  # ============================================
+  # 构建
+  # ============================================
+  build:
+    name: Build ${{ matrix.name }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: autoteam2s2a.exe
+            asset_name: autoteam2s2a-windows-x86_64.exe
+
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: autoteam2s2a
+            asset_name: autoteam2s2a-linux-x86_64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      # BoringSSL build dependencies (rquest)
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build golang-go
+
+      - name: Install build dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          choco install nasm -y
+          choco install golang -y
+          # Refresh PATH
+          echo "C:\Program Files\CMake\bin" >> $env:GITHUB_PATH
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-${{ matrix.target }}-
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # 验证产物
+      - name: Verify binary exists (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          if [ ! -f "$FILE" ]; then
+            echo "::error::Binary not found: $FILE"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$FILE")
+          echo "✅ Binary size: $(numfmt --to=iec $SIZE)"
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::Binary too small ($SIZE bytes), possibly corrupted"
+            exit 1
+          fi
+
+      - name: Verify binary exists (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $file = "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          if (-not (Test-Path $file)) {
+            Write-Error "Binary not found: $file"
+            exit 1
+          }
+          $size = (Get-Item $file).Length
+          $sizeMB = [math]::Round($size / 1MB, 2)
+          Write-Host "✅ Binary size: ${sizeMB} MB"
+          if ($size -lt 1000000) {
+            Write-Error "Binary too small ($size bytes), possibly corrupted"
+            exit 1
+          }
+
+      - name: Rename binary (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+          chmod +x ${{ matrix.asset_name }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "${{ matrix.asset_name }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
