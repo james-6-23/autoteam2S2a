@@ -1909,7 +1909,11 @@ impl S2aService for S2aHttpService {
     }
 
     async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt) -> Result<()> {
-        let prefix = if account.plan_type.contains("team") { "team" } else { "free" };
+        let prefix = if account.plan_type.contains("team") {
+            "team"
+        } else {
+            "free"
+        };
         let payload = S2aAddPayload {
             name: format!("{prefix}-{}", account.account),
             platform: "openai",

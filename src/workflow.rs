@@ -84,7 +84,11 @@ impl WorkflowRunner {
                     round, deficit, current_ok, target
                 );
             } else {
-                let plan_label = if cfg.payment_enabled() { "team" } else { "free" };
+                let plan_label = if cfg.payment_enabled() {
+                    "team"
+                } else {
+                    "free"
+                };
                 println!("阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标 {target})");
             }
 
@@ -164,22 +168,20 @@ impl WorkflowRunner {
                                     task_total: target,
                                 };
                                 match register_service.register(input).await {
-                                    Ok(acc) => {
-                                        match reg_tx.send(acc).await {
-                                            Ok(_) => (true, task_no, seed.account),
-                                            Err(send_err) => {
-                                                log_worker(
-                                                    worker_id,
-                                                    "ERR",
-                                                    &format!(
-                                                        "注册成功但入RT队列失败 #{} {}: {send_err}",
-                                                        task_no, seed.account
-                                                    ),
-                                                );
-                                                (false, task_no, seed.account)
-                                            }
+                                    Ok(acc) => match reg_tx.send(acc).await {
+                                        Ok(_) => (true, task_no, seed.account),
+                                        Err(send_err) => {
+                                            log_worker(
+                                                worker_id,
+                                                "ERR",
+                                                &format!(
+                                                    "注册成功但入RT队列失败 #{} {}: {send_err}",
+                                                    task_no, seed.account
+                                                ),
+                                            );
+                                            (false, task_no, seed.account)
                                         }
-                                    }
+                                    },
                                     Err(err) => {
                                         log_worker(
                                             worker_id,

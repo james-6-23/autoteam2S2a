@@ -279,11 +279,17 @@ async fn check_proxy_multilayer(proxy: &str, timeout: Duration) -> ProxyCheckRes
         Err(e) => {
             let err_str = format!("{e}");
             // 检测代理认证失败
-            if err_str.contains("401") || err_str.contains("407") || err_str.contains("Unauthorized") || err_str.contains("Proxy Authentication") {
+            if err_str.contains("401")
+                || err_str.contains("407")
+                || err_str.contains("Unauthorized")
+                || err_str.contains("Proxy Authentication")
+            {
                 Err("代理认证失败(401/407)".to_string())
             } else if err_str.contains("timeout") || err_str.contains("Timeout") {
                 Err("超时".to_string())
-            } else if err_str.contains("connection refused") || err_str.contains("Connection refused") {
+            } else if err_str.contains("connection refused")
+                || err_str.contains("Connection refused")
+            {
                 Err("连接被拒绝".to_string())
             } else {
                 Err(format!("{}", &err_str[..err_str.len().min(80)]))
