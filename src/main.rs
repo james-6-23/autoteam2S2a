@@ -334,89 +334,63 @@ fn select_team<'a>(teams: &'a [S2aConfig], team_name: Option<&str>) -> Result<&'
 }
 
 async fn run_interactive() -> Result<()> {
-    println!("进入交互模式（无需输入大量命令参数）");
-    loop {
-        println!();
-        println!("请选择操作:");
-        println!("  [1] 分析配置");
-        println!("  [2] 执行流程（注册 -> RT -> S2A）");
-        println!("  [0] 退出");
-        let choice = prompt_usize("输入编号", 2, 0, 2)?;
-
-        match choice {
-            0 => {
-                println!("已退出。");
-                return Ok(());
-            }
-            1 => {
-                let (config_path, cfg) = prompt_config_and_load()?;
-                let team_name = prompt_team_name(&cfg.effective_s2a_configs())?;
-                analyze(config_path, team_name, None).await?;
-            }
-            2 => {
-                let (config_path, cfg) = prompt_config_and_load()?;
-                let teams = cfg.effective_s2a_configs();
-                if teams.is_empty() {
-                    bail!("当前配置中没有可用团队，无法执行 run 流程");
-                }
-                let team_name = prompt_team_name(&teams)?;
-
-                let target = prompt_usize(
-                    "目标账号数量",
-                    cfg.defaults.target_count.unwrap_or(1).max(1),
-                    1,
-                    10000,
-                )?;
-                let register_workers = prompt_usize(
-                    "注册并发数",
-                    cfg.defaults.register_workers.unwrap_or(15).max(1),
-                    1,
-                    256,
-                )?;
-                let rt_workers = prompt_usize(
-                    "RT 并发数",
-                    cfg.defaults.rt_workers.unwrap_or(10).max(1),
-                    1,
-                    256,
-                )?;
-                let rt_retries = prompt_usize(
-                    "RT 重试轮次",
-                    cfg.defaults.rt_retries.unwrap_or(4).max(1),
-                    1,
-                    100,
-                )?;
-                let live_mode = true;
-                let push_s2a = true;
-                println!("已默认启用: live 模式 + S2A 入库");
-
-                println!("选择邮箱系统:");
-                println!("  [1] kyx-cloud (自定义域名)");
-                println!("  [2] chatgpt.org.uk (自动生成邮箱)");
-                let mail_choice = prompt_usize("邮箱系统", 1, 1, 2)?;
-                let use_chatgpt_mail = mail_choice == 2;
-
-                run(
-                    config_path,
-                    team_name,
-                    Some(target),
-                    Some(register_workers),
-                    Some(rt_workers),
-                    Some(rt_retries),
-                    !live_mode,
-                    push_s2a,
-                    use_chatgpt_mail,
-                    None, // 交互模式：自动解析代理
-                )
-                .await?;
-            }
-            _ => unreachable!(),
-        }
-
-        if !prompt_yes_no("是否继续交互", true)? {
-            println!("已退出。");
-            return Ok(());
-        }
+    // 第一步：选择配置文件（多个时触发交互选择器）
+    let (config_path, cfg) = prompt_config_and_load()?;
+    let teams = cfg.effective_s2a_configs();
+    if teams.is_empty() {
+        bail!("当前配置中没有可用团队，无法执行");
     }
+    let team_name = prompt_team_name(&teams)?;
+
+    // 第二步：设置运行参数
+    let target = prompt_usize(
+        "目标账号数量",
+        cfg.defaults.target_count.unwrap_or(1).max(1),
+        1,
+        10000,
+    )?;
+    let register_workers = prompt_usize(
+        "注册并发数",
+        cfg.defaults.register_workers.unwrap_or(15).max(1),
+        1,
+        256,
+    )?;
+    let rt_workers = prompt_usize(
+        "RT 并发数",
+        cfg.defaults.rt_workers.unwrap_or(10).max(1),
+        1,
+        256,
+    )?;
+    let rt_retries = prompt_usize(
+        "RT 重试轮次",
+        cfg.defaults.rt_retries.unwrap_or(4).max(1),
+        1,
+        100,
+    )?;
+    let live_mode = true;
+    let push_s2a = true;
+    println!("已默认启用: live 模式 + S2A 入库");
+
+    println!("选择邮箱系统:");
+    println!("  [1] kyx-cloud (自定义域名)");
+    println!("  [2] chatgpt.org.uk (自动生成邮箱)");
+    let mail_choice = prompt_usize("邮箱系统", 1, 1, 2)?;
+    let use_chatgpt_mail = mail_choice == 2;
+
+    // 第三步：直接执行
+    run(
+        config_path,
+        team_name,
+        Some(target),
+        Some(register_workers),
+        Some(rt_workers),
+        Some(rt_retries),
+        !live_mode,
+        push_s2a,
+        use_chatgpt_mail,
+        None,
+    )
+    .await
 }
 
 fn prompt_config_and_load() -> Result<(PathBuf, AppConfig)> {
@@ -687,21 +661,6 @@ fn prompt_team_name(teams: &[S2aConfig]) -> Result<Option<String>> {
     }
     let selected = prompt_usize("选择团队编号", 1, 1, teams.len())?;
     Ok(Some(teams[selected - 1].name.clone()))
-}
-
-fn prompt_yes_no(label: &str, default: bool) -> Result<bool> {
-    let suffix = if default { "Y/n" } else { "y/N" };
-    loop {
-        let input = prompt_string(&format!("{label} [{suffix}]: "))?;
-        if input.is_empty() {
-            return Ok(default);
-        }
-        match input.to_ascii_lowercase().as_str() {
-            "y" | "yes" | "1" | "true" => return Ok(true),
-            "n" | "no" | "0" | "false" => return Ok(false),
-            _ => println!("请输入 y 或 n。"),
-        }
-    }
 }
 
 fn prompt_usize(label: &str, default: usize, min: usize, max: usize) -> Result<usize> {
