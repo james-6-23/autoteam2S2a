@@ -13,7 +13,7 @@ mod util;
 mod workflow;
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -427,12 +427,241 @@ fn prompt_config_and_load() -> Result<(PathBuf, AppConfig)> {
 }
 
 fn prompt_config_path() -> Result<PathBuf> {
-    let config_path = PathBuf::from("config.toml");
-    if config_path.is_file() {
-        println!("已自动识别配置文件: {}", config_path.display());
-        return Ok(config_path);
+    let configs = scan_config_files(".")?;
+
+    if configs.is_empty() {
+        bail!("未找到任何配置文件\n请确保目录下存在 config.toml 或 config.*.toml 格式的配置文件");
     }
-    bail!("未找到 config.toml，请先在程序根目录放置该文件");
+
+    if configs.len() == 1 {
+        println!("已自动识别配置文件: {}", configs[0].display());
+        return Ok(configs[0].clone());
+    }
+
+    // 多个配置文件：启动交互式选择器
+    select_config_interactive(&configs)
+}
+
+/// 扫描目录下的配置文件，返回排序后的列表（config.toml 排在最前面）
+fn scan_config_files(dir: &str) -> Result<Vec<PathBuf>> {
+    let dir_path = Path::new(dir);
+    let mut configs: Vec<PathBuf> = Vec::new();
+
+    let default_config = dir_path.join("config.toml");
+    if default_config.is_file() {
+        configs.push(default_config);
+    }
+
+    // 扫描 config.*.toml 格式的文件
+    let entries = std::fs::read_dir(dir_path)
+        .with_context(|| format!("无法读取目录: {}", dir_path.display()))?;
+
+    let mut extra_configs: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                name.starts_with("config.")
+                    && name.ends_with(".toml")
+                    && name != "config.toml"
+                    && name.matches('.').count() == 2
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    extra_configs.sort();
+    configs.extend(extra_configs);
+    Ok(configs)
+}
+
+/// 从配置文件中提取 S2A 摘要信息用于显示
+fn extract_config_summary(path: &Path) -> String {
+    let Ok(cfg) = AppConfig::load(path) else {
+        return "(解析失败)".to_string();
+    };
+    let teams = cfg.effective_s2a_configs();
+    if teams.is_empty() {
+        return "(无 S2A 配置)".to_string();
+    }
+    // 提取第一个 S2A 的域名和所有分组
+    let first = &teams[0];
+    let domain = first
+        .api_base
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(&first.api_base);
+
+    let all_groups: Vec<String> = teams
+        .iter()
+        .flat_map(|t| t.group_ids.iter())
+        .map(|id| id.to_string())
+        .collect();
+
+    let team_names: Vec<&str> = teams.iter().map(|t| t.name.as_str()).collect();
+
+    if all_groups.is_empty() {
+        format!("{} | {}", domain, team_names.join(","))
+    } else {
+        format!(
+            "{} | {} | 分组: {:?}",
+            domain,
+            team_names.join(","),
+            all_groups
+        )
+    }
+}
+
+/// 交互式配置文件选择器（方向键 + 彩色高亮）
+fn select_config_interactive(configs: &[PathBuf]) -> Result<PathBuf> {
+    use crossterm::{
+        cursor,
+        event::{self, Event, KeyCode, KeyEventKind},
+        execute,
+        style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
+        terminal::{self, ClearType},
+    };
+
+    let total = configs.len();
+    let mut selected: usize = 0;
+
+    // 预解析每个配置文件的摘要信息
+    let summaries: Vec<String> = configs.iter().map(|p| extract_config_summary(p)).collect();
+
+    // 进入 raw mode 以捕获单个按键
+    terminal::enable_raw_mode().context("无法启用终端 raw 模式")?;
+
+    let result = (|| -> Result<PathBuf> {
+        let mut stdout = io::stdout();
+
+        loop {
+            // 清屏并绘制 UI
+            execute!(
+                stdout,
+                terminal::Clear(ClearType::All),
+                cursor::MoveTo(0, 0)
+            )?;
+
+            // Banner
+            execute!(
+                stdout,
+                SetForegroundColor(Color::DarkGrey),
+                Print("  +================================================+\r\n"),
+                Print("  |                                                |\r\n"),
+                Print("  |      "),
+                SetForegroundColor(Color::Cyan),
+                Print("AutoTeam2S2A  Config Selector"),
+                SetForegroundColor(Color::DarkGrey),
+                Print("       |\r\n"),
+                Print("  |                                                |\r\n"),
+                Print("  +================================================+\r\n"),
+                ResetColor,
+                Print("\r\n"),
+                SetForegroundColor(Color::DarkCyan),
+                Print("  使用 ↑↓ 方向键选择配置文件，Enter 确认\r\n"),
+                Print("  按 ESC 或 Q 退出\r\n"),
+                ResetColor,
+                Print("\r\n"),
+            )?;
+
+            // 列出配置文件
+            for (i, cfg) in configs.iter().enumerate() {
+                let name = cfg
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+                let summary = &summaries[i];
+
+                if i == selected {
+                    // 选中项：绿色背景 + 文件名后跟摘要信息
+                    execute!(
+                        stdout,
+                        SetForegroundColor(Color::Black),
+                        SetBackgroundColor(Color::Green),
+                        Print(format!("  >> {:<22}", name)),
+                        SetForegroundColor(Color::DarkGreen),
+                        SetBackgroundColor(Color::Green),
+                        Print(format!(" {:<50}\r\n", summary)),
+                        ResetColor,
+                    )?;
+                } else {
+                    // 未选中项：灰色文件名 + 暗色摘要
+                    execute!(
+                        stdout,
+                        SetForegroundColor(Color::Grey),
+                        Print(format!("     {:<22}", name)),
+                        SetForegroundColor(Color::DarkGrey),
+                        Print(format!(" {}\r\n", summary)),
+                        ResetColor,
+                    )?;
+                }
+            }
+
+            // 状态栏
+            execute!(
+                stdout,
+                Print("\r\n"),
+                SetForegroundColor(Color::DarkCyan),
+                Print(format!(
+                    "  共找到 {} 个配置文件    当前选择: {}/{}\r\n",
+                    total,
+                    selected + 1,
+                    total
+                )),
+                ResetColor,
+            )?;
+
+            stdout.flush()?;
+
+            // 等待按键事件
+            if let Event::Key(key_event) = event::read()? {
+                // 只处理 Press 事件（避免 Release 重复触发）
+                if key_event.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key_event.code {
+                    KeyCode::Up => {
+                        if selected > 0 {
+                            selected -= 1;
+                        } else {
+                            selected = total - 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if selected < total - 1 {
+                            selected += 1;
+                        } else {
+                            selected = 0;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        return Ok(configs[selected].clone());
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        bail!("用户取消选择");
+                    }
+                    _ => {}
+                }
+            }
+        }
+    })();
+
+    // 恢复终端状态
+    terminal::disable_raw_mode().ok();
+
+    // 打印选择结果
+    if let Ok(ref path) = result {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        println!("\n已选择配置文件: {}", name);
+    }
+
+    result
 }
 
 fn prompt_team_name(teams: &[S2aConfig]) -> Result<Option<String>> {

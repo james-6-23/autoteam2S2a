@@ -288,9 +288,39 @@ impl WorkflowRunner {
             const S2A_RETRY_DELAY_SECS: u64 = 5;
 
             println!("阶段3: 入库 S2A [{}]", team.name);
-            let s2a_concurrency = team.concurrency.max(1).min(all_rt_success.len().max(1));
 
-            let mut pending: Vec<AccountWithRt> = all_rt_success.clone();
+            // 过滤掉 free 账号，避免 free 账号被推入号池
+            let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
+                all_rt_success.iter().cloned().partition(|acc| {
+                    !acc.plan_type.eq_ignore_ascii_case("free")
+                });
+
+            if !free_accounts.is_empty() {
+                println!(
+                    "  [S2A] 跳过 {} 个 free 账号（plan_type=free 不入库）",
+                    free_accounts.len()
+                );
+                for acc in &free_accounts {
+                    println!("  [S2A跳过] {} (plan={})", acc.account, acc.plan_type);
+                }
+                if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)? {
+                    output_files.push(path.display().to_string());
+                }
+            }
+
+            if s2a_eligible.is_empty() {
+                println!("  [S2A] 没有可入库的账号（全部为 free）");
+            } else {
+                println!(
+                    "  [S2A] 准备入库 {} 个账号（已排除 {} 个 free）",
+                    s2a_eligible.len(),
+                    free_accounts.len()
+                );
+            }
+
+            let s2a_concurrency = team.concurrency.max(1).min(s2a_eligible.len().max(1));
+
+            let mut pending: Vec<AccountWithRt> = s2a_eligible;
             let mut final_failed: Vec<AccountWithRt> = Vec::new();
 
             for retry_round in 0..S2A_MAX_RETRIES {
