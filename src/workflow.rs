@@ -291,9 +291,10 @@ impl WorkflowRunner {
 
             // 过滤掉 free 账号，避免 free 账号被推入号池
             let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
-                all_rt_success.iter().cloned().partition(|acc| {
-                    !acc.plan_type.eq_ignore_ascii_case("free")
-                });
+                all_rt_success
+                    .iter()
+                    .cloned()
+                    .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
 
             if !free_accounts.is_empty() {
                 println!(
