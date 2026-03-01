@@ -174,6 +174,8 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
     <span id="version-badge" class="text-[.65rem] font-mono px-2 py-0.5 rounded-full" style="background:var(--ghost);color:var(--text-dim)">v--</span>
   </div>
   <div class="flex items-center gap-2.5">
+    <span id="beijing-clock" class="text-[.65rem] font-mono c-dim" title="北京时间 (UTC+8)">--:--:--</span>
+    <span style="color:var(--border)">|</span>
     <span id="health-dot" class="w-1.5 h-1.5 rounded-full bg-zinc-600"></span>
     <span id="uptime-text" class="text-[.65rem] font-mono c-dim">--</span>
     <button id="theme-toggle" onclick="toggleTheme()" class="theme-toggle" title="切换主题">
@@ -191,6 +193,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
   <button onclick="switchTab('tasks')" id="tab-tasks" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">任务</button>
   <button onclick="switchTab('schedules')" id="tab-schedules" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">定时</button>
   <button onclick="switchTab('runs')" id="tab-runs" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">记录</button>
+  <button onclick="switchTab('logs')" id="tab-logs" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">日志</button>
 </nav>
 
 <!-- ====== Content ====== -->
@@ -230,11 +233,20 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
     <div class="section-title">新建号池</div>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
       <div><label class="field-label">名称 *</label><input id="at-name" class="field-input" placeholder="agmn"></div>
-      <div><label class="field-label">API 地址 *</label><input id="at-api" class="field-input" placeholder="https://..."></div>
-      <div><label class="field-label">Admin Key *</label><input id="at-key" class="field-input" placeholder="admin-xxx"></div>
+      <div><label class="field-label">API 地址 *</label><input id="at-api" class="field-input" placeholder="https://..." onchange="autoFetchGroups()"></div>
+      <div><label class="field-label">Admin Key *</label><input id="at-key" class="field-input" placeholder="admin-xxx" onchange="autoFetchGroups()"></div>
       <div><label class="field-label">并发</label><input id="at-concurrency" type="number" value="50" class="field-input"></div>
       <div><label class="field-label">优先级</label><input id="at-priority" type="number" value="30" class="field-input"></div>
-      <div><label class="field-label">分组ID</label><input id="at-groups" class="field-input" placeholder="1,2,3"></div>
+      <div>
+        <div class="flex items-center gap-2 mb-1">
+          <label class="field-label mb-0">分组</label>
+          <button onclick="fetchGroups()" id="at-fetch-groups-btn" class="text-[.65rem] px-2 py-0.5 rounded" style="background:var(--ghost);color:var(--text-dim);cursor:pointer">获取分组</button>
+          <span id="at-groups-status" class="text-[.6rem] text-dim"></span>
+        </div>
+        <div id="at-groups-container" class="field-input" style="min-height:38px;max-height:160px;overflow-y:auto;padding:6px 8px">
+          <span class="text-xs text-dim">请先填写 API 地址和 Admin Key</span>
+        </div>
+      </div>
     </div>
     <div class="flex gap-2 mt-4">
       <button onclick="submitAddTeam()" class="btn btn-teal">确认</button>
@@ -367,9 +379,12 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
     </div>
     <div id="run-list" class="space-y-2"><p class="text-sm text-dim text-center py-8">暂无运行记录</p></div>
     <div id="run-pagination" class="flex items-center justify-center gap-3 mt-4 hidden">
+      <button onclick="loadRuns(1)" class="btn btn-ghost text-xs py-1 px-2" title="首页">«</button>
       <button onclick="loadRuns(currentRunPage-1)" id="runs-prev" class="btn btn-ghost text-xs py-1">上一页</button>
       <span id="runs-page-info" class="text-xs font-mono text-dim"></span>
       <button onclick="loadRuns(currentRunPage+1)" id="runs-next" class="btn btn-ghost text-xs py-1">下一页</button>
+      <button onclick="loadRuns(Math.ceil(document.getElementById('runs-total-pages').value))" id="runs-last" class="btn btn-ghost text-xs py-1 px-2" title="末页">»</button>
+      <input type="hidden" id="runs-total-pages" value="1">
     </div>
   </div>
   <div id="run-detail-panel" class="card p-5 hidden">
@@ -378,6 +393,24 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <button onclick="hideRunDetail()" class="btn btn-ghost text-xs py-1">关闭</button>
     </div>
     <div id="run-detail-content"></div>
+  </div>
+</div>
+
+<!-- Logs -->
+<div id="panel-logs" class="hidden animate-enter space-y-4">
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-3">
+        <div class="section-title mb-0">实时日志</div>
+        <span id="log-status" class="text-[.65rem] font-mono px-2 py-0.5 rounded-full" style="background:var(--ghost);color:var(--text-dim)">未连接</span>
+        <span id="log-count" class="text-[.65rem] font-mono text-dim">0 条</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="toggleLogScroll()" id="log-scroll-btn" class="btn btn-ghost text-xs py-1 px-2">自动滚动: 开</button>
+        <button onclick="clearLogs()" class="btn btn-ghost text-xs py-1 px-2">清空</button>
+      </div>
+    </div>
+    <div id="log-container" style="background:#0a0a0c;border:1px solid var(--border);border-radius:8px;height:520px;overflow-y:auto;padding:12px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.7;color:#c8c8d0;scroll-behavior:smooth"></div>
   </div>
 </div>
 
@@ -431,7 +464,7 @@ async function api(path,opts={}){
 }
 
 // Tabs
-const ALL_TABS=['dashboard','teams','config','tasks','schedules','runs'];
+const ALL_TABS=['dashboard','teams','config','tasks','schedules','runs','logs'];
 function switchTab(name){
   ALL_TABS.forEach(t=>{
     document.getElementById('panel-'+t).classList.toggle('hidden',t!==name);
@@ -442,6 +475,7 @@ function switchTab(name){
   if(name==='dashboard'||name==='teams'||name==='config') loadConfig();
   if(name==='schedules'){loadSchedules();startSchedulePoll()}else{stopSchedulePoll()}
   if(name==='runs'){loadRunsFilter();loadRuns(1)}
+  if(name==='logs') connectLogStream();
 }
 
 // Health
@@ -468,6 +502,7 @@ function renderDashboard(){
   document.getElementById('q-reg-workers').value=configData.defaults.register_workers;
   document.getElementById('q-rt-workers').value=configData.defaults.rt_workers;
 }
+let teamGroupsCache={};
 function renderTeams(){
   const el=document.getElementById('team-list');
   if(!configData||configData.teams.length===0){el.innerHTML='<p class="text-sm text-dim text-center py-6">暂无号池</p>';return}
@@ -479,7 +514,7 @@ function renderTeams(){
         <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${t.api_base}</div></div>
         <div><span class="field-label">并发</span><div class="font-mono c-heading">${t.concurrency}</div></div>
         <div><span class="field-label">优先级</span><div class="font-mono c-heading">${t.priority}</div></div>
-        <div><span class="field-label">分组</span><div class="font-mono c-heading">${t.group_ids?.join(', ')||'-'}</div></div>
+        <div><span class="field-label">分组</span><div class="font-mono c-heading" id="team-groups-${t.name}">${t.group_ids?.join(', ')||'-'}</div></div>
       </div>
       <div class="flex items-center gap-1 ml-3">
         <button onclick="testS2a('${t.name}')" class="btn btn-ghost text-xs py-1 px-2" id="test-btn-${t.name}">测试</button>
@@ -494,8 +529,25 @@ function renderTeams(){
       <button onclick="animateRefresh(this,()=>loadS2aStats('${t.name}'))" class="refresh-btn ml-auto" title="刷新"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182"/></svg></button>
     </div>
   </div>`).join('');
-  // 自动加载统计
-  configData.teams.forEach(t=>loadS2aStats(t.name));
+  // 自动加载统计 + 分组名称
+  configData.teams.forEach(t=>{loadS2aStats(t.name);resolveGroupNames(t)});
+}
+async function resolveGroupNames(team){
+  if(!team.group_ids||team.group_ids.length===0) return;
+  const cacheKey=team.api_base;
+  try{
+    let groups=teamGroupsCache[cacheKey];
+    if(!groups){
+      const res=await fetch(API+'/api/s2a/fetch-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_base:team.api_base,admin_key:team.admin_key})});
+      if(!res.ok) return;
+      groups=await res.json();
+      teamGroupsCache[cacheKey]=groups;
+    }
+    const el=document.getElementById('team-groups-'+team.name);
+    if(!el) return;
+    const names=team.group_ids.map(id=>{const g=groups.find(x=>x.id===id);return g?`${g.name}(${id})`:String(id)});
+    el.textContent=names.join(', ');
+  }catch{}
 }
 async function testS2a(name){
   const btn=document.getElementById('test-btn-'+name);
@@ -559,11 +611,47 @@ async function saveD1Cleanup(){
 
 // Teams
 function showAddTeamForm(){document.getElementById('add-team-form').classList.remove('hidden')}
-function hideAddTeamForm(){document.getElementById('add-team-form').classList.add('hidden')}
+function hideAddTeamForm(){
+  document.getElementById('add-team-form').classList.add('hidden');
+  document.getElementById('at-groups-container').innerHTML='<span class="text-xs text-dim">请先填写 API 地址和 Admin Key</span>';
+}
+let atGroupsData=[];
+async function fetchGroups(){
+  const apiBase=document.getElementById('at-api').value.trim();
+  const adminKey=document.getElementById('at-key').value.trim();
+  if(!apiBase||!adminKey){toast('请先填写 API 地址和 Admin Key','error');return}
+  const btn=document.getElementById('at-fetch-groups-btn');
+  const status=document.getElementById('at-groups-status');
+  btn.disabled=true;btn.textContent='获取中...';status.textContent='';
+  try{
+    const res=await fetch(API+'/api/s2a/fetch-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_base:apiBase,admin_key:adminKey})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'请求失败');
+    atGroupsData=data;
+    const container=document.getElementById('at-groups-container');
+    if(data.length===0){container.innerHTML='<span class="text-xs text-dim">未找到分组</span>';return}
+    container.innerHTML=data.map(g=>`<label class="flex items-center gap-2 py-1 cursor-pointer text-xs" style="border-bottom:1px solid var(--border)">
+      <input type="checkbox" value="${g.id}" class="at-group-cb" style="accent-color:#14b8a6">
+      <span class="c-heading font-medium">${g.name}</span>
+      <span class="text-dim font-mono">#${g.id}</span>
+      <span class="text-dim">${g.account_count} 账号</span>
+      <span class="text-[.6rem] px-1.5 py-0.5 rounded" style="background:${g.status==='active'?'rgba(45,212,191,.12);color:#2dd4bf':'var(--ghost);color:var(--text-dim)'}">${g.status}</span>
+    </label>`).join('');
+    status.textContent=`共 ${data.length} 个分组`;status.style.color='#2dd4bf';
+  }catch(e){status.textContent=e.message;status.style.color='#f87171';toast(e.message,'error')}
+  finally{btn.disabled=false;btn.textContent='获取分组'}
+}
+function autoFetchGroups(){
+  const apiBase=document.getElementById('at-api').value.trim();
+  const adminKey=document.getElementById('at-key').value.trim();
+  if(apiBase&&adminKey) fetchGroups();
+}
+function getSelectedGroupIds(){
+  return Array.from(document.querySelectorAll('.at-group-cb:checked')).map(cb=>parseInt(cb.value));
+}
 async function submitAddTeam(){
-  const gs=document.getElementById('at-groups').value.trim();
-  const groups=gs?gs.split(',').map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)):[];
-  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups}});toast('号池已添加','success');hideAddTeamForm();['at-name','at-api','at-key'].forEach(id=>document.getElementById(id).value='');loadConfig()}catch{}
+  const groups=getSelectedGroupIds();
+  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups}});toast('号池已添加','success');hideAddTeamForm();['at-name','at-api','at-key'].forEach(id=>document.getElementById(id).value='');atGroupsData=[];loadConfig()}catch{}
 }
 async function deleteTeam(name){if(!confirm(`删除号池 "${name}"?`))return;try{await api(`/api/config/s2a/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`${name} 已删除`,'success');loadConfig()}catch{}}
 
@@ -690,42 +778,78 @@ function stopSchedulePoll(){if(schedPollTimer){clearInterval(schedPollTimer);sch
 // Runs
 let currentRunPage=1;
 async function loadRunsFilter(){try{const d=await api('/api/schedules');const s=document.getElementById('runs-filter');const p=s.value;s.innerHTML='<option value="">全部</option>'+(d.schedules||[]).map(s=>`<option value="${s.name}">${s.name}</option>`).join('');s.value=p}catch{}}
+function fmtBjTime(iso){
+  try{const d=new Date(iso);const utc=d.getTime()+d.getTimezoneOffset()*60000;const bj=new Date(utc+8*3600000);
+    const mm=String(bj.getMonth()+1).padStart(2,'0'),dd=String(bj.getDate()).padStart(2,'0');
+    const hh=String(bj.getHours()).padStart(2,'0'),mi=String(bj.getMinutes()).padStart(2,'0'),ss=String(bj.getSeconds()).padStart(2,'0');
+    return `${mm}-${dd} ${hh}:${mi}:${ss}`}catch{return iso||'-'}
+}
 async function loadRuns(page){
   if(page<1) page=1;currentRunPage=page;
-  const f=document.getElementById('runs-filter').value;const params=new URLSearchParams({page,per_page:20});if(f) params.set('schedule',f);
+  const f=document.getElementById('runs-filter').value;const params=new URLSearchParams({page,per_page:15});if(f) params.set('schedule',f);
   try{const d=await api(`/api/runs?${params}`);const el=document.getElementById('run-list');const pg=document.getElementById('run-pagination');
   if(!d.runs||!d.runs.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无记录</p>';pg.classList.add('hidden');return}
   el.innerHTML=d.runs.map(r=>{
     const bc={running:'badge-run',completed:'badge-ok',failed:'badge-err'};
-    const lb={running:'运行',completed:'完成',failed:'失败'};
-    const tm=new Date(r.started_at).toLocaleString('zh-CN');
-    const el=r.elapsed_secs?`${r.elapsed_secs.toFixed(1)}s`:'-';
-    return `<div class="row-item flex items-center justify-between cursor-pointer" onclick="showRunDetail('${r.id}')">
-      <div class="flex items-center gap-3 flex-1 min-w-0">
-        <span class="badge ${bc[r.status]||'badge-off'}">${lb[r.status]||r.status}</span>
-        <span class="text-xs font-mono text-dim">${r.id}</span>
-        <span class="text-xs text-dim-1">${r.schedule_name||'手动'}</span>
-        <span class="text-xs text-dim">${tm}</span>
+    const lb={running:'运行中',completed:'完成',failed:'失败'};
+    const elapsed=r.elapsed_secs?`${r.elapsed_secs.toFixed(1)}s`:'-';
+    const avgSec=(r.elapsed_secs&&r.target_count>0)?(r.elapsed_secs/r.target_count).toFixed(1)+'s/个':'-';
+    const trigLb={manual:'手动任务',manual_task:'手动任务',scheduled:'定时调度'};
+    const regTotal=r.registered_ok+r.registered_failed;
+    const regPct=regTotal>0?Math.round(r.registered_ok/regTotal*100):0;
+    const rtTotal=r.rt_ok+r.rt_failed;
+    const rtPct=rtTotal>0?Math.round(r.rt_ok/rtTotal*100):0;
+    const s2aTotal=r.total_s2a_ok+r.total_s2a_failed;
+    const s2aPct=s2aTotal>0?Math.round(r.total_s2a_ok/s2aTotal*100):0;
+    const errHtml=r.error?`<div class="text-[.7rem] text-red-400 mt-1.5 truncate" title="${r.error}">${r.error}</div>`:'';
+    return `<div class="row-item cursor-pointer" onclick="showRunDetail('${r.id}')" style="padding:10px 14px">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="badge ${bc[r.status]||'badge-off'}">${lb[r.status]||r.status}</span>
+          <span class="text-xs font-mono text-dim">#${r.id}</span>
+          <span class="text-xs" style="color:var(--text-dim2)">${r.schedule_name||trigLb[r.trigger_type]||r.trigger_type}</span>
+        </div>
+        <div class="flex items-center gap-2 text-[.7rem] text-dim">
+          <span title="开始时间">${fmtBjTime(r.started_at)}</span>
+          <span style="color:var(--border)">|</span>
+          <span title="总耗时">${elapsed}</span>
+          <span style="color:var(--border)">|</span>
+          <span title="平均耗时" class="text-amber-400">${avgSec}</span>
+          <span class="text-[.65rem] text-dim" title="目标数">[${r.target_count}]</span>
+        </div>
       </div>
-      <div class="flex items-center gap-3 text-xs font-mono text-dim">
-        <span>REG <span class="text-dim-2">${r.registered_ok}</span></span>
-        <span>RT <span class="text-dim-2">${r.rt_ok}</span></span>
-        <span>S2A <span class="text-teal-400">${r.total_s2a_ok}</span></span>
-        <span class="text-dim">${el}</span>
-      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-[.7rem] text-dim w-8">注册</span>
+          <div class="progress-bar flex-1"><div class="progress-fill" style="width:${regPct}%"></div></div>
+          <span class="text-[.7rem] font-mono min-w-[56px] text-right"><span class="c-heading">${r.registered_ok}</span><span class="text-dim">/${regTotal}</span></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-[.7rem] text-dim w-8">RT</span>
+          <div class="progress-bar flex-1"><div class="progress-fill" style="width:${rtPct}%"></div></div>
+          <span class="text-[.7rem] font-mono min-w-[56px] text-right"><span class="c-heading">${r.rt_ok}</span><span class="text-dim">/${rtTotal}</span></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-[.7rem] text-teal-400 w-8">S2A</span>
+          <div class="progress-bar flex-1"><div class="progress-fill" style="width:${s2aPct}%;background:#14b8a6"></div></div>
+          <span class="text-[.7rem] font-mono min-w-[56px] text-right"><span class="text-teal-400">${r.total_s2a_ok}</span><span class="text-dim">/${s2aTotal}</span></span>
+        </div>
+      </div>${errHtml}
     </div>`}).join('');
   const tp=Math.ceil(d.total/d.per_page);
-  if(tp>1){pg.classList.remove('hidden');document.getElementById('runs-prev').disabled=page<=1;document.getElementById('runs-next').disabled=page>=tp;document.getElementById('runs-page-info').textContent=`${page}/${tp} (${d.total})`}else{pg.classList.add('hidden')}
+  if(tp>1){pg.classList.remove('hidden');document.getElementById('runs-prev').disabled=page<=1;document.getElementById('runs-next').disabled=page>=tp;document.getElementById('runs-page-info').textContent=`第 ${page}/${tp} 页 (共 ${d.total} 条)`;document.getElementById('runs-total-pages').value=tp;document.getElementById('runs-last').disabled=page>=tp}else{pg.classList.add('hidden')}
   }catch{}
 }
 async function showRunDetail(runId){
   try{const d=await api(`/api/runs/${runId}`);const r=d.run;
   const panel=document.getElementById('run-detail-panel');const content=document.getElementById('run-detail-content');
-  let html=`<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+  const detailAvg=(r.elapsed_secs&&r.target_count>0)?(r.elapsed_secs/r.target_count).toFixed(1)+'s':'-';
+  let html=`<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
     <div class="card-inner p-3"><div class="field-label">注册成功</div><div class="stat-num text-lg c-heading">${r.registered_ok}</div></div>
     <div class="card-inner p-3"><div class="field-label">RT 成功</div><div class="stat-num text-lg c-heading">${r.rt_ok}</div></div>
     <div class="card-inner p-3"><div class="field-label">S2A 成功</div><div class="stat-num text-lg text-teal-400">${r.total_s2a_ok}</div></div>
-    <div class="card-inner p-3"><div class="field-label">耗时</div><div class="stat-num text-lg c-heading">${r.elapsed_secs?r.elapsed_secs.toFixed(1)+'s':'-'}</div></div>
+    <div class="card-inner p-3"><div class="field-label">总耗时</div><div class="stat-num text-lg c-heading">${r.elapsed_secs?r.elapsed_secs.toFixed(1)+'s':'-'}</div></div>
+    <div class="card-inner p-3"><div class="field-label">平均耗时</div><div class="stat-num text-lg text-amber-400">${detailAvg}<span class="text-xs text-dim">/个</span></div></div>
   </div>
   <div class="card-inner p-3 mb-4 text-xs text-dim grid grid-cols-2 md:grid-cols-4 gap-2">
     <span>ID <span class="font-mono c-heading">${r.id}</span></span>
@@ -751,6 +875,61 @@ async function showRunDetail(runId){
   content.innerHTML=html;panel.classList.remove('hidden')}catch{}
 }
 function hideRunDetail(){document.getElementById('run-detail-panel').classList.add('hidden')}
+
+// Logs SSE
+let logEs=null;let logAutoScroll=true;let logLineCount=0;const LOG_MAX_LINES=2000;
+function connectLogStream(){
+  if(logEs&&logEs.readyState!==EventSource.CLOSED) return;
+  const status=document.getElementById('log-status');
+  status.textContent='连接中...';status.style.color='var(--text-dim)';
+  logEs=new EventSource(API+'/api/logs/stream');
+  logEs.onopen=()=>{status.textContent='已连接';status.style.color='#2dd4bf'};
+  logEs.onmessage=(e)=>{
+    const container=document.getElementById('log-container');
+    const line=document.createElement('div');
+    line.style.cssText='padding:1px 0;border-bottom:1px solid rgba(255,255,255,.03);word-break:break-all';
+    const text=e.data;
+    if(text.includes('[ERR]')||text.includes('失败')){line.style.color='#f87171'}
+    else if(text.includes('[OK]')||text.includes('成功')||text.includes('完成')){line.style.color='#34d399'}
+    else if(text.includes('[调度器]')){line.style.color='#fbbf24'}
+    else if(text.includes('[分发]')){line.style.color='#60a5fa'}
+    else if(text.includes('[S2A')){line.style.color='#a78bfa'}
+    line.textContent=text;
+    container.appendChild(line);
+    logLineCount++;
+    // 超过上限时删除最早的行
+    while(container.children.length>LOG_MAX_LINES){container.removeChild(container.firstChild)}
+    document.getElementById('log-count').textContent=logLineCount+' 条';
+    if(logAutoScroll) container.scrollTop=container.scrollHeight;
+  };
+  logEs.onerror=()=>{
+    status.textContent='已断开';status.style.color='#f87171';
+    logEs.close();logEs=null;
+    setTimeout(()=>{if(document.getElementById('panel-logs')&&!document.getElementById('panel-logs').classList.contains('hidden'))connectLogStream()},3000);
+  };
+}
+function toggleLogScroll(){
+  logAutoScroll=!logAutoScroll;
+  const btn=document.getElementById('log-scroll-btn');
+  btn.textContent='自动滚动: '+(logAutoScroll?'开':'关');
+  if(logAutoScroll){const c=document.getElementById('log-container');c.scrollTop=c.scrollHeight}
+}
+function clearLogs(){
+  document.getElementById('log-container').innerHTML='';
+  logLineCount=0;document.getElementById('log-count').textContent='0 条';
+}
+
+// Beijing clock (UTC+8)
+function updateBeijingClock(){
+  const now=new Date();
+  const utc=now.getTime()+now.getTimezoneOffset()*60000;
+  const bj=new Date(utc+8*3600000);
+  const h=String(bj.getHours()).padStart(2,'0');
+  const m=String(bj.getMinutes()).padStart(2,'0');
+  const s=String(bj.getSeconds()).padStart(2,'0');
+  document.getElementById('beijing-clock').textContent=`${h}:${m}:${s} CST`;
+}
+updateBeijingClock();setInterval(updateBeijingClock,1000);
 
 // Init
 checkHealth();loadConfig();setInterval(checkHealth,15000);

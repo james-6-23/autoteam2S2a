@@ -7,6 +7,7 @@ use futures::{StreamExt, stream};
 use tokio::sync::mpsc;
 
 use crate::config::{AppConfig, S2aConfig};
+use crate::log_broadcast::broadcast_log;
 use crate::models::{AccountWithRt, RegisteredAccount, WorkflowReport};
 use crate::proxy_pool::ProxyPool;
 use crate::services::{CodexService, RegisterInput, RegisterService, S2aService};
@@ -76,7 +77,7 @@ impl WorkflowRunner {
 
         for round in 0..MAX_ROUNDS {
             if cancel_flag.load(Ordering::Relaxed) {
-                println!("\n已收到中断信号，跳过后续注册轮次...");
+                broadcast_log("已收到中断信号，跳过后续注册轮次...");
                 break;
             }
 
@@ -87,17 +88,17 @@ impl WorkflowRunner {
             let deficit = target - current_ok;
 
             if round > 0 {
-                println!(
-                    "\n=== 补注册第 {} 轮: 还需 {} 个账号 (已成功 {}/{}) ===",
+                broadcast_log(&format!(
+                    "=== 补注册第 {} 轮: 还需 {} 个账号 (已成功 {}/{}) ===",
                     round, deficit, current_ok, target
-                );
+                ));
             } else {
                 let plan_label = if cfg.payment_enabled() {
                     "team"
                 } else {
                     "free"
                 };
-                println!("阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标 {target})");
+                broadcast_log(&format!("阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标 {target})"));
             }
 
             // 根据邮箱系统选择生成 seeds
@@ -111,7 +112,7 @@ impl WorkflowRunner {
                         Ok(Some(email)) => seed.account = email,
                         Ok(None) => {}
                         Err(e) => {
-                            println!("[chatgpt.org.uk] 生成邮箱失败: {e}，使用域名列表邮箱");
+                            broadcast_log(&format!("[chatgpt.org.uk] 生成邮箱失败: {e}，使用域名列表邮箱"));
                         }
                     }
                     out.push(seed);
@@ -243,12 +244,12 @@ impl WorkflowRunner {
             all_rt_success.extend(round_rt_ok);
             all_rt_failed.extend(round_rt_failed);
 
-            println!(
+            broadcast_log(&format!(
                 "本轮结束: RT成功 {}, 累计成功 {}/{}",
                 all_rt_success.len() - current_ok,
                 all_rt_success.len(),
                 target
-            );
+            ));
 
             if all_rt_success.len() >= target {
                 break;
@@ -314,13 +315,13 @@ impl WorkflowRunner {
             }
 
             if retry_round > 0 {
-                println!(
-                    "\n  [S2A重试] 第 {}/{} 轮，等待 {}s 后重试 {} 个失败账号...",
+                broadcast_log(&format!(
+                    "[S2A重试] 第 {}/{} 轮，等待 {}s 后重试 {} 个失败账号...",
                     retry_round + 1,
                     S2A_MAX_RETRIES,
                     S2A_RETRY_DELAY_SECS,
                     pending.len()
-                );
+                ));
                 tokio::time::sleep(Duration::from_secs(S2A_RETRY_DELAY_SECS)).await;
             }
 
@@ -342,10 +343,10 @@ impl WorkflowRunner {
                 match ret {
                     Ok(_) => {
                         s2a_ok += 1;
-                        println!("  [S2A成功] {}", acc.account);
+                        broadcast_log(&format!("[S2A成功] {}", acc.account));
                     }
                     Err(err) => {
-                        println!("  [S2A失败] {}: {err}", acc.account);
+                        broadcast_log(&format!("[S2A失败] {}: {err}", acc.account));
                         round_failed.push(acc);
                     }
                 }
@@ -361,14 +362,14 @@ impl WorkflowRunner {
 
         let s2a_failed = final_failed.len();
         if !final_failed.is_empty() {
-            println!(
-                "  [S2A] 经过最多 {} 轮重试后仍有 {} 个账号失败",
+            broadcast_log(&format!(
+                "[S2A] 经过最多 {} 轮重试后仍有 {} 个账号失败",
                 S2A_MAX_RETRIES,
                 final_failed.len()
-            );
+            ));
         }
         if let Ok(Some(path)) = save_json_records("accounts-s2a-failed", &final_failed) {
-            println!("  [S2A] 失败记录已保存: {}", path.display());
+            broadcast_log(&format!("[S2A] 失败记录已保存: {}", path.display()));
         }
 
         (s2a_ok, s2a_failed)
@@ -391,7 +392,7 @@ impl WorkflowRunner {
         let mut output_files = reg_result.output_files;
 
         let (s2a_ok, s2a_failed) = if options.push_s2a {
-            println!("阶段3: 入库 S2A [{}]", team.name);
+            broadcast_log(&format!("阶段3: 入库 S2A [{}]", team.name));
 
             // 过滤掉 free 账号
             let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
@@ -401,12 +402,12 @@ impl WorkflowRunner {
                     .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
 
             if !free_accounts.is_empty() {
-                println!(
-                    "  [S2A] 跳过 {} 个 free 账号（plan_type=free 不入库）",
+                broadcast_log(&format!(
+                    "[S2A] 跳过 {} 个 free 账号（plan_type=free 不入库）",
                     free_accounts.len()
-                );
+                ));
                 for acc in &free_accounts {
-                    println!("  [S2A跳过] {} (plan={})", acc.account, acc.plan_type);
+                    broadcast_log(&format!("[S2A跳过] {} (plan={})", acc.account, acc.plan_type));
                 }
                 if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)? {
                     output_files.push(path.display().to_string());
@@ -414,14 +415,14 @@ impl WorkflowRunner {
             }
 
             if s2a_eligible.is_empty() {
-                println!("  [S2A] 没有可入库的账号（全部为 free）");
+                broadcast_log("[S2A] 没有可入库的账号（全部为 free）");
                 (0, 0)
             } else {
-                println!(
-                    "  [S2A] 准备入库 {} 个账号（已排除 {} 个 free）",
+                broadcast_log(&format!(
+                    "[S2A] 准备入库 {} 个账号（已排除 {} 个 free）",
                     s2a_eligible.len(),
                     free_accounts.len()
-                );
+                ));
                 self.push_to_s2a(team, s2a_eligible).await
             }
         } else {
@@ -430,9 +431,9 @@ impl WorkflowRunner {
 
         // D1 清理
         if cfg.d1_cleanup.enabled.unwrap_or(false) {
-            println!("\n阶段4: D1 邮件清理");
+            broadcast_log("阶段4: D1 邮件清理");
             if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
-                println!("D1 清理失败（不影响入库结果）: {e}");
+                broadcast_log(&format!("D1 清理失败（不影响入库结果）: {e}"));
             }
         }
 
@@ -469,7 +470,7 @@ impl WorkflowRunner {
             let recv_result = tokio::select! {
                 acc = rx.recv() => acc,
                 _ = Self::wait_for_cancel(cancel_flag.clone()) => {
-                    println!("\n已收到中断信号，停止接收新的 RT 任务...");
+                    broadcast_log("已收到中断信号，停止接收新的 RT 任务...");
                     None
                 }
             };

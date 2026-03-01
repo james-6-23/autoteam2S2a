@@ -6,6 +6,7 @@ use anyhow::Result;
 
 use crate::config::{AppConfig, DistributionEntry, ScheduleConfig};
 use crate::db::{NewDistribution, NewRun, RunCompletion, RunHistoryDb};
+use crate::log_broadcast::broadcast_log;
 use crate::models::{AccountWithRt, DistributionReport, TeamDistResult};
 use crate::storage::save_json_records;
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
@@ -57,7 +58,7 @@ pub async fn run_distribution(
         schedule_name: Some(schedule.name.clone()),
         trigger_type: trigger_type.to_string(),
         target_count: schedule.target_count,
-        started_at: chrono::Local::now().to_rfc3339(),
+        started_at: crate::util::beijing_now().to_rfc3339(),
     })?;
 
     // 插入 distribution plan
@@ -90,10 +91,10 @@ pub async fn run_distribution(
     };
 
     // 2. 注册 + RT
-    println!(
+    broadcast_log(&format!(
         "[分发] 开始注册 + RT，目标: {} 个账号",
         schedule.target_count
-    );
+    ));
     let reg_result = match runner
         .run_register_and_rt(cfg, &options, cancel_flag.clone())
         .await
@@ -121,10 +122,10 @@ pub async fn run_distribution(
         .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
 
     if !free_accounts.is_empty() {
-        println!(
+        broadcast_log(&format!(
             "[分发] 跳过 {} 个 free 账号（plan_type=free 不入库）",
             free_accounts.len()
-        );
+        ));
         if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)? {
             output_files.push(path.display().to_string());
         }
@@ -159,7 +160,7 @@ pub async fn run_distribution(
         let team_cfg = match teams.iter().find(|t| t.name == *team_name) {
             Some(t) => t,
             None => {
-                println!("[分发] 未找到号池配置: {team_name}，跳过");
+                broadcast_log(&format!("[分发] 未找到号池配置: {team_name}，跳过"));
                 team_results.push(TeamDistResult {
                     team_name: team_name.clone(),
                     percent,
@@ -172,12 +173,12 @@ pub async fn run_distribution(
             }
         };
 
-        println!(
+        broadcast_log(&format!(
             "[分发] 推送 {} 个账号到 {} ({}%)",
             accounts.len(),
             team_name,
             percent
-        );
+        ));
 
         let (ok, failed) = if options.push_s2a && !accounts.is_empty() {
             runner.push_to_s2a(team_cfg, accounts.clone()).await
@@ -213,15 +214,15 @@ pub async fn run_distribution(
             total_s2a_ok,
             total_s2a_failed,
             elapsed_secs: elapsed as f64,
-            finished_at: chrono::Local::now().to_rfc3339(),
+            finished_at: crate::util::beijing_now().to_rfc3339(),
         },
     );
 
     // D1 清理
     if cfg.d1_cleanup.enabled.unwrap_or(false) {
-        println!("\n[分发] D1 邮件清理");
+        broadcast_log("[分发] D1 邮件清理");
         if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
-            println!("D1 清理失败: {e}");
+            broadcast_log(&format!("[分发] D1 清理失败: {e}"));
         }
     }
 

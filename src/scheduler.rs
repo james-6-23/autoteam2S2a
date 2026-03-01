@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::config::ScheduleConfig;
 use crate::db::RunHistoryDb;
+use crate::log_broadcast::broadcast_log;
 use crate::server::AppState;
 
 // ─── Scheduler state ─────────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ impl SchedulerState {
 
 // ─── Time window check ──────────────────────────────────────────────────────
 
-/// 判断当前本地时间是否在 [start, end) 窗口内。支持跨日窗口（如 22:00-06:00）。
+/// 判断当前北京时间是否在 [start, end) 窗口内。支持跨日窗口（如 22:00-06:00）。
 pub fn is_in_window(start_time: &str, end_time: &str) -> bool {
     let start = match NaiveTime::parse_from_str(start_time, "%H:%M") {
         Ok(t) => t,
@@ -73,7 +74,7 @@ pub fn is_in_window(start_time: &str, end_time: &str) -> bool {
         Ok(t) => t,
         Err(_) => return false,
     };
-    let now = chrono::Local::now().time();
+    let now = crate::util::beijing_now().time();
 
     if start <= end {
         // 同日窗口: 10:00-14:00
@@ -101,7 +102,7 @@ pub fn start_scheduler(state: AppState, db: Arc<RunHistoryDb>) {
 }
 
 async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
-    println!("[调度器] 后台调度器已启动，每 30 秒检查时间窗口");
+    broadcast_log("[调度器] 后台调度器已启动，每 30 秒检查时间窗口");
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
@@ -121,10 +122,10 @@ async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
             if in_window && !is_active {
                 // 进入时间窗口且未运行 → 启动批次循环
                 if let Some(cancel_flag) = state.scheduler_state.start(&schedule_cfg.name).await {
-                    println!(
+                    broadcast_log(&format!(
                         "[调度器] 进入时间窗口，启动计划: {} ({}-{})",
                         schedule_cfg.name, schedule_cfg.start_time, schedule_cfg.end_time
-                    );
+                    ));
 
                     let state_clone = state.clone();
                     let db_clone = db.clone();
@@ -149,29 +150,29 @@ async fn run_batch_loop(
 ) {
     let mut batch_num = 0u64;
 
-    println!(
+    broadcast_log(&format!(
         "[调度器] {} 批次循环开始 (每批 {} 个, 间隔 {} 分钟)",
         schedule.name, schedule.target_count, schedule.batch_interval_mins
-    );
+    ));
 
     loop {
         // 检查取消
         if cancel_flag.load(Ordering::Relaxed) {
-            println!("[调度器] {} 已停止（手动取消）", schedule.name);
+            broadcast_log(&format!("[调度器] {} 已停止（手动取消）", schedule.name));
             break;
         }
 
         // 检查时间窗口
         if !is_in_window(&schedule.start_time, &schedule.end_time) {
-            println!("[调度器] {} 时间窗口结束", schedule.name);
+            broadcast_log(&format!("[调度器] {} 时间窗口结束", schedule.name));
             break;
         }
 
         batch_num += 1;
-        println!(
+        broadcast_log(&format!(
             "[调度器] {} 开始第 {} 批次（每批 {} 个）",
             schedule.name, batch_num, schedule.target_count
-        );
+        ));
 
         // 每批次重新读取配置（允许运行期间修改参数）
         let cfg = state.config.read().await.clone();
@@ -181,7 +182,7 @@ async fn run_batch_loop(
             match crate::server::build_workflow_runner(&cfg, state.proxy_file.as_deref()).await {
                 Ok(r) => r,
                 Err(e) => {
-                    println!("[调度器] 构建 runner 失败 ({}): {e}", schedule.name);
+                    broadcast_log(&format!("[调度器] 构建 runner 失败 ({}): {e}", schedule.name));
                     // 短暂等待后重试
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                     continue;
@@ -200,7 +201,7 @@ async fn run_batch_loop(
         .await
         {
             Ok(report) => {
-                println!(
+                broadcast_log(&format!(
                     "[调度器] {} 第 {} 批完成 | 注册: {} | RT: {} | S2A: {} | 耗时: {:.1}s",
                     schedule.name,
                     batch_num,
@@ -208,13 +209,13 @@ async fn run_batch_loop(
                     report.rt_ok,
                     report.total_s2a_ok,
                     report.elapsed_secs
-                );
+                ));
             }
             Err(e) => {
-                println!("[调度器] {} 第 {} 批失败: {e:#}", schedule.name, batch_num);
+                broadcast_log(&format!("[调度器] {} 第 {} 批失败: {e:#}", schedule.name, batch_num));
                 // 如果是被取消的，直接退出
                 if cancel_flag.load(Ordering::Relaxed) {
-                    println!("[调度器] {} 已停止（运行中取消）", schedule.name);
+                    broadcast_log(&format!("[调度器] {} 已停止（运行中取消）", schedule.name));
                     break;
                 }
             }
@@ -225,18 +226,18 @@ async fn run_batch_loop(
         let check_interval = tokio::time::Duration::from_secs(5);
         let mut elapsed = std::time::Duration::ZERO;
 
-        println!(
+        broadcast_log(&format!(
             "[调度器] {} 等待 {} 分钟后执行下一批...",
             schedule.name, schedule.batch_interval_mins
-        );
+        ));
 
         while elapsed < total_wait {
             if cancel_flag.load(Ordering::Relaxed) {
-                println!("[调度器] {} 已停止（等待期间取消）", schedule.name);
+                broadcast_log(&format!("[调度器] {} 已停止（等待期间取消）", schedule.name));
                 break;
             }
             if !is_in_window(&schedule.start_time, &schedule.end_time) {
-                println!("[调度器] {} 等待期间时间窗口结束", schedule.name);
+                broadcast_log(&format!("[调度器] {} 等待期间时间窗口结束", schedule.name));
                 break;
             }
             tokio::time::sleep(check_interval).await;
@@ -253,8 +254,8 @@ async fn run_batch_loop(
 
     // 清理活跃状态
     state.scheduler_state.remove(&schedule.name).await;
-    println!(
+    broadcast_log(&format!(
         "[调度器] {} 批次循环结束（共执行 {} 批）",
         schedule.name, batch_num
-    );
+    ));
 }

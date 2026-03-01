@@ -1,9 +1,15 @@
-use chrono::Local;
+use chrono::{DateTime, FixedOffset, Utc};
 use fake::Fake;
 use fake::faker::name::en::{FirstName, LastName};
 use rand::Rng;
 
 use crate::models::AccountSeed;
+
+/// 北京时间 (UTC+8)
+pub fn beijing_now() -> DateTime<FixedOffset> {
+    let tz = FixedOffset::east_opt(8 * 3600).unwrap();
+    Utc::now().with_timezone(&tz)
+}
 
 const DEFAULT_DOMAINS: [&str; 8] = [
     "@ic.loopkit.de5.net",
@@ -55,41 +61,25 @@ pub fn random_delay_ms(min: u64, max: u64) -> u64 {
 }
 
 pub fn now_hms() -> String {
-    Local::now().format("%H:%M:%S").to_string()
+    beijing_now().format("%H:%M:%S").to_string()
 }
 
 pub fn log_worker(worker_id: usize, stage: &str, message: &str) {
     let ts = now_hms();
+    let clean = format!("[{ts}] [W{worker_id}] [{stage}] {message}");
     match stage {
-        "OK" => {
-            // 绿色：成功信息
-            println!(
-                "\x1b[32m[{}] [W{}] [{}] {}\x1b[0m",
-                ts, worker_id, stage, message
-            );
-        }
-        "ERR" => {
-            // 红色：错误信息
-            println!(
-                "\x1b[31m[{}] [W{}] [{}] {}\x1b[0m",
-                ts, worker_id, stage, message
-            );
-        }
-        _ => {
-            println!("[{}] [W{}] [{}] {}", ts, worker_id, stage, message);
-        }
+        "OK" => println!("\x1b[32m{clean}\x1b[0m"),
+        "ERR" => println!("\x1b[31m{clean}\x1b[0m"),
+        _ => println!("{clean}"),
     }
+    crate::log_broadcast::send_log(&clean);
 }
 
 /// 绿色高亮日志（兼容旧调用）
 pub fn log_worker_green(worker_id: usize, stage: &str, message: &str) {
-    println!(
-        "\x1b[32m[{}] [W{}] [{}] {}\x1b[0m",
-        now_hms(),
-        worker_id,
-        stage,
-        message
-    );
+    let clean = format!("[{}] [W{worker_id}] [{stage}] {message}", now_hms());
+    println!("\x1b[32m{clean}\x1b[0m");
+    crate::log_broadcast::send_log(&clean);
 }
 
 pub fn token_preview(token: &str) -> String {

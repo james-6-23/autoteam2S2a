@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,11 +8,13 @@ use std::time::Instant;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::cors::CorsLayer;
 
 use crate::config::{AppConfig, S2aConfig};
@@ -96,7 +99,7 @@ impl TaskManager {
             status: TaskStatus::Pending,
             team,
             target,
-            created_at: chrono::Local::now().to_rfc3339(),
+            created_at: crate::util::beijing_now().to_rfc3339(),
             report: None,
             error: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -165,6 +168,7 @@ pub struct AppState {
     pub started_at: Instant,
     pub run_history_db: Arc<RunHistoryDb>,
     pub scheduler_state: Arc<crate::scheduler::SchedulerState>,
+    pub log_tx: broadcast::Sender<String>,
 }
 
 // ─── Request / Response types ────────────────────────────────────────────────
@@ -556,6 +560,91 @@ async fn fetch_s2a_total(
     Ok(total)
 }
 
+// ─── Fetch S2A groups (proxy) ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct FetchGroupsRequest {
+    api_base: String,
+    admin_key: String,
+}
+
+#[derive(Serialize)]
+struct GroupItem {
+    id: i64,
+    name: String,
+    status: String,
+    account_count: u64,
+}
+
+async fn fetch_s2a_groups_handler(
+    Json(req): Json<FetchGroupsRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let base = S2aHttpService::normalized_api_base(&req.api_base);
+    let url = format!("{base}/admin/groups?page=1&page_size=100&status=&timezone=Asia%2FShanghai");
+
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let key = req.admin_key.trim();
+    let bearer = if key.to_ascii_lowercase().starts_with("bearer ") {
+        key.to_string()
+    } else {
+        format!("Bearer {key}")
+    };
+
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header("Authorization", &bearer)
+        .header("X-API-Key", key)
+        .header("X-Admin-Key", key)
+        .send()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("请求失败: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err(error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("HTTP {}", resp.status()),
+        ));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("解析失败: {e}")))?;
+
+    let items = json
+        .get("data")
+        .and_then(|d| d.get("items"))
+        .and_then(|i| i.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let groups: Vec<GroupItem> = items
+        .iter()
+        .filter_map(|item| {
+            Some(GroupItem {
+                id: item.get("id")?.as_i64()?,
+                name: item.get("name")?.as_str()?.to_string(),
+                status: item
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                account_count: item
+                    .get("account_count")
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0),
+            })
+        })
+        .collect();
+
+    Ok(Json(groups))
+}
+
 async fn update_defaults_handler(
     State(state): State<AppState>,
     Json(req): Json<UpdateDefaultsRequest>,
@@ -891,7 +980,7 @@ async fn execute_task(
         schedule_name: None,
         trigger_type: "manual_task".to_string(),
         target_count: target,
-        started_at: chrono::Local::now().to_rfc3339(),
+        started_at: crate::util::beijing_now().to_rfc3339(),
     }) {
         println!("[任务] 写入运行记录失败: {e}");
     }
@@ -989,7 +1078,7 @@ async fn execute_task(
                     total_s2a_ok: report.s2a_ok,
                     total_s2a_failed: report.s2a_failed,
                     elapsed_secs: started.elapsed().as_secs_f64(),
-                    finished_at: chrono::Local::now().to_rfc3339(),
+                    finished_at: crate::util::beijing_now().to_rfc3339(),
                 },
             );
             task_manager.set_completed(&task_id, report).await;
@@ -1505,6 +1594,37 @@ pub async fn build_workflow_runner(
     ))
 }
 
+// ─── SSE log stream ─────────────────────────────────────────────────────────
+
+async fn log_stream_handler(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.log_tx.subscribe();
+
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(msg) => {
+                    return Some((Ok(Event::default().data(msg)), rx));
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    let msg = format!("[... 跳过 {} 条日志]", n);
+                    return Some((Ok(Event::default().data(msg)), rx));
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return None;
+                }
+            }
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
 // ─── Server entry point ─────────────────────────────────────────────────────
 
 pub async fn start_server(
@@ -1523,6 +1643,10 @@ pub async fn start_server(
             .expect("无法初始化运行记录数据库"),
     );
 
+    // 初始化日志广播通道
+    let (log_tx, _) = broadcast::channel::<String>(1000);
+    crate::log_broadcast::init_log(log_tx.clone());
+
     let state = AppState {
         config: Arc::new(RwLock::new(cfg)),
         config_path,
@@ -1531,6 +1655,7 @@ pub async fn start_server(
         started_at: Instant::now(),
         run_history_db: db.clone(),
         scheduler_state: Arc::new(crate::scheduler::SchedulerState::new()),
+        log_tx,
     };
 
     // 启动后台调度器
@@ -1547,6 +1672,7 @@ pub async fn start_server(
         .route("/api/config/s2a/{name}", delete(delete_s2a_handler))
         .route("/api/config/s2a/{name}/test", post(test_s2a_handler))
         .route("/api/config/s2a/{name}/stats", get(s2a_stats_handler))
+        .route("/api/s2a/fetch-groups", post(fetch_s2a_groups_handler))
         .route("/api/config/defaults", put(update_defaults_handler))
         .route("/api/config/register", put(update_register_handler))
         .route("/api/config/d1_cleanup", put(update_d1_cleanup_handler))
@@ -1578,17 +1704,18 @@ pub async fn start_server(
         // Run history
         .route("/api/runs", get(list_runs_handler))
         .route("/api/runs/{run_id}", get(get_run_handler))
+        // Log stream (SSE)
+        .route("/api/logs/stream", get(log_stream_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
-    println!("═══════════════════════════════════════════");
-    println!("   autoteam2s2a 服务模式 v{}", env!("CARGO_PKG_VERSION"));
-    println!("   监听地址: http://{addr}");
-    println!("   管理面板: http://{addr}/");
-    println!("   最大并发任务: {max_concurrent}");
-    println!("═══════════════════════════════════════════");
-    println!();
+    crate::log_broadcast::broadcast_log("═══════════════════════════════════════════");
+    crate::log_broadcast::broadcast_log(&format!("   autoteam2s2a 服务模式 v{}", env!("CARGO_PKG_VERSION")));
+    crate::log_broadcast::broadcast_log(&format!("   监听地址: http://{addr}"));
+    crate::log_broadcast::broadcast_log(&format!("   管理面板: http://{addr}/"));
+    crate::log_broadcast::broadcast_log(&format!("   最大并发任务: {max_concurrent}"));
+    crate::log_broadcast::broadcast_log("═══════════════════════════════════════════");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)

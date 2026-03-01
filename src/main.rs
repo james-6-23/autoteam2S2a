@@ -6,6 +6,7 @@ mod distribution;
 mod email_service;
 mod fingerprint;
 mod iban;
+mod log_broadcast;
 mod models;
 mod proxy_pool;
 mod scheduler;

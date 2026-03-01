@@ -178,7 +178,7 @@ impl RunHistoryDb {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE runs SET status = 'failed', error = ?2, finished_at = ?3 WHERE id = ?1",
-            params![run_id, error, chrono::Local::now().to_rfc3339()],
+            params![run_id, error, crate::util::beijing_now().to_rfc3339()],
         )?;
         Ok(())
     }
