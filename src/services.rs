@@ -1763,7 +1763,7 @@ impl S2aHttpService {
         }
     }
 
-    fn normalized_api_base(api_base: &str) -> String {
+    pub fn normalized_api_base(api_base: &str) -> String {
         let trimmed = api_base.trim().trim_end_matches('/');
         if trimmed.ends_with("/api/v1") {
             return trimmed.to_string();

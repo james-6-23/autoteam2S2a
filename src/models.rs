@@ -41,7 +41,7 @@ pub struct WorkflowReport {
     pub target_count: usize,
 }
 
-/// 每个 S2A 团队的分发结果
+/// 每个 S2A 号池的分发结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamDistResult {
     pub team_name: String,

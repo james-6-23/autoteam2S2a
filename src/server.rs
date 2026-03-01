@@ -19,7 +19,7 @@ use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::WorkflowReport;
 use crate::proxy_pool::{ProxyPool, health_check, resolve_proxies};
-use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService};
+use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService};
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
 
 // ─── Embedded frontend ──────────────────────────────────────────────────────
@@ -393,7 +393,7 @@ async fn add_s2a_handler(
     if cfg.s2a.iter().any(|t| t.name == req.name) {
         return Err(error_json(
             StatusCode::CONFLICT,
-            &format!("团队已存在: {}", req.name),
+            &format!("号池已存在: {}", req.name),
         ));
     }
     cfg.s2a.push(S2aConfig {
@@ -407,7 +407,7 @@ async fn add_s2a_handler(
     Ok((
         StatusCode::CREATED,
         Json(MsgResponse {
-            message: format!("团队 {} 已添加", req.name),
+            message: format!("号池 {} 已添加", req.name),
         }),
     ))
 }
@@ -422,12 +422,136 @@ async fn delete_s2a_handler(
     if cfg.s2a.len() == before {
         return Err(error_json(
             StatusCode::NOT_FOUND,
-            &format!("未找到团队: {name}"),
+            &format!("未找到号池: {name}"),
         ));
     }
     Ok(Json(MsgResponse {
-        message: format!("团队 {name} 已删除"),
+        message: format!("号池 {name} 已删除"),
     }))
+}
+
+async fn test_s2a_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let team = cfg
+        .effective_s2a_configs()
+        .into_iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到号池: {name}")))?;
+    drop(cfg);
+
+    let svc = S2aHttpService::new();
+    svc.test_connection(&team)
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("连接失败: {e:#}")))?;
+
+    Ok(Json(MsgResponse {
+        message: "连接成功".to_string(),
+    }))
+}
+
+#[derive(Serialize)]
+struct S2aStatsResponse {
+    active: usize,
+    rate_limited: usize,
+    available: usize,
+}
+
+async fn s2a_stats_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let team = cfg
+        .effective_s2a_configs()
+        .into_iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到号池: {name}")))?;
+    drop(cfg);
+
+    let svc = S2aHttpService::new();
+    let base = S2aHttpService::normalized_api_base(&team.api_base);
+
+    // 构建 group 参数
+    let group_param = team
+        .group_ids
+        .first()
+        .map(|g| format!("&group={g}"))
+        .unwrap_or_default();
+
+    // 并发获取 active 和 rate_limited 数量
+    let active_url = format!(
+        "{base}/admin/accounts?page=1&page_size=1&status=active{group_param}&timezone=Asia%2FShanghai"
+    );
+    let rl_url = format!(
+        "{base}/admin/accounts?page=1&page_size=1&status=rate_limited{group_param}&timezone=Asia%2FShanghai"
+    );
+
+    let (active_res, rl_res) = tokio::join!(
+        fetch_s2a_total(&svc, &active_url, &team.admin_key),
+        fetch_s2a_total(&svc, &rl_url, &team.admin_key),
+    );
+
+    let active = active_res.map_err(|e| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("获取 active 数据失败: {e:#}"),
+        )
+    })?;
+    let rate_limited = rl_res.map_err(|e| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("获取 rate_limited 数据失败: {e:#}"),
+        )
+    })?;
+
+    Ok(Json(S2aStatsResponse {
+        active,
+        rate_limited,
+        available: active.saturating_sub(rate_limited),
+    }))
+}
+
+async fn fetch_s2a_total(
+    _svc: &S2aHttpService,
+    url: &str,
+    admin_key: &str,
+) -> anyhow::Result<usize> {
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let key = admin_key.trim();
+    let bearer = if key.to_ascii_lowercase().starts_with("bearer ") {
+        key.to_string()
+    } else {
+        format!("Bearer {key}")
+    };
+
+    let resp = client
+        .get(url)
+        .header("Accept", "application/json")
+        .header("Authorization", &bearer)
+        .header("X-API-Key", key)
+        .header("X-Admin-Key", key)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("HTTP {}", resp.status());
+    }
+
+    let json: serde_json::Value = resp.json().await?;
+    let total = json
+        .get("data")
+        .and_then(|d| d.get("total"))
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0) as usize;
+
+    Ok(total)
 }
 
 async fn update_defaults_handler(
@@ -585,7 +709,7 @@ async fn create_task_handler(
     if teams.is_empty() {
         return Err(error_json(
             StatusCode::BAD_REQUEST,
-            "配置中没有可用的 S2A 团队",
+            "配置中没有可用的 S2A 号池",
         ));
     }
 
@@ -593,7 +717,7 @@ async fn create_task_handler(
         teams
             .iter()
             .find(|t| t.name == *name)
-            .ok_or_else(|| error_json(StatusCode::BAD_REQUEST, &format!("未找到团队: {name}")))?
+            .ok_or_else(|| error_json(StatusCode::BAD_REQUEST, &format!("未找到号池: {name}")))?
             .clone()
     } else {
         teams[0].clone()
@@ -1398,6 +1522,8 @@ pub async fn start_server(
         .route("/api/config", get(config_handler))
         .route("/api/config/s2a", post(add_s2a_handler))
         .route("/api/config/s2a/{name}", delete(delete_s2a_handler))
+        .route("/api/config/s2a/{name}/test", post(test_s2a_handler))
+        .route("/api/config/s2a/{name}/stats", get(s2a_stats_handler))
         .route("/api/config/defaults", put(update_defaults_handler))
         .route("/api/config/register", put(update_register_handler))
         .route("/api/config/d1_cleanup", put(update_d1_cleanup_handler))

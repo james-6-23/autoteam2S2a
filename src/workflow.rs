@@ -290,7 +290,7 @@ impl WorkflowRunner {
         })
     }
 
-    /// 将账号推送到单个 S2A 团队（含重试），返回 (s2a_ok, s2a_failed)
+    /// 将账号推送到单个 S2A 号池（含重试），返回 (s2a_ok, s2a_failed)
     pub async fn push_to_s2a(
         &self,
         team: &S2aConfig,
@@ -374,7 +374,7 @@ impl WorkflowRunner {
         (s2a_ok, s2a_failed)
     }
 
-    /// 原有入口方法：注册 + RT + 单团队 S2A 入库（保持原有签名和行为不变）
+    /// 原有入口方法：注册 + RT + 单号池 S2A 入库（保持原有签名和行为不变）
     pub async fn run_one_team(
         &self,
         cfg: &AppConfig,

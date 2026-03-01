@@ -178,7 +178,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
 <!-- ====== Nav ====== -->
 <nav class="flex gap-0.5 px-5 pt-3 pb-0 overflow-x-auto" style="border-bottom:1px solid var(--nav-border)">
   <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-btn tab-active px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">概览</button>
-  <button onclick="switchTab('teams')" id="tab-teams" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">团队</button>
+  <button onclick="switchTab('teams')" id="tab-teams" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">号池</button>
   <button onclick="switchTab('config')" id="tab-config" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">配置</button>
   <button onclick="switchTab('tasks')" id="tab-tasks" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">任务</button>
   <button onclick="switchTab('schedules')" id="tab-schedules" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">定时</button>
@@ -191,7 +191,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
 <!-- Dashboard -->
 <div id="panel-dashboard" class="animate-enter space-y-4">
   <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-    <div class="card p-4"><div class="field-label">S2A 团队</div><div id="stat-teams" class="stat-num c-heading">--</div></div>
+    <div class="card p-4"><div class="field-label">S2A 号池</div><div id="stat-teams" class="stat-num c-heading">--</div></div>
     <div class="card p-4"><div class="field-label">可用代理</div><div id="stat-proxies" class="stat-num c-heading">--</div></div>
     <div class="card p-4"><div class="field-label">邮箱域名</div><div id="stat-domains" class="stat-num c-heading">--</div></div>
     <div class="card p-4"><div class="field-label">活跃任务</div><div id="stat-running" class="stat-num text-amber-400">--</div></div>
@@ -199,7 +199,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
   <div class="card p-5">
     <div class="section-title">快速创建</div>
     <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
-      <div><label class="field-label">团队</label><select id="q-team" class="field-input"></select></div>
+      <div><label class="field-label">号池</label><select id="q-team" class="field-input"></select></div>
       <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" value="4" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" value="4" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" value="4" class="field-input"></div>
@@ -213,13 +213,13 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
 <div id="panel-teams" class="hidden animate-enter space-y-4">
   <div class="card p-5">
     <div class="flex items-center justify-between mb-4">
-      <div class="section-title mb-0">S2A 团队</div>
+      <div class="section-title mb-0">S2A 号池</div>
       <button onclick="showAddTeamForm()" class="btn btn-teal text-xs py-1.5">+ 添加</button>
     </div>
     <div id="team-list" class="space-y-2"></div>
   </div>
   <div id="add-team-form" class="card p-5 hidden">
-    <div class="section-title">新建团队</div>
+    <div class="section-title">新建号池</div>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
       <div><label class="field-label">名称 *</label><input id="at-name" class="field-input" placeholder="agmn"></div>
       <div><label class="field-label">API 地址 *</label><input id="at-api" class="field-input" placeholder="https://..."></div>
@@ -336,7 +336,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
     <div class="mt-4">
       <div class="flex items-center justify-between mb-2">
         <label class="field-label mb-0">分发 (总和=100%)</label>
-        <button onclick="addDistRow()" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 团队</button>
+        <button onclick="addDistRow()" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 号池</button>
       </div>
       <div id="sched-dist-rows" class="space-y-2"></div>
     </div>
@@ -457,18 +457,51 @@ function renderDashboard(){
 }
 function renderTeams(){
   const el=document.getElementById('team-list');
-  if(!configData||configData.teams.length===0){el.innerHTML='<p class="text-sm text-dim text-center py-6">暂无团队</p>';return}
+  if(!configData||configData.teams.length===0){el.innerHTML='<p class="text-sm text-dim text-center py-6">暂无号池</p>';return}
   el.innerHTML=configData.teams.map(t=>`
-  <div class="row-item flex items-center justify-between">
-    <div class="flex-1 grid grid-cols-2 md:grid-cols-5 gap-2 text-[.8125rem]">
-      <div><span class="field-label">名称</span><div class="font-medium c-heading">${t.name}</div></div>
-      <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${t.api_base}</div></div>
-      <div><span class="field-label">并发</span><div class="font-mono c-heading">${t.concurrency}</div></div>
-      <div><span class="field-label">优先级</span><div class="font-mono c-heading">${t.priority}</div></div>
-      <div><span class="field-label">分组</span><div class="font-mono c-heading">${t.group_ids?.join(', ')||'-'}</div></div>
+  <div class="row-item" id="team-card-${t.name}">
+    <div class="flex items-center justify-between mb-2">
+      <div class="flex-1 grid grid-cols-2 md:grid-cols-5 gap-2 text-[.8125rem]">
+        <div><span class="field-label">名称</span><div class="font-medium c-heading">${t.name}</div></div>
+        <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${t.api_base}</div></div>
+        <div><span class="field-label">并发</span><div class="font-mono c-heading">${t.concurrency}</div></div>
+        <div><span class="field-label">优先级</span><div class="font-mono c-heading">${t.priority}</div></div>
+        <div><span class="field-label">分组</span><div class="font-mono c-heading">${t.group_ids?.join(', ')||'-'}</div></div>
+      </div>
+      <div class="flex items-center gap-1 ml-3">
+        <button onclick="testS2a('${t.name}')" class="btn btn-ghost text-xs py-1 px-2" id="test-btn-${t.name}">测试</button>
+        <button onclick="deleteTeam('${t.name}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
+      </div>
     </div>
-    <button onclick="deleteTeam('${t.name}')" class="btn btn-danger text-xs ml-3 py-1 px-2">删除</button>
+    <div id="s2a-stats-${t.name}" class="flex items-center gap-4 text-xs text-dim pt-1 border-t" style="border-color:var(--border)">
+      <span class="text-dim">账号统计</span>
+      <span>可用 <span class="font-mono text-teal-400" id="stat-available-${t.name}">-</span></span>
+      <span>活跃 <span class="font-mono text-dim-2" id="stat-active-${t.name}">-</span></span>
+      <span>限流 <span class="font-mono text-red-400" id="stat-ratelimited-${t.name}">-</span></span>
+      <button onclick="loadS2aStats('${t.name}')" class="text-amber-400 hover:text-amber-300 text-xs font-medium ml-auto">刷新</button>
+    </div>
   </div>`).join('');
+  // 自动加载统计
+  configData.teams.forEach(t=>loadS2aStats(t.name));
+}
+async function testS2a(name){
+  const btn=document.getElementById('test-btn-'+name);
+  const orig=btn.textContent;btn.textContent='测试中...';btn.disabled=true;
+  try{const d=await api(`/api/config/s2a/${encodeURIComponent(name)}/test`,{method:'POST'});toast(`${name}: ${d.message}`,'success')}
+  catch(e){toast(`${name}: 连接失败`,'error')}
+  finally{btn.textContent=orig;btn.disabled=false}
+}
+async function loadS2aStats(name){
+  try{
+    const d=await api(`/api/config/s2a/${encodeURIComponent(name)}/stats`);
+    document.getElementById('stat-available-'+name).textContent=d.available;
+    document.getElementById('stat-active-'+name).textContent=d.active;
+    document.getElementById('stat-ratelimited-'+name).textContent=d.rate_limited;
+  }catch{
+    document.getElementById('stat-available-'+name).textContent='?';
+    document.getElementById('stat-active-'+name).textContent='?';
+    document.getElementById('stat-ratelimited-'+name).textContent='?';
+  }
 }
 function renderConfigForm(){
   if(!configData)return;
@@ -517,9 +550,9 @@ function hideAddTeamForm(){document.getElementById('add-team-form').classList.ad
 async function submitAddTeam(){
   const gs=document.getElementById('at-groups').value.trim();
   const groups=gs?gs.split(',').map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)):[];
-  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups}});toast('团队已添加','success');hideAddTeamForm();['at-name','at-api','at-key'].forEach(id=>document.getElementById(id).value='');loadConfig()}catch{}
+  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups}});toast('号池已添加','success');hideAddTeamForm();['at-name','at-api','at-key'].forEach(id=>document.getElementById(id).value='');loadConfig()}catch{}
 }
-async function deleteTeam(name){if(!confirm(`删除团队 "${name}"?`))return;try{await api(`/api/config/s2a/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`${name} 已删除`,'success');loadConfig()}catch{}}
+async function deleteTeam(name){if(!confirm(`删除号池 "${name}"?`))return;try{await api(`/api/config/s2a/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`${name} 已删除`,'success');loadConfig()}catch{}}
 
 // Config save
 async function saveDefaults(){try{await api('/api/config/defaults',{method:'PUT',body:{target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}}
@@ -539,7 +572,7 @@ async function deleteEmailDomain(domain){try{await api('/api/config/email_domain
 
 // Tasks
 async function quickCreateTask(){
-  const team=document.getElementById('q-team').value;if(!team){toast('请先配置团队','error');return}
+  const team=document.getElementById('q-team').value;if(!team){toast('请先配置号池','error');return}
   try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,use_chatgpt_mail:document.getElementById('q-mail').value==='true'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks')}catch{}
 }
 async function refreshTasks(){
@@ -567,7 +600,7 @@ async function refreshTasks(){
 }
 async function showTaskDetail(taskId){
   try{const t=await api(`/api/tasks/${taskId}`);const r=t.report;
-  let d=`状态: ${t.status}\n团队: ${t.team}\n目标: ${t.target}\n创建: ${t.created_at}`;
+  let d=`状态: ${t.status}\n号池: ${t.team}\n目标: ${t.target}\n创建: ${t.created_at}`;
   if(t.error) d+=`\n\n错误: ${t.error}`;
   if(r){d+=`\n\n── 报告 ──\n注册: ${r.registered_ok}/${r.registered_ok+r.registered_failed}\nRT: ${r.rt_ok}/${r.rt_ok+r.rt_failed}\nS2A: ${r.s2a_ok}/${r.s2a_ok+r.s2a_failed}\n耗时: ${r.elapsed_secs?.toFixed(1)}s`;if(r.output_files?.length)d+=`\n文件: ${r.output_files.join(', ')}`}
   alert(d)}catch{}

@@ -10,7 +10,7 @@ use crate::models::{AccountWithRt, DistributionReport, TeamDistResult};
 use crate::storage::save_json_records;
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
 
-/// 按百分比分割账号列表。前 N-1 个团队取 floor(total * percent / 100)，最后一个取剩余。
+/// 按百分比分割账号列表。前 N-1 个号池取 floor(total * percent / 100)，最后一个取剩余。
 fn split_by_percentage(
     accounts: &[AccountWithRt],
     distribution: &[(String, u8)],
@@ -138,7 +138,7 @@ pub async fn run_distribution(
         .collect();
     let splits = split_by_percentage(&s2a_eligible, &dist_pairs);
 
-    // 5. 对每个 S2A 团队顺序推送
+    // 5. 对每个 S2A 号池顺序推送
     let teams = cfg.effective_s2a_configs();
     let mut total_s2a_ok = 0usize;
     let mut total_s2a_failed = 0usize;
@@ -159,7 +159,7 @@ pub async fn run_distribution(
         let team_cfg = match teams.iter().find(|t| t.name == *team_name) {
             Some(t) => t,
             None => {
-                println!("[分发] 未找到团队配置: {team_name}，跳过");
+                println!("[分发] 未找到号池配置: {team_name}，跳过");
                 team_results.push(TeamDistResult {
                     team_name: team_name.clone(),
                     percent,
@@ -188,7 +188,7 @@ pub async fn run_distribution(
         total_s2a_ok += ok;
         total_s2a_failed += failed;
 
-        // 6. 更新 SQLite 中该团队的统计
+        // 6. 更新 SQLite 中该号池的统计
         let _ = db.update_distribution(&run_id, team_name, accounts.len(), ok, failed);
 
         team_results.push(TeamDistResult {
@@ -240,7 +240,7 @@ pub async fn run_distribution(
     })
 }
 
-/// 校验分发配置的百分比之和是否为 100，且引用的团队都存在
+/// 校验分发配置的百分比之和是否为 100，且引用的号池都存在
 pub fn validate_distribution(
     distribution: &[DistributionEntry],
     available_teams: &[crate::config::S2aConfig],
@@ -256,10 +256,10 @@ pub fn validate_distribution(
 
     for entry in distribution {
         if !available_teams.iter().any(|t| t.name == entry.team) {
-            return Err(format!("团队不存在: {}", entry.team));
+            return Err(format!("号池不存在: {}", entry.team));
         }
         if entry.percent == 0 {
-            return Err(format!("团队 {} 的百分比不能为 0", entry.team));
+            return Err(format!("号池 {} 的百分比不能为 0", entry.team));
         }
     }
 

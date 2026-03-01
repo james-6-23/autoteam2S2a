@@ -39,7 +39,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// 分析配置与单团队执行参数
+    /// 分析配置与单号池执行参数
     Analyze {
         #[arg(short, long, default_value = "config.toml")]
         config: PathBuf,
@@ -49,7 +49,7 @@ enum Commands {
         #[arg(long)]
         proxy_file: Option<PathBuf>,
     },
-    /// 执行一团队 free 注册 -> RT -> S2A 入库（默认 live）
+    /// 执行一号池 free 注册 -> RT -> S2A 入库（默认 live）
     Run {
         #[arg(short, long, default_value = "config.toml")]
         config: PathBuf,
@@ -169,7 +169,7 @@ async fn analyze(
     }
     println!("S2A 配置数量: {}", teams.len());
     println!(
-        "当前团队: {} | 并发: {} | 优先级: {} | 分组: {:?}",
+        "当前号池: {} | 并发: {} | 优先级: {} | 分组: {:?}",
         selected.name, selected.concurrency, selected.priority, selected.group_ids
     );
     println!(
@@ -352,13 +352,13 @@ async fn run(
 
 fn select_team<'a>(teams: &'a [S2aConfig], team_name: Option<&str>) -> Result<&'a S2aConfig> {
     if teams.is_empty() {
-        bail!("配置中没有可用的 S2A 团队");
+        bail!("配置中没有可用的 S2A 号池");
     }
     if let Some(name) = team_name {
         return teams
             .iter()
             .find(|t| t.name == name)
-            .ok_or_else(|| anyhow::anyhow!("未找到团队: {name}"));
+            .ok_or_else(|| anyhow::anyhow!("未找到号池: {name}"));
     }
     Ok(&teams[0])
 }
@@ -368,7 +368,7 @@ async fn run_interactive() -> Result<()> {
     let (config_path, cfg) = prompt_config_and_load()?;
     let teams = cfg.effective_s2a_configs();
     if teams.is_empty() {
-        bail!("当前配置中没有可用团队，无法执行");
+        bail!("当前配置中没有可用号池，无法执行");
     }
     let team_name = prompt_team_name(&teams)?;
 
@@ -673,12 +673,12 @@ fn prompt_team_name(teams: &[S2aConfig]) -> Result<Option<String>> {
         return Ok(None);
     }
     if teams.len() == 1 {
-        println!("已选择团队: {}", teams[0].name);
+        println!("已选择号池: {}", teams[0].name);
         return Ok(Some(teams[0].name.clone()));
     }
 
     println!();
-    println!("可选团队:");
+    println!("可选号池:");
     for (idx, team) in teams.iter().enumerate() {
         println!(
             "  [{}] {} (并发={} 优先级={} 分组={:?})",
@@ -689,7 +689,7 @@ fn prompt_team_name(teams: &[S2aConfig]) -> Result<Option<String>> {
             team.group_ids
         );
     }
-    let selected = prompt_usize("选择团队编号", 1, 1, teams.len())?;
+    let selected = prompt_usize("选择号池编号", 1, 1, teams.len())?;
     Ok(Some(teams[selected - 1].name.clone()))
 }
 
