@@ -153,7 +153,11 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
   transition:background .15s,border-color .15s;cursor:default}
 .row-item:hover{background:var(--bg-row-hover);border-color:var(--border-hover)}
 .progress-bar{height:4px;border-radius:2px;background:var(--ghost);overflow:hidden}
+.progress-bar.h-2{height:8px;border-radius:4px}
 .progress-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,#14b8a6,#2dd4bf);transition:width .4s ease}
+.progress-bar.h-2 .progress-fill{border-radius:4px}
+@keyframes pulse-glow{0%,100%{opacity:1}50%{opacity:.6}}
+.tp-pulse{animation:pulse-glow 1.5s ease-in-out infinite}
 
 /* Theme toggle */
 .theme-toggle{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;
@@ -324,6 +328,66 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <button onclick="animateRefresh(this,refreshTasks)" class="refresh-btn" title="刷新"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182"/></svg></button>
     </div>
     <div id="task-list" class="space-y-2"><p class="text-sm text-dim text-center py-8">暂无任务</p></div>
+  </div>
+  <!-- Task Progress Detail Panel -->
+  <div id="task-progress-panel" class="card p-5 hidden">
+    <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center gap-3">
+        <button onclick="closeTaskProgress()" class="text-dim hover:text-white transition-colors" title="关闭">&larr;</button>
+        <div class="section-title mb-0">任务详情</div>
+        <span id="tp-badge" class="badge badge-run">运行</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="tp-id" class="text-xs font-mono text-dim"></span>
+        <span id="tp-stage" class="text-xs text-amber-400 font-medium"></span>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+      <div class="card-inner p-3 text-center">
+        <div class="text-[.65rem] text-dim mb-1 uppercase tracking-wider">目标</div>
+        <div id="tp-target" class="text-lg font-bold c-heading font-mono">0</div>
+      </div>
+      <div class="card-inner p-3 text-center">
+        <div class="text-[.65rem] text-dim mb-1 uppercase tracking-wider">注册成功</div>
+        <div id="tp-reg-ok" class="text-lg font-bold text-teal-400 font-mono">0</div>
+      </div>
+      <div class="card-inner p-3 text-center">
+        <div class="text-[.65rem] text-dim mb-1 uppercase tracking-wider">RT 成功</div>
+        <div id="tp-rt-ok" class="text-lg font-bold text-teal-400 font-mono">0</div>
+      </div>
+      <div class="card-inner p-3 text-center">
+        <div class="text-[.65rem] text-dim mb-1 uppercase tracking-wider">S2A 入库</div>
+        <div id="tp-s2a-ok" class="text-lg font-bold text-teal-400 font-mono">0</div>
+      </div>
+    </div>
+    <div class="space-y-3">
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-xs text-dim">注册</span>
+          <span class="text-xs font-mono"><span id="tp-reg-ok2" class="c-heading">0</span><span class="text-dim"> 成功 / </span><span id="tp-reg-fail" class="text-red-400">0</span><span class="text-dim"> 失败</span></span>
+        </div>
+        <div class="progress-bar h-2"><div id="tp-reg-bar" class="progress-fill" style="width:0%"></div></div>
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-xs text-dim">RT (刷新令牌)</span>
+          <span class="text-xs font-mono"><span id="tp-rt-ok2" class="c-heading">0</span><span class="text-dim"> 成功 / </span><span id="tp-rt-fail" class="text-red-400">0</span><span class="text-dim"> 失败</span></span>
+        </div>
+        <div class="progress-bar h-2"><div id="tp-rt-bar" class="progress-fill" style="width:0%"></div></div>
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-xs text-teal-400">S2A 入库</span>
+          <span class="text-xs font-mono"><span id="tp-s2a-ok2" class="text-teal-400">0</span><span class="text-dim"> 成功 / </span><span id="tp-s2a-fail" class="text-red-400">0</span><span class="text-dim"> 失败</span></span>
+        </div>
+        <div class="progress-bar h-2"><div id="tp-s2a-bar" class="progress-fill" style="width:0%;background:#14b8a6"></div></div>
+      </div>
+    </div>
+    <div id="tp-error" class="hidden mt-4 p-3 rounded-lg border border-red-500/20 bg-red-500/5 text-red-400 text-xs font-mono"></div>
+    <div id="tp-report" class="hidden mt-4 card-inner p-3">
+      <div class="text-xs text-dim mb-2 font-medium">完成报告</div>
+      <div id="tp-report-content" class="text-xs font-mono text-dim-1 space-y-1"></div>
+    </div>
   </div>
 </div>
 
@@ -519,7 +583,7 @@ function switchTab(name){
     const b=document.getElementById('tab-'+t);
     b.classList.toggle('tab-active',t===name);
   });
-  if(name==='tasks'){refreshTasks();startTaskPoll()}else{stopTaskPoll()}
+  if(name==='tasks'){refreshTasks();startTaskPoll()}else{stopTaskPoll();closeTaskProgress()}
   if(name==='dashboard'||name==='teams'||name==='config') loadConfig();
   if(name==='schedules'){loadSchedules();startSchedulePoll()}else{stopSchedulePoll()}
   if(name==='runs'){loadRunStats();loadRunsFilter();loadRuns(1)}
@@ -722,7 +786,7 @@ async function deleteEmailDomain(domain){try{await api('/api/config/email_domain
 // Tasks
 async function quickCreateTask(){
   const team=document.getElementById('q-team').value;if(!team){toast('请先配置号池','error');return}
-  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,use_chatgpt_mail:document.getElementById('q-mail').value==='true'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks')}catch{}
+  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,use_chatgpt_mail:document.getElementById('q-mail').value==='true'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks');setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
 }
 async function refreshTasks(){
   try{
@@ -765,12 +829,93 @@ async function refreshTasks(){
     el.innerHTML=html;
   }catch{}
 }
-async function showTaskDetail(taskId){
-  try{const t=await api(`/api/tasks/${taskId}`);const r=t.report;
-  let d=`状态: ${t.status}\n号池: ${t.team}\n目标: ${t.target}\n创建: ${t.created_at}`;
-  if(t.error) d+=`\n\n错误: ${t.error}`;
-  if(r){d+=`\n\n── 报告 ──\n注册: ${r.registered_ok}/${r.registered_ok+r.registered_failed}\nRT: ${r.rt_ok}/${r.rt_ok+r.rt_failed}\nS2A: ${r.s2a_ok}/${r.s2a_ok+r.s2a_failed}\n耗时: ${r.elapsed_secs?.toFixed(1)}s`;if(r.output_files?.length)d+=`\n文件: ${r.output_files.join(', ')}`}
-  alert(d)}catch{}
+let _tpTimer=null;
+let _tpTaskId=null;
+function showTaskDetail(taskId){
+  _tpTaskId=taskId;
+  const panel=document.getElementById('task-progress-panel');
+  panel.classList.remove('hidden');
+  // reset
+  ['tp-reg-ok','tp-rt-ok','tp-s2a-ok','tp-target','tp-reg-ok2','tp-reg-fail','tp-rt-ok2','tp-rt-fail','tp-s2a-ok2','tp-s2a-fail'].forEach(id=>{
+    document.getElementById(id).textContent='0';
+  });
+  ['tp-reg-bar','tp-rt-bar','tp-s2a-bar'].forEach(id=>{
+    document.getElementById(id).style.width='0%';
+  });
+  document.getElementById('tp-id').textContent=taskId;
+  document.getElementById('tp-stage').textContent='';
+  document.getElementById('tp-error').classList.add('hidden');
+  document.getElementById('tp-report').classList.add('hidden');
+  document.getElementById('tp-badge').className='badge badge-run tp-pulse';
+  document.getElementById('tp-badge').textContent='运行';
+  // start polling
+  pollTaskProgress();
+  _tpTimer=setInterval(pollTaskProgress,1500);
+  panel.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function closeTaskProgress(){
+  if(_tpTimer){clearInterval(_tpTimer);_tpTimer=null}
+  _tpTaskId=null;
+  document.getElementById('task-progress-panel').classList.add('hidden');
+}
+async function pollTaskProgress(){
+  if(!_tpTaskId)return;
+  try{
+    const p=await api(`/api/tasks/${_tpTaskId}/progress`);
+    const target=p.target||1;
+    // badge
+    const badge=document.getElementById('tp-badge');
+    const bc={pending:'badge-warn',running:'badge-run',completed:'badge-ok',failed:'badge-err',cancelled:'badge-off'};
+    const lb={pending:'等待',running:'运行',completed:'完成',failed:'失败',cancelled:'取消'};
+    badge.className=`badge ${bc[p.status]||'badge-off'} ${p.status==='running'?'tp-pulse':''}`;
+    badge.textContent=lb[p.status]||p.status;
+    // stage
+    document.getElementById('tp-stage').textContent=p.stage||'';
+    // counters
+    document.getElementById('tp-target').textContent=target;
+    document.getElementById('tp-reg-ok').textContent=p.reg_ok;
+    document.getElementById('tp-rt-ok').textContent=p.rt_ok;
+    document.getElementById('tp-s2a-ok').textContent=p.s2a_ok;
+    document.getElementById('tp-reg-ok2').textContent=p.reg_ok;
+    document.getElementById('tp-reg-fail').textContent=p.reg_failed;
+    document.getElementById('tp-rt-ok2').textContent=p.rt_ok;
+    document.getElementById('tp-rt-fail').textContent=p.rt_failed;
+    document.getElementById('tp-s2a-ok2').textContent=p.s2a_ok;
+    document.getElementById('tp-s2a-fail').textContent=p.s2a_failed;
+    // bars
+    const regTotal=p.reg_ok+p.reg_failed;
+    const rtTotal=p.rt_ok+p.rt_failed;
+    const s2aTotal=p.s2a_ok+p.s2a_failed;
+    document.getElementById('tp-reg-bar').style.width=`${Math.min(100,regTotal/target*100).toFixed(1)}%`;
+    document.getElementById('tp-rt-bar').style.width=`${Math.min(100,rtTotal/target*100).toFixed(1)}%`;
+    document.getElementById('tp-s2a-bar').style.width=`${s2aTotal>0?Math.min(100,s2aTotal/Math.max(1,p.rt_ok)*100).toFixed(1):0}%`;
+    // if done, show report
+    if(p.status==='completed'||p.status==='failed'||p.status==='cancelled'){
+      if(_tpTimer){clearInterval(_tpTimer);_tpTimer=null}
+      // fetch full task detail for report & error
+      try{
+        const t=await api(`/api/tasks/${_tpTaskId}`);
+        if(t.error){
+          const errEl=document.getElementById('tp-error');
+          errEl.textContent=t.error;
+          errEl.classList.remove('hidden');
+        }
+        if(t.report){
+          const r=t.report;
+          const rp=document.getElementById('tp-report');
+          rp.classList.remove('hidden');
+          let lines=[
+            `耗时: ${r.elapsed_secs?.toFixed(1)}s`,
+            `注册: ${r.registered_ok} 成功 / ${r.registered_failed} 失败`,
+            `RT: ${r.rt_ok} 成功 / ${r.rt_failed} 失败`,
+          ];
+          if(r.s2a_ok!==undefined) lines.push(`S2A: ${r.s2a_ok} 成功 / ${r.s2a_failed} 失败`);
+          if(r.output_files?.length) lines.push(`文件: ${r.output_files.join(', ')}`);
+          document.getElementById('tp-report-content').innerHTML=lines.map(l=>`<div>${l}</div>`).join('');
+        }
+      }catch{}
+    }
+  }catch{}
 }
 async function cancelTask(id){if(!confirm('取消此任务?'))return;try{await api(`/api/tasks/${id}/cancel`,{method:'POST'});toast('取消请求已发送','success');refreshTasks()}catch{}}
 function startTaskPoll(){stopTaskPoll();taskPollTimer=setInterval(refreshTasks,3000)}

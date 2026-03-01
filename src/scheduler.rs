@@ -79,11 +79,6 @@ impl SchedulerState {
         self.active.lock().await.contains_key(name)
     }
 
-    /// 获取所有活跃计划名
-    pub async fn active_names(&self) -> Vec<String> {
-        self.active.lock().await.keys().cloned().collect()
-    }
-
     /// 获取运行中计划的批次信息
     pub async fn run_info(&self, name: &str) -> Option<ScheduleRunInfo> {
         let active = self.active.lock().await;

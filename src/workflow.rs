@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -15,6 +15,42 @@ use crate::storage::save_json_records;
 use crate::util::{
     generate_account_seed, log_worker, log_worker_green, mask_proxy, random_delay_ms,
 };
+
+/// 实时进度计数器（原子更新，前端可轮询）
+#[derive(Debug)]
+pub struct TaskProgress {
+    pub reg_ok: AtomicUsize,
+    pub reg_failed: AtomicUsize,
+    pub rt_ok: AtomicUsize,
+    pub rt_failed: AtomicUsize,
+    pub s2a_ok: AtomicUsize,
+    pub s2a_failed: AtomicUsize,
+    pub stage: std::sync::Mutex<String>,
+}
+
+impl TaskProgress {
+    pub fn new() -> Self {
+        Self {
+            reg_ok: AtomicUsize::new(0),
+            reg_failed: AtomicUsize::new(0),
+            rt_ok: AtomicUsize::new(0),
+            rt_failed: AtomicUsize::new(0),
+            s2a_ok: AtomicUsize::new(0),
+            s2a_failed: AtomicUsize::new(0),
+            stage: std::sync::Mutex::new("初始化".to_string()),
+        }
+    }
+
+    pub fn set_stage(&self, s: &str) {
+        if let Ok(mut stage) = self.stage.lock() {
+            *stage = s.to_string();
+        }
+    }
+
+    pub fn get_stage(&self) -> String {
+        self.stage.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+}
 
 /// run_register_and_rt 的返回结果
 pub struct RegisterRtResult {
@@ -63,6 +99,7 @@ impl WorkflowRunner {
         cfg: &AppConfig,
         options: &WorkflowOptions,
         cancel_flag: Arc<AtomicBool>,
+        progress: Option<&Arc<TaskProgress>>,
     ) -> Result<RegisterRtResult> {
         let target = options.target_count;
         let reg_concurrency = options.register_workers.max(1);
@@ -241,8 +278,17 @@ impl WorkflowRunner {
             total_registered += reg_ok_in_round;
             total_reg_failed += reg_failed_in_round;
             total_task_index += deficit;
+            let rt_ok_in_round = round_rt_ok.len();
+            let rt_failed_in_round = round_rt_failed.len();
             all_rt_success.extend(round_rt_ok);
             all_rt_failed.extend(round_rt_failed);
+
+            if let Some(p) = progress {
+                p.reg_ok.fetch_add(reg_ok_in_round, Ordering::Relaxed);
+                p.reg_failed.fetch_add(reg_failed_in_round, Ordering::Relaxed);
+                p.rt_ok.fetch_add(rt_ok_in_round, Ordering::Relaxed);
+                p.rt_failed.fetch_add(rt_failed_in_round, Ordering::Relaxed);
+            }
 
             broadcast_log(&format!(
                 "本轮结束: RT成功 {}, 累计成功 {}/{}",
@@ -296,6 +342,7 @@ impl WorkflowRunner {
         &self,
         team: &S2aConfig,
         accounts: Vec<AccountWithRt>,
+        progress: Option<&Arc<TaskProgress>>,
     ) -> (usize, usize) {
         const S2A_MAX_RETRIES: usize = 3;
         const S2A_RETRY_DELAY_SECS: u64 = 5;
@@ -343,9 +390,11 @@ impl WorkflowRunner {
                 match ret {
                     Ok(_) => {
                         s2a_ok += 1;
+                        if let Some(p) = progress { p.s2a_ok.fetch_add(1, Ordering::Relaxed); }
                         broadcast_log(&format!("[S2A成功] {}", acc.account));
                     }
                     Err(err) => {
+                        if let Some(p) = progress { p.s2a_failed.fetch_add(1, Ordering::Relaxed); }
                         broadcast_log(&format!("[S2A失败] {}: {err}", acc.account));
                         round_failed.push(acc);
                     }
@@ -375,23 +424,26 @@ impl WorkflowRunner {
         (s2a_ok, s2a_failed)
     }
 
-    /// 原有入口方法：注册 + RT + 单号池 S2A 入库（保持原有签名和行为不变）
+    /// 原有入口方法：注册 + RT + 单号池 S2A 入库
     pub async fn run_one_team(
         &self,
         cfg: &AppConfig,
         team: &S2aConfig,
         options: &WorkflowOptions,
         cancel_flag: Arc<AtomicBool>,
+        progress: Option<Arc<TaskProgress>>,
     ) -> Result<WorkflowReport> {
         let workflow_started = Instant::now();
 
-        let reg_result = self.run_register_and_rt(cfg, options, cancel_flag).await?;
+        if let Some(ref p) = progress { p.set_stage("注册 + RT"); }
+        let reg_result = self.run_register_and_rt(cfg, options, cancel_flag, progress.as_ref()).await?;
 
         let rt_ok = reg_result.rt_success.len();
         let rt_failed = reg_result.rt_failed.len();
         let mut output_files = reg_result.output_files;
 
         let (s2a_ok, s2a_failed) = if options.push_s2a {
+            if let Some(ref p) = progress { p.set_stage("S2A 入库"); }
             broadcast_log(&format!("阶段3: 入库 S2A [{}]", team.name));
 
             // 过滤掉 free 账号
@@ -423,7 +475,7 @@ impl WorkflowRunner {
                     s2a_eligible.len(),
                     free_accounts.len()
                 ));
-                self.push_to_s2a(team, s2a_eligible).await
+                self.push_to_s2a(team, s2a_eligible, progress.as_ref()).await
             }
         } else {
             (0, 0)

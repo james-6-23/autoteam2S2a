@@ -64,6 +64,8 @@ pub struct TaskEntry {
     pub error: Option<String>,
     #[serde(skip)]
     pub cancel_flag: Arc<AtomicBool>,
+    #[serde(skip)]
+    pub progress: Arc<crate::workflow::TaskProgress>,
 }
 
 // ─── Task Manager ────────────────────────────────────────────────────────────
@@ -103,6 +105,7 @@ impl TaskManager {
             report: None,
             error: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            progress: Arc::new(crate::workflow::TaskProgress::new()),
         };
         tasks.insert(task_id.clone(), entry);
         Ok(task_id)
@@ -154,6 +157,14 @@ impl TaskManager {
             .await
             .get(task_id)
             .map(|t| t.cancel_flag.clone())
+    }
+
+    pub async fn get_progress(&self, task_id: &str) -> Option<Arc<crate::workflow::TaskProgress>> {
+        self.tasks
+            .lock()
+            .await
+            .get(task_id)
+            .map(|t| t.progress.clone())
     }
 }
 
@@ -928,6 +939,45 @@ async fn get_task_handler(
     }))
 }
 
+#[derive(Serialize)]
+struct TaskProgressResponse {
+    task_id: String,
+    status: String,
+    stage: String,
+    reg_ok: usize,
+    reg_failed: usize,
+    rt_ok: usize,
+    rt_failed: usize,
+    s2a_ok: usize,
+    s2a_failed: usize,
+    target: usize,
+}
+
+async fn task_progress_handler(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let task = state
+        .task_manager
+        .get(&task_id)
+        .await
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("任务不存在: {task_id}")))?;
+
+    let p = &task.progress;
+    Ok(Json(TaskProgressResponse {
+        task_id: task.task_id,
+        status: task.status.to_string(),
+        stage: p.get_stage(),
+        reg_ok: p.reg_ok.load(Ordering::Relaxed),
+        reg_failed: p.reg_failed.load(Ordering::Relaxed),
+        rt_ok: p.rt_ok.load(Ordering::Relaxed),
+        rt_failed: p.rt_failed.load(Ordering::Relaxed),
+        s2a_ok: p.s2a_ok.load(Ordering::Relaxed),
+        s2a_failed: p.s2a_failed.load(Ordering::Relaxed),
+        target: task.target,
+    }))
+}
+
 async fn cancel_task_handler(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
@@ -1061,10 +1111,11 @@ async fn execute_task(
         use_chatgpt_mail,
     };
 
+    let progress = task_manager.get_progress(&task_id).await;
     let started = std::time::Instant::now();
     let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, proxy_pool);
     match runner
-        .run_one_team(&cfg, &team, &options, cancel_flag.clone())
+        .run_one_team(&cfg, &team, &options, cancel_flag.clone(), progress)
         .await
     {
         Ok(report) => {
@@ -1708,6 +1759,7 @@ pub async fn start_server(
         .route("/api/tasks", post(create_task_handler))
         .route("/api/tasks", get(list_tasks_handler))
         .route("/api/tasks/{task_id}", get(get_task_handler))
+        .route("/api/tasks/{task_id}/progress", get(task_progress_handler))
         .route("/api/tasks/{task_id}/cancel", post(cancel_task_handler))
         // Schedule management
         .route("/api/schedules", get(list_schedules_handler))

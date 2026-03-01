@@ -322,7 +322,7 @@ async fn run(
     };
     let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, proxy_pool);
     let report = runner
-        .run_one_team(&cfg, &selected_team, &options, cancel_flag.clone())
+        .run_one_team(&cfg, &selected_team, &options, cancel_flag.clone(), None)
         .await?;
 
     if cancel_flag.load(Ordering::Relaxed) {

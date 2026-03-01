@@ -96,7 +96,7 @@ pub async fn run_distribution(
         schedule.target_count
     ));
     let reg_result = match runner
-        .run_register_and_rt(cfg, &options, cancel_flag.clone())
+        .run_register_and_rt(cfg, &options, cancel_flag.clone(), None)
         .await
     {
         Ok(r) => r,
@@ -181,7 +181,7 @@ pub async fn run_distribution(
         ));
 
         let (ok, failed) = if options.push_s2a && !accounts.is_empty() {
-            runner.push_to_s2a(team_cfg, accounts.clone()).await
+            runner.push_to_s2a(team_cfg, accounts.clone(), None).await
         } else {
             (0, 0)
         };
