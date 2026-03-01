@@ -5,6 +5,23 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RunStats {
+    pub total_runs: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub running: usize,
+    pub total_target: usize,
+    pub total_reg_ok: usize,
+    pub total_reg_failed: usize,
+    pub total_rt_ok: usize,
+    pub total_rt_failed: usize,
+    pub total_s2a_ok: usize,
+    pub total_s2a_failed: usize,
+    pub total_elapsed_secs: f64,
+    pub avg_secs_per_account: f64,
+}
+
 pub struct RunHistoryDb {
     conn: Mutex<Connection>,
 }
@@ -198,6 +215,46 @@ impl RunHistoryDb {
             params![run_id, team, assigned as i64, ok as i64, failed as i64,],
         )?;
         Ok(())
+    }
+
+    /// 聚合统计所有完成的运行记录
+    pub fn run_stats(&self) -> Result<RunStats> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT
+                COUNT(*) AS total_runs,
+                SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status='running' THEN 1 ELSE 0 END),
+                SUM(target_count),
+                SUM(registered_ok),
+                SUM(registered_failed),
+                SUM(rt_ok),
+                SUM(rt_failed),
+                SUM(total_s2a_ok),
+                SUM(total_s2a_failed),
+                SUM(elapsed_secs),
+                AVG(CASE WHEN status='completed' AND target_count>0 THEN elapsed_secs/target_count END)
+            FROM runs",
+        )?;
+        let stats = stmt.query_row([], |row| {
+            Ok(RunStats {
+                total_runs: row.get::<_, i64>(0).unwrap_or(0) as usize,
+                completed: row.get::<_, i64>(1).unwrap_or(0) as usize,
+                failed: row.get::<_, i64>(2).unwrap_or(0) as usize,
+                running: row.get::<_, i64>(3).unwrap_or(0) as usize,
+                total_target: row.get::<_, i64>(4).unwrap_or(0) as usize,
+                total_reg_ok: row.get::<_, i64>(5).unwrap_or(0) as usize,
+                total_reg_failed: row.get::<_, i64>(6).unwrap_or(0) as usize,
+                total_rt_ok: row.get::<_, i64>(7).unwrap_or(0) as usize,
+                total_rt_failed: row.get::<_, i64>(8).unwrap_or(0) as usize,
+                total_s2a_ok: row.get::<_, i64>(9).unwrap_or(0) as usize,
+                total_s2a_failed: row.get::<_, i64>(10).unwrap_or(0) as usize,
+                total_elapsed_secs: row.get::<_, f64>(11).unwrap_or(0.0),
+                avg_secs_per_account: row.get::<_, f64>(12).unwrap_or(0.0),
+            })
+        })?;
+        Ok(stats)
     }
 
     pub fn list_runs(

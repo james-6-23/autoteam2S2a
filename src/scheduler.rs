@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use chrono::NaiveTime;
+use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::config::ScheduleConfig;
@@ -12,9 +13,22 @@ use crate::server::AppState;
 
 // ─── Scheduler state ─────────────────────────────────────────────────────────
 
+struct ActiveEntry {
+    cancel_flag: Arc<AtomicBool>,
+    batch_num: Arc<AtomicU64>,
+    /// 下一批次开始时间的 unix timestamp (0 = 执行中)
+    next_batch_ts: Arc<AtomicU64>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ScheduleRunInfo {
+    pub batch_num: u64,
+    pub next_batch_at: Option<String>,
+}
+
 /// 跟踪当前活跃的定时计划（正在执行批次循环的计划）
 pub struct SchedulerState {
-    active: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    active: Mutex<HashMap<String, ActiveEntry>>,
 }
 
 impl SchedulerState {
@@ -25,21 +39,30 @@ impl SchedulerState {
     }
 
     /// 尝试启动一个计划。如果已在运行则返回 None。
-    pub async fn start(&self, name: &str) -> Option<Arc<AtomicBool>> {
+    pub async fn start(&self, name: &str) -> Option<(Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>)> {
         let mut active = self.active.lock().await;
         if active.contains_key(name) {
             return None;
         }
         let flag = Arc::new(AtomicBool::new(false));
-        active.insert(name.to_string(), flag.clone());
-        Some(flag)
+        let batch_num = Arc::new(AtomicU64::new(0));
+        let next_batch_ts = Arc::new(AtomicU64::new(0));
+        active.insert(
+            name.to_string(),
+            ActiveEntry {
+                cancel_flag: flag.clone(),
+                batch_num: batch_num.clone(),
+                next_batch_ts: next_batch_ts.clone(),
+            },
+        );
+        Some((flag, batch_num, next_batch_ts))
     }
 
     /// 停止一个正在运行的计划
     pub async fn stop(&self, name: &str) -> bool {
         let active = self.active.lock().await;
-        if let Some(flag) = active.get(name) {
-            flag.store(true, Ordering::SeqCst);
+        if let Some(entry) = active.get(name) {
+            entry.cancel_flag.store(true, Ordering::SeqCst);
             true
         } else {
             false
@@ -59,6 +82,27 @@ impl SchedulerState {
     /// 获取所有活跃计划名
     pub async fn active_names(&self) -> Vec<String> {
         self.active.lock().await.keys().cloned().collect()
+    }
+
+    /// 获取运行中计划的批次信息
+    pub async fn run_info(&self, name: &str) -> Option<ScheduleRunInfo> {
+        let active = self.active.lock().await;
+        active.get(name).map(|e| {
+            let ts = e.next_batch_ts.load(Ordering::Relaxed);
+            let next = if ts > 0 {
+                chrono::DateTime::from_timestamp(ts as i64, 0)
+                    .map(|dt| {
+                        let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+                        dt.with_timezone(&tz).format("%H:%M:%S").to_string()
+                    })
+            } else {
+                None
+            };
+            ScheduleRunInfo {
+                batch_num: e.batch_num.load(Ordering::Relaxed),
+                next_batch_at: next,
+            }
+        })
     }
 }
 
@@ -121,7 +165,7 @@ async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
 
             if in_window && !is_active {
                 // 进入时间窗口且未运行 → 启动批次循环
-                if let Some(cancel_flag) = state.scheduler_state.start(&schedule_cfg.name).await {
+                if let Some((cancel_flag, batch_num, next_ts)) = state.scheduler_state.start(&schedule_cfg.name).await {
                     broadcast_log(&format!(
                         "[调度器] 进入时间窗口，启动计划: {} ({}-{})",
                         schedule_cfg.name, schedule_cfg.start_time, schedule_cfg.end_time
@@ -132,7 +176,7 @@ async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
                     let schedule_clone = schedule_cfg.clone();
 
                     tokio::spawn(async move {
-                        run_batch_loop(state_clone, db_clone, schedule_clone, cancel_flag).await;
+                        run_batch_loop(state_clone, db_clone, schedule_clone, cancel_flag, batch_num, next_ts).await;
                     });
                 }
             }
@@ -147,9 +191,9 @@ async fn run_batch_loop(
     db: Arc<RunHistoryDb>,
     schedule: ScheduleConfig,
     cancel_flag: Arc<AtomicBool>,
+    batch_counter: Arc<AtomicU64>,
+    next_batch_ts: Arc<AtomicU64>,
 ) {
-    let mut batch_num = 0u64;
-
     broadcast_log(&format!(
         "[调度器] {} 批次循环开始 (每批 {} 个, 间隔 {} 分钟)",
         schedule.name, schedule.target_count, schedule.batch_interval_mins
@@ -168,7 +212,8 @@ async fn run_batch_loop(
             break;
         }
 
-        batch_num += 1;
+        let batch_num = batch_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        next_batch_ts.store(0, Ordering::Relaxed); // 0 = 执行中
         broadcast_log(&format!(
             "[调度器] {} 开始第 {} 批次（每批 {} 个）",
             schedule.name, batch_num, schedule.target_count
@@ -226,6 +271,10 @@ async fn run_batch_loop(
         let check_interval = tokio::time::Duration::from_secs(5);
         let mut elapsed = std::time::Duration::ZERO;
 
+        // 记录下一批次预计时间
+        let next_ts = chrono::Utc::now().timestamp() as u64 + schedule.batch_interval_mins * 60;
+        next_batch_ts.store(next_ts, Ordering::Relaxed);
+
         broadcast_log(&format!(
             "[调度器] {} 等待 {} 分钟后执行下一批...",
             schedule.name, schedule.batch_interval_mins
@@ -256,6 +305,6 @@ async fn run_batch_loop(
     state.scheduler_state.remove(&schedule.name).await;
     broadcast_log(&format!(
         "[调度器] {} 批次循环结束（共执行 {} 批）",
-        schedule.name, batch_num
+        schedule.name, batch_counter.load(Ordering::Relaxed)
     ));
 }

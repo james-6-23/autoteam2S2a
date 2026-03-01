@@ -365,10 +365,58 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <button onclick="hideAddScheduleForm()" class="btn btn-ghost">取消</button>
     </div>
   </div>
+  <div id="edit-schedule-form" class="card p-5 hidden">
+    <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">编辑计划: <span id="es-name" class="text-amber-400"></span></div>
+      <button onclick="document.getElementById('edit-schedule-form').classList.add('hidden')" class="btn btn-ghost text-xs py-1">关闭</button>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div><label class="field-label">开始时间</label><input id="es-start" class="field-input" type="time"></div>
+      <div><label class="field-label">结束时间</label><input id="es-end" class="field-input" type="time"></div>
+      <div><label class="field-label">每批数量</label><input id="es-target" type="number" min="1" class="field-input"></div>
+      <div><label class="field-label">批次间隔(分)</label><input id="es-interval" type="number" min="1" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">RT 重试</label><input id="es-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div class="flex items-center gap-4 pt-5">
+        <label class="flex items-center gap-2 text-xs text-dim-1"><input id="es-push-s2a" type="checkbox" checked> S2A</label>
+        <label class="flex items-center gap-2 text-xs text-dim-1"><input id="es-enabled" type="checkbox" checked> 启用</label>
+      </div>
+    </div>
+    <div class="mt-4">
+      <div class="flex items-center justify-between mb-2">
+        <label class="field-label mb-0">分发 (总和=100%)</label>
+        <button onclick="addEditDistRow('',100)" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 号池</button>
+      </div>
+      <div id="es-dist-rows" class="space-y-2"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitEditSchedule()" class="btn btn-amber">保存</button>
+      <button onclick="document.getElementById('edit-schedule-form').classList.add('hidden')" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
 </div>
 
 <!-- Runs -->
 <div id="panel-runs" class="hidden animate-enter space-y-4">
+  <div id="run-stats-card" class="card p-4">
+    <div class="grid grid-cols-3 md:grid-cols-6 gap-3 mb-3">
+      <div class="card-inner p-3 text-center"><div class="field-label">总运行</div><div id="rs-total" class="stat-num text-base c-heading">-</div></div>
+      <div class="card-inner p-3 text-center"><div class="field-label">成功/失败</div><div class="stat-num text-base"><span id="rs-ok" class="text-teal-400">-</span><span class="text-dim">/</span><span id="rs-fail" class="text-red-400">-</span></div></div>
+      <div class="card-inner p-3 text-center"><div class="field-label">注册总量</div><div class="stat-num text-base"><span id="rs-reg" class="c-heading">-</span><span class="text-dim text-xs" id="rs-reg-rate"></span></div></div>
+      <div class="card-inner p-3 text-center"><div class="field-label">RT 总量</div><div class="stat-num text-base"><span id="rs-rt" class="c-heading">-</span><span class="text-dim text-xs" id="rs-rt-rate"></span></div></div>
+      <div class="card-inner p-3 text-center"><div class="field-label">S2A 入库</div><div class="stat-num text-base"><span id="rs-s2a" class="text-teal-400">-</span><span class="text-dim text-xs" id="rs-s2a-rate"></span></div></div>
+      <div class="card-inner p-3 text-center"><div class="field-label">平均耗时</div><div id="rs-avg" class="stat-num text-base text-amber-400">-</div></div>
+    </div>
+    <div class="flex items-center gap-4 text-[.7rem] text-dim">
+      <span>总目标 <span class="font-mono c-heading" id="rs-target">-</span></span>
+      <span>注册失败 <span class="font-mono text-red-400" id="rs-reg-fail">-</span></span>
+      <span>RT 失败 <span class="font-mono text-red-400" id="rs-rt-fail">-</span></span>
+      <span>S2A 失败 <span class="font-mono text-red-400" id="rs-s2a-fail">-</span></span>
+      <span>总耗时 <span class="font-mono c-heading" id="rs-elapsed">-</span></span>
+    </div>
+  </div>
   <div class="card p-5">
     <div class="flex items-center justify-between mb-4">
       <div class="section-title mb-0">运行记录</div>
@@ -410,7 +458,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
         <button onclick="clearLogs()" class="btn btn-ghost text-xs py-1 px-2">清空</button>
       </div>
     </div>
-    <div id="log-container" style="background:#0a0a0c;border:1px solid var(--border);border-radius:8px;height:520px;overflow-y:auto;padding:12px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.7;color:#c8c8d0;scroll-behavior:smooth"></div>
+    <pre id="log-container" style="background:#0a0a0c;border:1px solid var(--border);border-radius:8px;height:calc(100vh - 210px);min-height:400px;overflow-y:auto;padding:12px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;color:#c8c8d0;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
   </div>
 </div>
 
@@ -474,7 +522,7 @@ function switchTab(name){
   if(name==='tasks'){refreshTasks();startTaskPoll()}else{stopTaskPoll()}
   if(name==='dashboard'||name==='teams'||name==='config') loadConfig();
   if(name==='schedules'){loadSchedules();startSchedulePoll()}else{stopSchedulePoll()}
-  if(name==='runs'){loadRunsFilter();loadRuns(1)}
+  if(name==='runs'){loadRunStats();loadRunsFilter();loadRuns(1)}
   if(name==='logs') connectLogStream();
 }
 
@@ -678,11 +726,27 @@ async function quickCreateTask(){
 }
 async function refreshTasks(){
   try{
-    const d=await api('/api/tasks');const el=document.getElementById('task-list');
-    const running=d.tasks.filter(t=>t.status==='running'||t.status==='pending').length;
-    document.getElementById('stat-running').textContent=running;
-    if(!d.tasks.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无任务</p>';return}
-    el.innerHTML=d.tasks.map(t=>{
+    const [d, sd]=await Promise.all([api('/api/tasks'), api('/api/schedules').catch(()=>({schedules:[]}))]);
+    const el=document.getElementById('task-list');
+    const runningTasks=d.tasks.filter(t=>t.status==='running'||t.status==='pending').length;
+    const runningScheds=(sd.schedules||[]).filter(s=>s.running);
+    document.getElementById('stat-running').textContent=runningTasks+runningScheds.length;
+    let html='';
+    // running schedules
+    if(runningScheds.length){
+      html+=runningScheds.map(s=>`<div class="row-item flex items-center justify-between">
+        <div class="flex items-center gap-3 flex-1 min-w-0">
+          <span class="badge badge-run">调度中</span>
+          <span class="text-xs font-medium c-heading">${s.name}</span>
+          <span class="text-xs text-dim">x${s.target_count}/批</span>
+          <span class="text-xs text-dim">${s.start_time}-${s.end_time}</span>
+          <span class="text-xs text-dim">间隔 ${s.batch_interval_mins}m</span>
+        </div>
+        <button onclick="event.stopPropagation();stopSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">停止</button>
+      </div>`).join('');
+    }
+    // manual tasks
+    html+=d.tasks.map(t=>{
       const bc={pending:'badge-warn',running:'badge-run',completed:'badge-ok',failed:'badge-err',cancelled:'badge-off'};
       const lb={pending:'等待',running:'运行',completed:'完成',failed:'失败',cancelled:'取消'};
       const cc=t.status==='pending'||t.status==='running';
@@ -697,6 +761,8 @@ async function refreshTasks(){
         </div>
         ${cc?`<button onclick="event.stopPropagation();cancelTask('${t.task_id}')" class="btn btn-danger text-xs py-1 px-2">取消</button>`:''}
       </div>`}).join('');
+    if(!html) html='<p class="text-sm text-dim text-center py-8">暂无任务</p>';
+    el.innerHTML=html;
   }catch{}
 }
 async function showTaskDetail(taskId){
@@ -721,7 +787,19 @@ async function loadSchedules(){
     const startBtn=s.running
       ?`<button onclick="stopSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">停止</button>`
       :`<button onclick="triggerSchedule('${s.name}')" class="btn btn-ghost text-xs py-1 px-2">启动</button>`;
-    return `<div class="row-item">
+    // 运行信息
+    let runHtml='';
+    if(s.running&&s.run_info){
+      const ri=s.run_info;
+      const batchTxt=ri.batch_num>0?`第 ${ri.batch_num} 批`:'准备中';
+      const nextTxt=ri.next_batch_at?`下批 ${ri.next_batch_at}`:'执行中...';
+      runHtml=`<div class="flex items-center gap-3 mt-1.5 text-xs">
+        <span class="text-amber-400 font-medium">${batchTxt}</span>
+        <span class="text-dim font-mono">${nextTxt}</span>
+      </div>`;
+    }
+    const esc=n=>n.replace(/'/g,"\\'");
+    return `<div class="row-item" style="padding:10px 14px">
       <div class="flex items-center justify-between mb-1.5">
         <div class="flex items-center gap-2.5">
           <span class="text-sm font-medium c-heading">${s.name}</span>
@@ -730,18 +808,19 @@ async function loadSchedules(){
         </div>
         <div class="flex items-center gap-1">
           ${startBtn}
-          <button onclick="toggleSchedule('${s.name}')" class="btn btn-ghost text-xs py-1 px-2">${s.enabled?'禁用':'启用'}</button>
-          <button onclick="deleteSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
+          <button onclick="editSchedule('${esc(s.name)}')" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
+          <button onclick="toggleSchedule('${esc(s.name)}')" class="btn btn-ghost text-xs py-1 px-2">${s.enabled?'禁用':'启用'}</button>
+          <button onclick="deleteSchedule('${esc(s.name)}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
         </div>
       </div>
-      <div class="flex items-center gap-4 text-xs text-dim">
+      <div class="flex items-center gap-4 text-xs text-dim flex-wrap">
         <span>每批 <span class="font-mono text-dim-2">${s.target_count}</span></span>
         <span>间隔 <span class="font-mono text-dim-2">${s.batch_interval_mins}分</span></span>
         <span>注册 <span class="font-mono text-dim-2">${s.register_workers||'默认'}</span></span>
         <span>RT <span class="font-mono text-dim-2">${s.rt_workers||'默认'}</span></span>
         <span>邮箱 <span class="text-dim-2">${s.use_chatgpt_mail?'chatgpt':'kyx'}</span></span>
-      </div>
-      <div class="mt-1.5 text-xs text-dim">分发 <span class="text-dim-2 font-mono">${dt||'无'}</span></div>
+        <span>分发 <span class="text-dim-2 font-mono">${dt||'无'}</span></span>
+      </div>${runHtml}
     </div>`}).join('')}catch{}
 }
 function showAddScheduleForm(){document.getElementById('add-schedule-form').classList.remove('hidden');const r=document.getElementById('sched-dist-rows');if(!r.children.length) addDistRow()}
@@ -771,12 +850,89 @@ async function toggleSchedule(n){try{const d=await api(`/api/schedules/${encodeU
 async function triggerSchedule(n){if(!confirm(`手动启动 "${n}" 的批次循环?`))return;try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/trigger`,{method:'POST'});toast(d.message,'success');startSchedulePoll();loadSchedules()}catch{}}
 async function stopSchedule(n){if(!confirm(`停止 "${n}"?`))return;try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/stop`,{method:'POST'});toast(d.message,'success');loadSchedules()}catch{}}
 async function deleteSchedule(n){if(!confirm(`删除 "${n}"?`))return;try{await api(`/api/schedules/${encodeURIComponent(n)}`,{method:'DELETE'});toast(`${n} 已删除`,'success');loadSchedules()}catch{}}
+// Edit schedule
+let editSchedName=null;
+async function editSchedule(name){
+  editSchedName=name;
+  try{const d=await api('/api/schedules');
+  const s=d.schedules.find(x=>x.name===name);if(!s) return;
+  const f=document.getElementById('edit-schedule-form');
+  f.classList.remove('hidden');
+  document.getElementById('es-name').textContent=name;
+  document.getElementById('es-start').value=s.start_time;
+  document.getElementById('es-end').value=s.end_time;
+  document.getElementById('es-target').value=s.target_count;
+  document.getElementById('es-interval').value=s.batch_interval_mins;
+  document.getElementById('es-reg-workers').value=s.register_workers||'';
+  document.getElementById('es-rt-workers').value=s.rt_workers||'';
+  document.getElementById('es-rt-retries').value=s.rt_retries||'';
+  document.getElementById('es-mail').value=s.use_chatgpt_mail?'true':'false';
+  document.getElementById('es-push-s2a').checked=s.push_s2a;
+  document.getElementById('es-enabled').checked=s.enabled;
+  // dist rows
+  const rows=document.getElementById('es-dist-rows');rows.innerHTML='';
+  editDistCount=0;
+  s.distribution.forEach(d=>addEditDistRow(d.team,d.percent));
+  f.scrollIntoView({behavior:'smooth'});}catch{}
+}
+let editDistCount=0;
+function addEditDistRow(team,pct){
+  const id=editDistCount++;const rows=document.getElementById('es-dist-rows');
+  const opts=(configData?.teams||[]).map(t=>`<option value="${t.name}" ${t.name===team?'selected':''}>${t.name}</option>`).join('');
+  const row=document.createElement('div');row.className='flex items-center gap-2';row.id=`es-dist-row-${id}`;
+  row.innerHTML=`<select class="es-dist-team field-input flex-1">${opts}</select><input class="es-dist-percent field-input w-24" type="number" min="1" max="100" value="${pct||100}"><button onclick="document.getElementById('es-dist-row-${id}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
+  rows.appendChild(row);
+}
+async function submitEditSchedule(){
+  if(!editSchedName) return;
+  const body={
+    start_time:document.getElementById('es-start').value,
+    end_time:document.getElementById('es-end').value,
+    target_count:parseInt(document.getElementById('es-target').value),
+    batch_interval_mins:parseInt(document.getElementById('es-interval').value)||30,
+    push_s2a:document.getElementById('es-push-s2a').checked,
+    use_chatgpt_mail:document.getElementById('es-mail').value==='true',
+    enabled:document.getElementById('es-enabled').checked
+  };
+  const rw=document.getElementById('es-reg-workers').value,rtw=document.getElementById('es-rt-workers').value,rtr=document.getElementById('es-rt-retries').value;
+  if(rw) body.register_workers=parseInt(rw);if(rtw) body.rt_workers=parseInt(rtw);if(rtr) body.rt_retries=parseInt(rtr);
+  const distribution=[];
+  document.querySelectorAll('#es-dist-rows > div').forEach(r=>{const t=r.querySelector('.es-dist-team').value,p=parseInt(r.querySelector('.es-dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
+  const tot=distribution.reduce((s,d)=>s+d.percent,0);
+  if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
+  body.distribution=distribution;
+  try{await api(`/api/schedules/${encodeURIComponent(editSchedName)}`,{method:'PUT',body});toast('已更新','success');document.getElementById('edit-schedule-form').classList.add('hidden');loadSchedules()}catch{}
+}
 let schedPollTimer=null;
 function startSchedulePoll(){stopSchedulePoll();schedPollTimer=setInterval(loadSchedules,5000)}
 function stopSchedulePoll(){if(schedPollTimer){clearInterval(schedPollTimer);schedPollTimer=null}}
 
 // Runs
 let currentRunPage=1;
+async function loadRunStats(){
+  try{
+    const s=await api('/api/runs/stats');
+    document.getElementById('rs-total').textContent=s.total_runs;
+    document.getElementById('rs-ok').textContent=s.completed;
+    document.getElementById('rs-fail').textContent=s.failed;
+    document.getElementById('rs-reg').textContent=s.total_reg_ok;
+    const regAll=s.total_reg_ok+s.total_reg_failed;
+    document.getElementById('rs-reg-rate').textContent=regAll>0?` ${Math.round(s.total_reg_ok/regAll*100)}%`:'';
+    document.getElementById('rs-reg-fail').textContent=s.total_reg_failed;
+    document.getElementById('rs-rt').textContent=s.total_rt_ok;
+    const rtAll=s.total_rt_ok+s.total_rt_failed;
+    document.getElementById('rs-rt-rate').textContent=rtAll>0?` ${Math.round(s.total_rt_ok/rtAll*100)}%`:'';
+    document.getElementById('rs-rt-fail').textContent=s.total_rt_failed;
+    document.getElementById('rs-s2a').textContent=s.total_s2a_ok;
+    const s2aAll=s.total_s2a_ok+s.total_s2a_failed;
+    document.getElementById('rs-s2a-rate').textContent=s2aAll>0?` ${Math.round(s.total_s2a_ok/s2aAll*100)}%`:'';
+    document.getElementById('rs-s2a-fail').textContent=s.total_s2a_failed;
+    document.getElementById('rs-avg').textContent=s.avg_secs_per_account>0?s.avg_secs_per_account.toFixed(1)+'s/个':'-';
+    document.getElementById('rs-target').textContent=s.total_target;
+    const h=Math.floor(s.total_elapsed_secs/3600),m=Math.floor((s.total_elapsed_secs%3600)/60);
+    document.getElementById('rs-elapsed').textContent=h>0?`${h}h${m}m`:`${m}m`;
+  }catch{}
+}
 async function loadRunsFilter(){try{const d=await api('/api/schedules');const s=document.getElementById('runs-filter');const p=s.value;s.innerHTML='<option value="">全部</option>'+(d.schedules||[]).map(s=>`<option value="${s.name}">${s.name}</option>`).join('');s.value=p}catch{}}
 function fmtBjTime(iso){
   try{const d=new Date(iso);const utc=d.getTime()+d.getTimezoneOffset()*60000;const bj=new Date(utc+8*3600000);
@@ -876,8 +1032,23 @@ async function showRunDetail(runId){
 }
 function hideRunDetail(){document.getElementById('run-detail-panel').classList.add('hidden')}
 
-// Logs SSE
-let logEs=null;let logAutoScroll=true;let logLineCount=0;const LOG_MAX_LINES=2000;
+// Logs SSE — text buffer + batched RAF for performance
+let logEs=null;let logAutoScroll=true;let logLineCount=0;
+const LOG_MAX_LINES=800;
+let logLines=[];let logPending=[];let logRafId=null;
+function flushLogs(){
+  logRafId=null;
+  if(!logPending.length) return;
+  const batch=logPending.splice(0);
+  logLines.push(...batch);
+  logLineCount+=batch.length;
+  // trim oldest
+  if(logLines.length>LOG_MAX_LINES){logLines=logLines.slice(-LOG_MAX_LINES)}
+  const container=document.getElementById('log-container');
+  container.textContent=logLines.join('\n');
+  document.getElementById('log-count').textContent=logLineCount+' 条';
+  if(logAutoScroll) container.scrollTop=container.scrollHeight;
+}
 function connectLogStream(){
   if(logEs&&logEs.readyState!==EventSource.CLOSED) return;
   const status=document.getElementById('log-status');
@@ -885,22 +1056,8 @@ function connectLogStream(){
   logEs=new EventSource(API+'/api/logs/stream');
   logEs.onopen=()=>{status.textContent='已连接';status.style.color='#2dd4bf'};
   logEs.onmessage=(e)=>{
-    const container=document.getElementById('log-container');
-    const line=document.createElement('div');
-    line.style.cssText='padding:1px 0;border-bottom:1px solid rgba(255,255,255,.03);word-break:break-all';
-    const text=e.data;
-    if(text.includes('[ERR]')||text.includes('失败')){line.style.color='#f87171'}
-    else if(text.includes('[OK]')||text.includes('成功')||text.includes('完成')){line.style.color='#34d399'}
-    else if(text.includes('[调度器]')){line.style.color='#fbbf24'}
-    else if(text.includes('[分发]')){line.style.color='#60a5fa'}
-    else if(text.includes('[S2A')){line.style.color='#a78bfa'}
-    line.textContent=text;
-    container.appendChild(line);
-    logLineCount++;
-    // 超过上限时删除最早的行
-    while(container.children.length>LOG_MAX_LINES){container.removeChild(container.firstChild)}
-    document.getElementById('log-count').textContent=logLineCount+' 条';
-    if(logAutoScroll) container.scrollTop=container.scrollHeight;
+    logPending.push(e.data);
+    if(!logRafId) logRafId=requestAnimationFrame(flushLogs);
   };
   logEs.onerror=()=>{
     status.textContent='已断开';status.style.color='#f87171';
@@ -910,13 +1067,12 @@ function connectLogStream(){
 }
 function toggleLogScroll(){
   logAutoScroll=!logAutoScroll;
-  const btn=document.getElementById('log-scroll-btn');
-  btn.textContent='自动滚动: '+(logAutoScroll?'开':'关');
+  document.getElementById('log-scroll-btn').textContent='自动滚动: '+(logAutoScroll?'开':'关');
   if(logAutoScroll){const c=document.getElementById('log-container');c.scrollTop=c.scrollHeight}
 }
 function clearLogs(){
-  document.getElementById('log-container').innerHTML='';
-  logLineCount=0;document.getElementById('log-count').textContent='0 条';
+  document.getElementById('log-container').textContent='';
+  logLines=[];logPending=[];logLineCount=0;document.getElementById('log-count').textContent='0 条';
 }
 
 // Beijing clock (UTC+8)

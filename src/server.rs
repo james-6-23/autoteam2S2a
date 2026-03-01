@@ -1162,6 +1162,8 @@ struct ScheduleWithStatus {
     #[serde(flatten)]
     config: crate::config::ScheduleConfig,
     running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_info: Option<crate::scheduler::ScheduleRunInfo>,
 }
 
 #[derive(Serialize)]
@@ -1181,15 +1183,20 @@ struct RunListResponse {
 
 async fn list_schedules_handler(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.config.read().await;
-    let active_names = state.scheduler_state.active_names().await;
-    let schedules = cfg
-        .schedule
-        .iter()
-        .map(|s| ScheduleWithStatus {
-            running: active_names.contains(&s.name),
+    let mut schedules = Vec::new();
+    for s in &cfg.schedule {
+        let running = state.scheduler_state.is_active(&s.name).await;
+        let run_info = if running {
+            state.scheduler_state.run_info(&s.name).await
+        } else {
+            None
+        };
+        schedules.push(ScheduleWithStatus {
+            running,
             config: s.clone(),
-        })
-        .collect();
+            run_info,
+        });
+    }
     Json(ScheduleListResponse { schedules })
 }
 
@@ -1385,7 +1392,7 @@ async fn trigger_schedule_handler(
         .clone();
     drop(cfg);
 
-    let cancel_flag = state
+    let (cancel_flag, batch_counter, next_batch_ts) = state
         .scheduler_state
         .start(&name)
         .await
@@ -1396,20 +1403,20 @@ async fn trigger_schedule_handler(
 
     tokio::spawn(async move {
         // 手动触发的批次循环：只检查 cancel_flag，不检查时间窗口
-        let mut batch_num = 0u64;
-        println!(
+        crate::log_broadcast::broadcast_log(&format!(
             "[手动触发] {} 批次循环开始 (每批 {} 个, 间隔 {} 分钟)",
             schedule.name, schedule.target_count, schedule.batch_interval_mins
-        );
+        ));
 
         loop {
             if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                println!("[手动触发] {} 已停止", schedule.name);
+                crate::log_broadcast::broadcast_log(&format!("[手动触发] {} 已停止", schedule.name));
                 break;
             }
 
-            batch_num += 1;
-            println!("[手动触发] {} 开始第 {} 批次", schedule.name, batch_num);
+            let batch_num = batch_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            next_batch_ts.store(0, std::sync::atomic::Ordering::Relaxed);
+            crate::log_broadcast::broadcast_log(&format!("[手动触发] {} 开始第 {} 批次", schedule.name, batch_num));
 
             let config_snapshot = state_clone.config.read().await.clone();
             let runner =
@@ -1418,7 +1425,7 @@ async fn trigger_schedule_handler(
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        println!("[手动触发] 构建 runner 失败 ({}): {e}", schedule.name);
+                        crate::log_broadcast::broadcast_log(&format!("[手动触发] 构建 runner 失败 ({}): {e}", schedule.name));
                         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                         continue;
                     }
@@ -1435,16 +1442,16 @@ async fn trigger_schedule_handler(
             .await
             {
                 Ok(report) => {
-                    println!(
+                    crate::log_broadcast::broadcast_log(&format!(
                         "[手动触发] {} 第 {} 批完成 | S2A: {} | 耗时: {:.1}s",
                         schedule.name, batch_num, report.total_s2a_ok, report.elapsed_secs
-                    );
+                    ));
                 }
                 Err(e) => {
-                    println!(
+                    crate::log_broadcast::broadcast_log(&format!(
                         "[手动触发] {} 第 {} 批失败: {e:#}",
                         schedule.name, batch_num
-                    );
+                    ));
                     if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
@@ -1455,6 +1462,9 @@ async fn trigger_schedule_handler(
             let total_wait = std::time::Duration::from_secs(schedule.batch_interval_mins * 60);
             let check_interval = tokio::time::Duration::from_secs(5);
             let mut elapsed = std::time::Duration::ZERO;
+
+            let next_ts = chrono::Utc::now().timestamp() as u64 + schedule.batch_interval_mins * 60;
+            next_batch_ts.store(next_ts, std::sync::atomic::Ordering::Relaxed);
 
             while elapsed < total_wait {
                 if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1470,10 +1480,10 @@ async fn trigger_schedule_handler(
         }
 
         state_clone.scheduler_state.remove(&schedule.name).await;
-        println!(
+        crate::log_broadcast::broadcast_log(&format!(
             "[手动触发] {} 批次循环结束（共 {} 批）",
-            schedule.name, batch_num
-        );
+            schedule.name, batch_counter.load(std::sync::atomic::Ordering::Relaxed)
+        ));
     });
 
     Ok((
@@ -1502,6 +1512,18 @@ async fn stop_schedule_handler(
 }
 
 // ─── Run history handlers ───────────────────────────────────────────────────
+
+async fn run_stats_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let stats = state.run_history_db.run_stats().map_err(|e| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("查询统计失败: {e}"),
+        )
+    })?;
+    Ok(Json(stats))
+}
 
 async fn list_runs_handler(
     State(state): State<AppState>,
@@ -1703,6 +1725,7 @@ pub async fn start_server(
         .route("/api/schedules/{name}/stop", post(stop_schedule_handler))
         // Run history
         .route("/api/runs", get(list_runs_handler))
+        .route("/api/runs/stats", get(run_stats_handler))
         .route("/api/runs/{run_id}", get(get_run_handler))
         // Log stream (SSE)
         .route("/api/logs/stream", get(log_stream_handler))
