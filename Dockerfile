@@ -5,7 +5,7 @@ RUN cargo install cargo-chef
 
 # rquest 底层 BoringSSL 编译依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake ninja-build golang-go g++ make \
+    cmake ninja-build golang-go g++ make libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
