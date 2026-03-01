@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use axum::extract::{Path, State};
@@ -499,9 +499,12 @@ async fn add_email_domain_handler(
         ));
     }
     cfg.email_domains.push(domain.clone());
-    Ok((StatusCode::CREATED, Json(MsgResponse {
-        message: format!("域名 {domain} 已添加"),
-    })))
+    Ok((
+        StatusCode::CREATED,
+        Json(MsgResponse {
+            message: format!("域名 {domain} 已添加"),
+        }),
+    ))
 }
 
 async fn delete_email_domain_handler(
@@ -555,8 +558,12 @@ async fn save_config_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let cfg = state.config.read().await;
-    let toml_str = toml::to_string_pretty(&*cfg)
-        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("序列化失败: {e}")))?;
+    let toml_str = toml::to_string_pretty(&*cfg).map_err(|e| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("序列化失败: {e}"),
+        )
+    })?;
     std::fs::write(&state.config_path, &toml_str).map_err(|e| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -592,11 +599,7 @@ async fn create_task_handler(
         teams[0].clone()
     };
 
-    let target = req
-        .target
-        .or(cfg.defaults.target_count)
-        .unwrap_or(1)
-        .max(1);
+    let target = req.target.or(cfg.defaults.target_count).unwrap_or(1).max(1);
     let register_workers = req
         .register_workers
         .or(cfg.defaults.register_workers)
@@ -1031,13 +1034,11 @@ async fn update_schedule_handler(
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("定时计划不存在: {name}")))?;
 
     if let Some(ref st) = req.start_time {
-        crate::scheduler::validate_time(st)
-            .map_err(|e| error_json(StatusCode::BAD_REQUEST, &e))?;
+        crate::scheduler::validate_time(st).map_err(|e| error_json(StatusCode::BAD_REQUEST, &e))?;
         sched.start_time = st.clone();
     }
     if let Some(ref et) = req.end_time {
-        crate::scheduler::validate_time(et)
-            .map_err(|e| error_json(StatusCode::BAD_REQUEST, &e))?;
+        crate::scheduler::validate_time(et).map_err(|e| error_json(StatusCode::BAD_REQUEST, &e))?;
         sched.end_time = et.clone();
     }
     if sched.start_time == sched.end_time {
@@ -1118,7 +1119,11 @@ async fn toggle_schedule_handler(
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("定时计划不存在: {name}")))?;
 
     sched.enabled = !sched.enabled;
-    let status = if sched.enabled { "已启用" } else { "已禁用" };
+    let status = if sched.enabled {
+        "已启用"
+    } else {
+        "已禁用"
+    };
 
     // 禁用时，如果正在运行则停止
     if !sched.enabled {
@@ -1168,10 +1173,7 @@ async fn trigger_schedule_handler(
             }
 
             batch_num += 1;
-            println!(
-                "[手动触发] {} 开始第 {} 批次",
-                schedule.name, batch_num
-            );
+            println!("[手动触发] {} 开始第 {} 批次", schedule.name, batch_num);
 
             let config_snapshot = state_clone.config.read().await.clone();
             let runner =
@@ -1203,7 +1205,10 @@ async fn trigger_schedule_handler(
                     );
                 }
                 Err(e) => {
-                    println!("[手动触发] {} 第 {} 批失败: {e:#}", schedule.name, batch_num);
+                    println!(
+                        "[手动触发] {} 第 {} 批失败: {e:#}",
+                        schedule.name, batch_num
+                    );
                     if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
@@ -1211,8 +1216,7 @@ async fn trigger_schedule_handler(
             }
 
             // 批次间等待
-            let total_wait =
-                std::time::Duration::from_secs(schedule.batch_interval_mins * 60);
+            let total_wait = std::time::Duration::from_secs(schedule.batch_interval_mins * 60);
             let check_interval = tokio::time::Duration::from_secs(5);
             let mut elapsed = std::time::Duration::ZERO;
 
@@ -1398,7 +1402,10 @@ pub async fn start_server(
         .route("/api/config/register", put(update_register_handler))
         .route("/api/config/d1_cleanup", put(update_d1_cleanup_handler))
         .route("/api/config/email_domains", post(add_email_domain_handler))
-        .route("/api/config/email_domains", delete(delete_email_domain_handler))
+        .route(
+            "/api/config/email_domains",
+            delete(delete_email_domain_handler),
+        )
         .route("/api/config/save", post(save_config_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
@@ -1410,8 +1417,14 @@ pub async fn start_server(
         .route("/api/schedules", post(create_schedule_handler))
         .route("/api/schedules/{name}", put(update_schedule_handler))
         .route("/api/schedules/{name}", delete(delete_schedule_handler))
-        .route("/api/schedules/{name}/toggle", post(toggle_schedule_handler))
-        .route("/api/schedules/{name}/trigger", post(trigger_schedule_handler))
+        .route(
+            "/api/schedules/{name}/toggle",
+            post(toggle_schedule_handler),
+        )
+        .route(
+            "/api/schedules/{name}/trigger",
+            post(trigger_schedule_handler),
+        )
         .route("/api/schedules/{name}/stop", post(stop_schedule_handler))
         // Run history
         .route("/api/runs", get(list_runs_handler))

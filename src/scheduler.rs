@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::NaiveTime;
 use tokio::sync::Mutex;
@@ -120,9 +120,7 @@ async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
 
             if in_window && !is_active {
                 // 进入时间窗口且未运行 → 启动批次循环
-                if let Some(cancel_flag) =
-                    state.scheduler_state.start(&schedule_cfg.name).await
-                {
+                if let Some(cancel_flag) = state.scheduler_state.start(&schedule_cfg.name).await {
                     println!(
                         "[调度器] 进入时间窗口，启动计划: {} ({}-{})",
                         schedule_cfg.name, schedule_cfg.start_time, schedule_cfg.end_time
@@ -183,10 +181,7 @@ async fn run_batch_loop(
             match crate::server::build_workflow_runner(&cfg, state.proxy_file.as_deref()).await {
                 Ok(r) => r,
                 Err(e) => {
-                    println!(
-                        "[调度器] 构建 runner 失败 ({}): {e}",
-                        schedule.name
-                    );
+                    println!("[调度器] 构建 runner 失败 ({}): {e}", schedule.name);
                     // 短暂等待后重试
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                     continue;
@@ -216,10 +211,7 @@ async fn run_batch_loop(
                 );
             }
             Err(e) => {
-                println!(
-                    "[调度器] {} 第 {} 批失败: {e:#}",
-                    schedule.name, batch_num
-                );
+                println!("[调度器] {} 第 {} 批失败: {e:#}", schedule.name, batch_num);
                 // 如果是被取消的，直接退出
                 if cancel_flag.load(Ordering::Relaxed) {
                     println!("[调度器] {} 已停止（运行中取消）", schedule.name);

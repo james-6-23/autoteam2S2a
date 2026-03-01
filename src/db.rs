@@ -195,13 +195,7 @@ impl RunHistoryDb {
         conn.execute(
             "UPDATE run_distributions SET assigned_count = ?3, s2a_ok = ?4, s2a_failed = ?5
              WHERE run_id = ?1 AND team_name = ?2",
-            params![
-                run_id,
-                team,
-                assigned as i64,
-                ok as i64,
-                failed as i64,
-            ],
+            params![run_id, team, assigned as i64, ok as i64, failed as i64,],
         )?;
         Ok(())
     }

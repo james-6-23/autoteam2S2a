@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -73,21 +73,27 @@ pub async fn run_distribution(
 
     let options = WorkflowOptions {
         target_count: schedule.target_count,
-        register_workers: schedule.register_workers.unwrap_or(
-            cfg.defaults.register_workers.unwrap_or(15),
-        ).max(1),
-        rt_workers: schedule.rt_workers.unwrap_or(
-            cfg.defaults.rt_workers.unwrap_or(10),
-        ).max(1),
-        rt_retry_max: schedule.rt_retries.unwrap_or(
-            cfg.defaults.rt_retries.unwrap_or(4),
-        ).max(1),
+        register_workers: schedule
+            .register_workers
+            .unwrap_or(cfg.defaults.register_workers.unwrap_or(15))
+            .max(1),
+        rt_workers: schedule
+            .rt_workers
+            .unwrap_or(cfg.defaults.rt_workers.unwrap_or(10))
+            .max(1),
+        rt_retry_max: schedule
+            .rt_retries
+            .unwrap_or(cfg.defaults.rt_retries.unwrap_or(4))
+            .max(1),
         push_s2a: schedule.push_s2a,
         use_chatgpt_mail: schedule.use_chatgpt_mail,
     };
 
     // 2. 注册 + RT
-    println!("[分发] 开始注册 + RT，目标: {} 个账号", schedule.target_count);
+    println!(
+        "[分发] 开始注册 + RT，目标: {} 个账号",
+        schedule.target_count
+    );
     let reg_result = match runner
         .run_register_and_rt(cfg, &options, cancel_flag.clone())
         .await

@@ -384,9 +384,7 @@ impl WorkflowRunner {
     ) -> Result<WorkflowReport> {
         let workflow_started = Instant::now();
 
-        let reg_result = self
-            .run_register_and_rt(cfg, options, cancel_flag)
-            .await?;
+        let reg_result = self.run_register_and_rt(cfg, options, cancel_flag).await?;
 
         let rt_ok = reg_result.rt_success.len();
         let rt_failed = reg_result.rt_failed.len();
