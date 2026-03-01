@@ -7,13 +7,22 @@ use futures::{StreamExt, stream};
 use tokio::sync::mpsc;
 
 use crate::config::{AppConfig, S2aConfig};
-use crate::models::{AccountWithRt, WorkflowReport};
+use crate::models::{AccountWithRt, RegisteredAccount, WorkflowReport};
 use crate::proxy_pool::ProxyPool;
 use crate::services::{CodexService, RegisterInput, RegisterService, S2aService};
 use crate::storage::save_json_records;
 use crate::util::{
     generate_account_seed, log_worker, log_worker_green, mask_proxy, random_delay_ms,
 };
+
+/// run_register_and_rt 的返回结果
+pub struct RegisterRtResult {
+    pub rt_success: Vec<AccountWithRt>,
+    pub rt_failed: Vec<RegisteredAccount>,
+    pub total_registered: usize,
+    pub total_reg_failed: usize,
+    pub output_files: Vec<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct WorkflowOptions {
@@ -47,21 +56,20 @@ impl WorkflowRunner {
         }
     }
 
-    pub async fn run_one_team(
+    /// 注册 + RT 流水线（不包含 S2A 入库）
+    pub async fn run_register_and_rt(
         &self,
         cfg: &AppConfig,
-        team: &S2aConfig,
         options: &WorkflowOptions,
         cancel_flag: Arc<AtomicBool>,
-    ) -> Result<WorkflowReport> {
-        let workflow_started = Instant::now();
+    ) -> Result<RegisterRtResult> {
         let target = options.target_count;
         let reg_concurrency = options.register_workers.max(1);
         let rt_concurrency = options.rt_workers.max(1);
         const MAX_ROUNDS: usize = 5;
 
         let mut all_rt_success: Vec<AccountWithRt> = Vec::new();
-        let mut all_rt_failed: Vec<crate::models::RegisteredAccount> = Vec::new();
+        let mut all_rt_failed: Vec<RegisteredAccount> = Vec::new();
         let mut total_registered = 0usize;
         let mut total_reg_failed = 0usize;
         let mut total_task_index = 0usize;
@@ -94,16 +102,14 @@ impl WorkflowRunner {
 
             // 根据邮箱系统选择生成 seeds
             let seeds = if options.use_chatgpt_mail {
-                // chatgpt.org.uk: 通过 API 为每个 seed 生成邮箱
                 let email_service = &self.register_service;
                 let mut out = Vec::with_capacity(deficit);
                 for _ in 0..deficit {
                     let proxy = self.proxy_pool.next();
                     let mut seed = generate_account_seed(&cfg.email_domains);
-                    // 使用 register_service 中的 email_service 生成邮箱
                     match email_service.generate_email(proxy.as_deref()).await {
                         Ok(Some(email)) => seed.account = email,
-                        Ok(None) => {} // fallback: keep domain-based email
+                        Ok(None) => {}
                         Err(e) => {
                             println!("[chatgpt.org.uk] 生成邮箱失败: {e}，使用域名列表邮箱");
                         }
@@ -137,11 +143,9 @@ impl WorkflowRunner {
                             let task_no = base_idx + idx + 1;
                             let cancel = cancel.clone();
                             async move {
-                                // 检查取消标志，已中断则跳过
                                 if cancel.load(Ordering::Relaxed) {
                                     return (false, task_no, seed.account);
                                 }
-                                // 注册任务启动抖动，避免同一时刻集中进入 OTP 阶段
                                 let jitter_ms = random_delay_ms(300, 1200);
                                 tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
                                 if cancel.load(Ordering::Relaxed) {
@@ -251,10 +255,10 @@ impl WorkflowRunner {
             }
         }
 
-        // 如果超出目标数（不太可能但防御性截断）
+        // 防御性截断
         all_rt_success.truncate(target);
 
-        // 根据 plan_type 动态命名输出文件
+        // 输出文件
         let plan_label = all_rt_success
             .first()
             .map(|a| {
@@ -277,23 +281,125 @@ impl WorkflowRunner {
             output_files.push(path.display().to_string());
         }
 
-        let rt_ok = all_rt_success.len();
-        let rt_failed = all_rt_failed.len();
+        Ok(RegisterRtResult {
+            rt_success: all_rt_success,
+            rt_failed: all_rt_failed,
+            total_registered,
+            total_reg_failed,
+            output_files,
+        })
+    }
 
-        // S2A 入库（含重试：最多 3 轮，每轮间隔 5 秒）
+    /// 将账号推送到单个 S2A 团队（含重试），返回 (s2a_ok, s2a_failed)
+    pub async fn push_to_s2a(
+        &self,
+        team: &S2aConfig,
+        accounts: Vec<AccountWithRt>,
+    ) -> (usize, usize) {
+        const S2A_MAX_RETRIES: usize = 3;
+        const S2A_RETRY_DELAY_SECS: u64 = 5;
+
+        if accounts.is_empty() {
+            return (0, 0);
+        }
+
+        let s2a_concurrency = team.concurrency.max(1).min(accounts.len().max(1));
         let mut s2a_ok = 0usize;
-        let mut s2a_failed = 0usize;
-        if options.push_s2a {
-            const S2A_MAX_RETRIES: usize = 3;
-            const S2A_RETRY_DELAY_SECS: u64 = 5;
+        let mut pending = accounts;
+        let mut final_failed: Vec<AccountWithRt> = Vec::new();
 
+        for retry_round in 0..S2A_MAX_RETRIES {
+            if pending.is_empty() {
+                break;
+            }
+
+            if retry_round > 0 {
+                println!(
+                    "\n  [S2A重试] 第 {}/{} 轮，等待 {}s 后重试 {} 个失败账号...",
+                    retry_round + 1,
+                    S2A_MAX_RETRIES,
+                    S2A_RETRY_DELAY_SECS,
+                    pending.len()
+                );
+                tokio::time::sleep(Duration::from_secs(S2A_RETRY_DELAY_SECS)).await;
+            }
+
+            let s2a_results = stream::iter(pending)
+                .map(|acc| {
+                    let s2a_service = Arc::clone(&self.s2a_service);
+                    let team = team.clone();
+                    async move {
+                        let ret = s2a_service.add_account(&team, &acc).await;
+                        (acc, ret)
+                    }
+                })
+                .buffer_unordered(s2a_concurrency)
+                .collect::<Vec<_>>()
+                .await;
+
+            let mut round_failed = Vec::new();
+            for (acc, ret) in s2a_results {
+                match ret {
+                    Ok(_) => {
+                        s2a_ok += 1;
+                        println!("  [S2A成功] {}", acc.account);
+                    }
+                    Err(err) => {
+                        println!("  [S2A失败] {}: {err}", acc.account);
+                        round_failed.push(acc);
+                    }
+                }
+            }
+
+            if retry_round + 1 >= S2A_MAX_RETRIES || round_failed.is_empty() {
+                final_failed = round_failed;
+                break;
+            }
+
+            pending = round_failed;
+        }
+
+        let s2a_failed = final_failed.len();
+        if !final_failed.is_empty() {
+            println!(
+                "  [S2A] 经过最多 {} 轮重试后仍有 {} 个账号失败",
+                S2A_MAX_RETRIES,
+                final_failed.len()
+            );
+        }
+        if let Ok(Some(path)) = save_json_records("accounts-s2a-failed", &final_failed) {
+            println!("  [S2A] 失败记录已保存: {}", path.display());
+        }
+
+        (s2a_ok, s2a_failed)
+    }
+
+    /// 原有入口方法：注册 + RT + 单团队 S2A 入库（保持原有签名和行为不变）
+    pub async fn run_one_team(
+        &self,
+        cfg: &AppConfig,
+        team: &S2aConfig,
+        options: &WorkflowOptions,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<WorkflowReport> {
+        let workflow_started = Instant::now();
+
+        let reg_result = self
+            .run_register_and_rt(cfg, options, cancel_flag)
+            .await?;
+
+        let rt_ok = reg_result.rt_success.len();
+        let rt_failed = reg_result.rt_failed.len();
+        let mut output_files = reg_result.output_files;
+
+        let (s2a_ok, s2a_failed) = if options.push_s2a {
             println!("阶段3: 入库 S2A [{}]", team.name);
 
-            // 过滤掉 free 账号，避免 free 账号被推入号池
+            // 过滤掉 free 账号
             let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
-                all_rt_success
-                    .iter()
-                    .cloned()
+                reg_result
+                    .rt_success
+                    .into_iter()
                     .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
 
             if !free_accounts.is_empty() {
@@ -311,85 +417,20 @@ impl WorkflowRunner {
 
             if s2a_eligible.is_empty() {
                 println!("  [S2A] 没有可入库的账号（全部为 free）");
+                (0, 0)
             } else {
                 println!(
                     "  [S2A] 准备入库 {} 个账号（已排除 {} 个 free）",
                     s2a_eligible.len(),
                     free_accounts.len()
                 );
+                self.push_to_s2a(team, s2a_eligible).await
             }
+        } else {
+            (0, 0)
+        };
 
-            let s2a_concurrency = team.concurrency.max(1).min(s2a_eligible.len().max(1));
-
-            let mut pending: Vec<AccountWithRt> = s2a_eligible;
-            let mut final_failed: Vec<AccountWithRt> = Vec::new();
-
-            for retry_round in 0..S2A_MAX_RETRIES {
-                if pending.is_empty() {
-                    break;
-                }
-
-                if retry_round > 0 {
-                    println!(
-                        "\n  [S2A重试] 第 {}/{} 轮，等待 {}s 后重试 {} 个失败账号...",
-                        retry_round + 1,
-                        S2A_MAX_RETRIES,
-                        S2A_RETRY_DELAY_SECS,
-                        pending.len()
-                    );
-                    tokio::time::sleep(Duration::from_secs(S2A_RETRY_DELAY_SECS)).await;
-                }
-
-                let s2a_results = stream::iter(pending)
-                    .map(|acc| {
-                        let s2a_service = Arc::clone(&self.s2a_service);
-                        let team = team.clone();
-                        async move {
-                            let ret = s2a_service.add_account(&team, &acc).await;
-                            (acc, ret)
-                        }
-                    })
-                    .buffer_unordered(s2a_concurrency)
-                    .collect::<Vec<_>>()
-                    .await;
-
-                let mut round_failed = Vec::new();
-                for (acc, ret) in s2a_results {
-                    match ret {
-                        Ok(_) => {
-                            s2a_ok += 1;
-                            println!("  [S2A成功] {}", acc.account);
-                        }
-                        Err(err) => {
-                            println!("  [S2A失败] {}: {err}", acc.account);
-                            round_failed.push(acc);
-                        }
-                    }
-                }
-
-                // 如果是最后一轮或者没有失败的，收集最终失败列表
-                if retry_round + 1 >= S2A_MAX_RETRIES || round_failed.is_empty() {
-                    final_failed = round_failed;
-                    break;
-                }
-
-                pending = round_failed;
-            }
-
-            s2a_failed = final_failed.len();
-            if !final_failed.is_empty() {
-                println!(
-                    "  [S2A] 经过最多 {} 轮重试后仍有 {} 个账号失败",
-                    S2A_MAX_RETRIES,
-                    final_failed.len()
-                );
-            }
-            if let Some(path) = save_json_records("accounts-s2a-failed", &final_failed)? {
-                output_files.push(path.display().to_string());
-            }
-        }
-
-        // S2A 入库完成后，执行 D1 邮件清理
+        // D1 清理
         if cfg.d1_cleanup.enabled.unwrap_or(false) {
             println!("\n阶段4: D1 邮件清理");
             if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
@@ -398,8 +439,8 @@ impl WorkflowRunner {
         }
 
         Ok(WorkflowReport {
-            registered_ok: total_registered,
-            registered_failed: total_reg_failed,
+            registered_ok: reg_result.total_registered,
+            registered_failed: reg_result.total_reg_failed,
             rt_ok,
             rt_failed,
             s2a_ok,

@@ -1,0 +1,30 @@
+services:
+  autoteam2s2a:
+    build: .
+    container_name: autoteam2s2a
+    restart: unless-stopped
+    ports:
+      - "3456:3456"
+    volumes:
+      # 配置持久化目录（管理面板"保存到文件"会写入此处，首次启动无需预备 config.toml）
+      - autoteam2s2a-config:/app/config
+      # SQLite 数据库持久化（运行记录）
+      - autoteam2s2a-data:/app/data
+      # 输出文件持久化（accounts JSON）
+      - ./accounts:/app/accounts
+      # 代理文件（可选）
+      # - ./proxy.txt:/app/proxy.txt:ro
+    # 使用代理文件时取消注释下行
+    # command: ["serve", "--config", "/app/config/config.toml", "--host", "0.0.0.0", "--port", "3456", "--proxy-file", "/app/proxy.txt"]
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3456/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  autoteam2s2a-config:
+  autoteam2s2a-data:

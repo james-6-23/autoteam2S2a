@@ -1,11 +1,15 @@
 mod config;
 mod d1_cleanup;
+mod db;
+mod distribution;
 #[path = "email-service.rs"]
 mod email_service;
 mod fingerprint;
 mod iban;
 mod models;
 mod proxy_pool;
+mod scheduler;
+mod server;
 mod services;
 mod storage;
 mod stripe;
@@ -70,6 +74,21 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         chatgpt_mail: bool,
     },
+    /// 启动 HTTP 服务模式（无需配置文件，可通过管理面板配置）
+    Serve {
+        /// 配置文件路径（可选，不指定则使用默认配置）
+        #[arg(short, long, default_value = "config.toml")]
+        config: PathBuf,
+        /// 监听地址
+        #[arg(long, default_value = "0.0.0.0")]
+        host: String,
+        /// 监听端口
+        #[arg(short, long, default_value_t = 3456)]
+        port: u16,
+        /// 从文件加载代理列表（每行一个代理地址）
+        #[arg(long)]
+        proxy_file: Option<PathBuf>,
+    },
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -109,6 +128,17 @@ async fn main() -> Result<()> {
                 proxy_file,
             )
             .await
+        }
+        Some(Commands::Serve {
+            config,
+            host,
+            port,
+            proxy_file,
+        }) => {
+            let cfg = config::AppConfig::load_or_default(&config);
+            let host = cfg.server.host.clone().unwrap_or(host);
+            let port = cfg.server.port.unwrap_or(port);
+            server::start_server(cfg, config.clone(), host, port, proxy_file).await
         }
     }
 }

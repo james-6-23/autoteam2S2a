@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoTeam2S2A</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config={theme:{extend:{
+  fontFamily:{sans:['DM Sans','system-ui','sans-serif'],mono:['JetBrains Mono','monospace']},
+  colors:{
+    surface:{DEFAULT:'#111113',1:'#19191d',2:'#222226',3:'#2c2c31',4:'#35353b'},
+    dim:{DEFAULT:'#65656d',1:'#8b8b93',2:'#adadb4'},
+    amber:{400:'#fbbf24',500:'#f59e0b',600:'#d97706'},
+    teal:{400:'#2dd4bf',500:'#14b8a6'},
+  },
+  animation:{
+    'enter':'enter .5s ease-out both',
+    'enter-delay-1':'enter .5s ease-out .1s both',
+    'enter-delay-2':'enter .5s ease-out .2s both',
+    'pulse-dot':'pulse-dot 2s cubic-bezier(0.4,0,0.6,1) infinite',
+  },
+  keyframes:{
+    enter:{from:{opacity:'0',transform:'translateY(12px)'},to:{opacity:'1',transform:'none'}},
+    'pulse-dot':{'0%,100%':{opacity:'1'},'50%':{opacity:'.4'}},
+  }
+}}}
+</script>
+<style>
+*{box-sizing:border-box}
+
+/* ── Theme Variables ── */
+:root{
+  color-scheme:dark;
+  --bg:#09090b;--bg-card:#18181b;--bg-inner:#1c1c20;--bg-row-hover:#222226;
+  --border:rgba(255,255,255,.06);--border-hover:rgba(255,255,255,.12);--border-input:rgba(255,255,255,.08);
+  --text:#fafafa;--text-heading:#ffffff;--text-muted:#8b8b93;--text-dim:#65656d;--text-dim2:#adadb4;
+  --input-bg:#1c1c20;--option-bg:#1c1c20;
+  --ghost:rgba(255,255,255,.04);--ghost-hover:rgba(255,255,255,.08);
+  --header-bg:rgba(9,9,11,.85);--nav-border:rgba(255,255,255,.06);
+  --grain:.03;--glow:.08;
+  --badge-off-bg:rgba(255,255,255,.04);--badge-off-border:rgba(255,255,255,.06);--badge-off-text:#65656d;
+  --toast-border:rgba(255,255,255,.08);
+  --scrollbar:rgba(255,255,255,.08);--scrollbar-hover:rgba(255,255,255,.15);
+  --domain-bg:rgba(255,255,255,.04);--domain-border:rgba(255,255,255,.06);
+}
+html.light{
+  color-scheme:light;
+  --bg:#f5f6f8;--bg-card:#ffffff;--bg-inner:#f0f1f4;--bg-row-hover:#e8eaee;
+  --border:rgba(0,0,0,.07);--border-hover:rgba(0,0,0,.13);--border-input:rgba(0,0,0,.12);
+  --text:#1c1c1e;--text-heading:#09090b;--text-muted:#6b7280;--text-dim:#9ca3af;--text-dim2:#4b5563;
+  --input-bg:#f0f1f4;--option-bg:#ffffff;
+  --ghost:rgba(0,0,0,.04);--ghost-hover:rgba(0,0,0,.08);
+  --header-bg:rgba(255,255,255,.88);--nav-border:rgba(0,0,0,.07);
+  --grain:.012;--glow:.03;
+  --badge-off-bg:rgba(0,0,0,.04);--badge-off-border:rgba(0,0,0,.07);--badge-off-text:#9ca3af;
+  --toast-border:rgba(0,0,0,.08);
+  --scrollbar:rgba(0,0,0,.1);--scrollbar-hover:rgba(0,0,0,.18);
+  --domain-bg:rgba(0,0,0,.04);--domain-border:rgba(0,0,0,.07);
+}
+html.light .badge-ok{background:rgba(20,184,166,.1);color:#0d9488;border-color:rgba(20,184,166,.25)}
+html.light .badge-warn{background:rgba(245,158,11,.1);color:#b45309;border-color:rgba(245,158,11,.25)}
+html.light .badge-run{background:rgba(59,130,246,.1);color:#2563eb;border-color:rgba(59,130,246,.25)}
+html.light .badge-err{background:rgba(239,68,68,.1);color:#dc2626;border-color:rgba(239,68,68,.25)}
+html.light .btn-danger{color:#dc2626}
+html.light .btn-danger:hover{background:rgba(239,68,68,.08)}
+html.light .toast-info{background:rgba(59,130,246,.12);color:#1d4ed8}
+html.light .toast-success{background:rgba(20,184,166,.12);color:#0f766e}
+html.light .toast-error{background:rgba(239,68,68,.12);color:#b91c1c}
+html.light .text-teal-400{color:#0d9488 !important}
+html.light .text-red-400{color:#dc2626 !important}
+html.light .text-amber-400{color:#b45309 !important}
+html.light select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") !important}
+html.light select option:checked,html.light select option:hover{background:linear-gradient(0deg,#f59e0b,#f59e0b);color:#09090b}
+
+body{background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+body::before{content:'';position:fixed;inset:0;z-index:9998;pointer-events:none;opacity:var(--grain);
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E")}
+body::after{content:'';position:fixed;top:-200px;left:50%;transform:translateX(-50%);width:800px;height:500px;
+  background:radial-gradient(ellipse,rgba(245,158,11,var(--glow)) 0%,transparent 70%);pointer-events:none;z-index:-1}
+
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;transition:border-color .2s}
+.card:hover{border-color:var(--border-hover)}
+.card-inner{background:var(--bg-inner);border:1px solid var(--border);border-radius:8px}
+
+input,select,textarea{background:var(--input-bg) !important;border:1px solid var(--border-input) !important;color:var(--text) !important;
+  border-radius:8px;font-family:'DM Sans',sans-serif;transition:border-color .2s,box-shadow .2s}
+input:focus,select:focus{border-color:#f59e0b !important;box-shadow:0 0 0 3px rgba(245,158,11,.12) !important;outline:none}
+input::placeholder{color:var(--text-dim) !important}
+select{appearance:none;-webkit-appearance:none;padding-right:32px !important;cursor:pointer;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8b93' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-repeat:no-repeat !important;background-position:right 10px center !important;background-size:12px !important}
+select option{background:var(--option-bg);color:var(--text);padding:6px 12px}
+select option:checked,select option:hover{background:linear-gradient(0deg,#f59e0b,#f59e0b);color:#09090b}
+input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4px !important;cursor:pointer}
+
+.tab-btn{position:relative;color:var(--text-dim);transition:color .2s}
+.tab-btn:hover{color:var(--text-dim2)}
+.tab-btn.tab-active{color:#f59e0b}
+.tab-btn.tab-active::after{content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:20px;height:2px;background:#f59e0b;border-radius:1px}
+
+.badge{font-size:.7rem;padding:3px 10px;border-radius:9999px;font-weight:600;letter-spacing:.03em;border:1px solid transparent}
+.badge-ok{background:rgba(20,184,166,.12);color:#2dd4bf;border-color:rgba(20,184,166,.2)}
+.badge-warn{background:rgba(251,191,36,.12);color:#fbbf24;border-color:rgba(251,191,36,.2)}
+.badge-run{background:rgba(96,165,250,.12);color:#60a5fa;border-color:rgba(96,165,250,.2)}
+.badge-err{background:rgba(248,113,113,.12);color:#f87171;border-color:rgba(248,113,113,.2)}
+.badge-off{background:var(--badge-off-bg);color:var(--badge-off-text);border-color:var(--badge-off-border)}
+
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;font-size:.8125rem;font-weight:500;
+  transition:all .2s;cursor:pointer;border:1px solid transparent}
+.btn-amber{background:#f59e0b;color:#09090b;border-color:rgba(255,255,255,.1)}
+.btn-amber:hover{background:#fbbf24;transform:translateY(-1px);box-shadow:0 6px 20px -4px rgba(245,158,11,.35)}
+.btn-teal{background:#14b8a6;color:#09090b;border-color:rgba(255,255,255,.1)}
+.btn-teal:hover{background:#2dd4bf;transform:translateY(-1px);box-shadow:0 6px 20px -4px rgba(20,184,166,.35)}
+.btn-ghost{background:var(--ghost);color:var(--text-dim2);border-color:var(--border)}
+.btn-ghost:hover{background:var(--ghost-hover);color:var(--text)}
+.btn-danger{color:#f87171}
+.btn-danger:hover{background:rgba(248,113,113,.1)}
+
+.stat-num{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:1.75rem;line-height:1;letter-spacing:-.02em}
+
+.toast{position:fixed;top:20px;right:20px;z-index:9999;padding:10px 18px;border-radius:10px;font-size:.8125rem;font-weight:500;
+  border:1px solid var(--toast-border);backdrop-filter:blur(12px);
+  animation:toast-in .35s cubic-bezier(.22,1,.36,1)}
+.toast-info{background:rgba(96,165,250,.15);color:#93c5fd}
+.toast-success{background:rgba(20,184,166,.15);color:#5eead4}
+.toast-error{background:rgba(248,113,113,.15);color:#fca5a5}
+@keyframes toast-in{from{opacity:0;transform:translateX(30px) scale(.95)}to{opacity:1;transform:none}}
+
+.hidden{display:none !important}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-hover)}
+
+.c-heading{color:var(--text-heading)}.c-text{color:var(--text)}.c-muted{color:var(--text-muted)}.c-dim{color:var(--text-dim)}.c-dim2{color:var(--text-dim2)}
+
+.section-title{font-size:.75rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
+.field-label{display:block;font-size:.7rem;color:var(--text-dim);margin-bottom:4px;font-weight:500;letter-spacing:.02em}
+.field-input{width:100%;padding:8px 12px;font-size:.8125rem}
+.row-item{background:var(--bg-inner);border:1px solid var(--border);border-radius:10px;padding:14px 16px;
+  transition:background .15s,border-color .15s;cursor:default}
+.row-item:hover{background:var(--bg-row-hover);border-color:var(--border-hover)}
+.progress-bar{height:4px;border-radius:2px;background:var(--ghost);overflow:hidden}
+.progress-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,#14b8a6,#2dd4bf);transition:width .4s ease}
+
+/* Theme toggle */
+.theme-toggle{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;
+  background:var(--ghost);border:1px solid var(--border);transition:all .2s;color:var(--text-dim)}
+.theme-toggle:hover{background:var(--ghost-hover);color:var(--text);border-color:var(--border-hover)}
+.theme-toggle svg{width:16px;height:16px}
+</style>
+</head>
+
+<body class="min-h-screen">
+<div id="toast-container"></div>
+
+<!-- ====== Header ====== -->
+<header class="sticky top-0 z-50 flex items-center justify-between px-5 py-3" style="background:var(--header-bg);backdrop-filter:blur(12px);border-bottom:1px solid var(--nav-border)">
+  <div class="flex items-center gap-3">
+    <div class="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs" style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#09090b">A</div>
+    <span class="text-sm font-semibold tracking-tight c-heading">AutoTeam2S2A</span>
+    <span id="version-badge" class="text-[.65rem] font-mono px-2 py-0.5 rounded-full" style="background:var(--ghost);color:var(--text-dim)">v--</span>
+  </div>
+  <div class="flex items-center gap-2.5">
+    <span id="health-dot" class="w-1.5 h-1.5 rounded-full bg-zinc-600"></span>
+    <span id="uptime-text" class="text-[.65rem] font-mono c-dim">--</span>
+    <button id="theme-toggle" onclick="toggleTheme()" class="theme-toggle" title="切换主题">
+      <svg id="icon-moon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"/></svg>
+      <svg id="icon-sun" class="hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- ====== Nav ====== -->
+<nav class="flex gap-0.5 px-5 pt-3 pb-0 overflow-x-auto" style="border-bottom:1px solid var(--nav-border)">
+  <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-btn tab-active px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">概览</button>
+  <button onclick="switchTab('teams')" id="tab-teams" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">团队</button>
+  <button onclick="switchTab('config')" id="tab-config" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">配置</button>
+  <button onclick="switchTab('tasks')" id="tab-tasks" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">任务</button>
+  <button onclick="switchTab('schedules')" id="tab-schedules" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">定时</button>
+  <button onclick="switchTab('runs')" id="tab-runs" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">记录</button>
+</nav>
+
+<!-- ====== Content ====== -->
+<main class="max-w-6xl mx-auto px-5 py-5 space-y-0">
+
+<!-- Dashboard -->
+<div id="panel-dashboard" class="animate-enter space-y-4">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div class="card p-4"><div class="field-label">S2A 团队</div><div id="stat-teams" class="stat-num c-heading">--</div></div>
+    <div class="card p-4"><div class="field-label">可用代理</div><div id="stat-proxies" class="stat-num c-heading">--</div></div>
+    <div class="card p-4"><div class="field-label">邮箱域名</div><div id="stat-domains" class="stat-num c-heading">--</div></div>
+    <div class="card p-4"><div class="field-label">活跃任务</div><div id="stat-running" class="stat-num text-amber-400">--</div></div>
+  </div>
+  <div class="card p-5">
+    <div class="section-title">快速创建</div>
+    <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
+      <div><label class="field-label">团队</label><select id="q-team" class="field-input"></select></div>
+      <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" value="4" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" value="4" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" value="4" class="field-input"></div>
+      <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div class="flex items-end"><button onclick="quickCreateTask()" class="btn btn-amber w-full justify-center">执行</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- Teams -->
+<div id="panel-teams" class="hidden animate-enter space-y-4">
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div class="section-title mb-0">S2A 团队</div>
+      <button onclick="showAddTeamForm()" class="btn btn-teal text-xs py-1.5">+ 添加</button>
+    </div>
+    <div id="team-list" class="space-y-2"></div>
+  </div>
+  <div id="add-team-form" class="card p-5 hidden">
+    <div class="section-title">新建团队</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div><label class="field-label">名称 *</label><input id="at-name" class="field-input" placeholder="agmn"></div>
+      <div><label class="field-label">API 地址 *</label><input id="at-api" class="field-input" placeholder="https://..."></div>
+      <div><label class="field-label">Admin Key *</label><input id="at-key" class="field-input" placeholder="admin-xxx"></div>
+      <div><label class="field-label">并发</label><input id="at-concurrency" type="number" value="50" class="field-input"></div>
+      <div><label class="field-label">优先级</label><input id="at-priority" type="number" value="30" class="field-input"></div>
+      <div><label class="field-label">分组ID</label><input id="at-groups" class="field-input" placeholder="1,2,3"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitAddTeam()" class="btn btn-teal">确认</button>
+      <button onclick="hideAddTeamForm()" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- Config -->
+<div id="panel-config" class="hidden animate-enter space-y-4">
+  <div class="card p-5">
+    <div class="section-title">运行默认参数</div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div><label class="field-label">目标账号数</label><input id="cfg-target" type="number" min="1" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="cfg-reg-workers" type="number" min="1" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="cfg-rt-workers" type="number" min="1" class="field-input"></div>
+      <div><label class="field-label">RT 重试</label><input id="cfg-rt-retries" type="number" min="1" class="field-input"></div>
+    </div>
+    <button onclick="saveDefaults()" class="btn btn-amber mt-4">保存</button>
+  </div>
+  <div class="card p-5">
+    <div class="section-title">注册服务</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div><label class="field-label">邮件 API 地址</label><input id="cfg-mail-base" class="field-input"></div>
+      <div><label class="field-label">邮件 API 路径</label><input id="cfg-mail-path" class="field-input"></div>
+      <div><label class="field-label">邮件 API Token</label><input id="cfg-mail-token" class="field-input"></div>
+      <div><label class="field-label">请求超时(秒)</label><input id="cfg-mail-timeout" type="number" class="field-input"></div>
+      <div><label class="field-label">OTP 重试</label><input id="cfg-otp-retries" type="number" class="field-input"></div>
+      <div><label class="field-label">请求超时(秒)</label><input id="cfg-req-timeout" type="number" class="field-input"></div>
+    </div>
+    <button onclick="saveRegister()" class="btn btn-amber mt-4">保存</button>
+  </div>
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">D1 邮件清理</div>
+      <label class="flex items-center gap-2 text-xs text-dim"><input id="cfg-d1-enabled" type="checkbox"> 启用</label>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div><label class="field-label">Account ID</label><input id="cfg-d1-account-id" class="field-input" placeholder="CF Account ID"></div>
+      <div><label class="field-label">API Key</label><input id="cfg-d1-api-key" class="field-input" placeholder="API Token"></div>
+      <div><label class="field-label">保留比例</label><input id="cfg-d1-keep-percent" type="number" step="0.01" min="0" max="1" class="field-input" placeholder="0.1"></div>
+      <div><label class="field-label">批量大小</label><input id="cfg-d1-batch-size" type="number" min="100" class="field-input" placeholder="5000"></div>
+    </div>
+    <div class="mt-3">
+      <div class="flex items-center justify-between mb-2">
+        <label class="field-label mb-0">数据库列表</label>
+        <button onclick="addD1DbRow()" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 添加</button>
+      </div>
+      <div id="d1-db-rows" class="space-y-2"></div>
+    </div>
+    <button onclick="saveD1Cleanup()" class="btn btn-amber mt-4">保存</button>
+  </div>
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">邮箱域名</div>
+      <span id="domain-count" class="text-xs font-mono text-dim">0</span>
+    </div>
+    <div id="email-domain-list" class="flex flex-wrap gap-2 mb-3"></div>
+    <div class="flex gap-2">
+      <input id="new-domain" class="field-input flex-1" placeholder="@example.com">
+      <button onclick="addEmailDomain()" class="btn btn-teal text-xs py-1.5">添加</button>
+    </div>
+  </div>
+  <div class="card p-5 flex items-center justify-between">
+    <div><div class="text-sm font-medium c-heading">持久化配置</div><div class="text-xs c-dim mt-0.5">写入 config.toml 文件，容器重启后保留</div></div>
+    <button onclick="saveToFile()" class="btn btn-amber">保存到文件</button>
+  </div>
+</div>
+
+<!-- Tasks -->
+<div id="panel-tasks" class="hidden animate-enter space-y-4">
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div class="section-title mb-0">任务队列</div>
+      <button onclick="refreshTasks()" class="btn btn-ghost text-xs py-1.5">刷新</button>
+    </div>
+    <div id="task-list" class="space-y-2"><p class="text-sm text-dim text-center py-8">暂无任务</p></div>
+  </div>
+</div>
+
+<!-- Schedules -->
+<div id="panel-schedules" class="hidden animate-enter space-y-4">
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div class="section-title mb-0">定时计划</div>
+      <button onclick="showAddScheduleForm()" class="btn btn-teal text-xs py-1.5">+ 创建</button>
+    </div>
+    <div id="schedule-list" class="space-y-2"><p class="text-sm text-dim text-center py-8">暂无定时计划</p></div>
+  </div>
+  <div id="add-schedule-form" class="card p-5 hidden">
+    <div class="section-title">创建定时计划</div>
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div><label class="field-label">名称 *</label><input id="sched-name" class="field-input" placeholder="daily-fill"></div>
+      <div><label class="field-label">开始时间 *</label><input id="sched-start" class="field-input" type="time" value="10:00"></div>
+      <div><label class="field-label">结束时间 *</label><input id="sched-end" class="field-input" type="time" value="14:00"></div>
+      <div><label class="field-label">每批数量 *</label><input id="sched-target" type="number" min="1" value="50" class="field-input"></div>
+      <div><label class="field-label">批次间隔(分)</label><input id="sched-interval" type="number" min="1" value="30" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">RT 重试</label><input id="sched-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div class="flex items-center gap-4 pt-5">
+        <label class="flex items-center gap-2 text-xs text-dim-1"><input id="sched-push-s2a" type="checkbox" checked> S2A</label>
+        <label class="flex items-center gap-2 text-xs text-dim-1"><input id="sched-enabled" type="checkbox" checked> 启用</label>
+      </div>
+    </div>
+    <div class="mt-4">
+      <div class="flex items-center justify-between mb-2">
+        <label class="field-label mb-0">分发 (总和=100%)</label>
+        <button onclick="addDistRow()" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 团队</button>
+      </div>
+      <div id="sched-dist-rows" class="space-y-2"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitAddSchedule()" class="btn btn-teal">创建</button>
+      <button onclick="hideAddScheduleForm()" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- Runs -->
+<div id="panel-runs" class="hidden animate-enter space-y-4">
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div class="section-title mb-0">运行记录</div>
+      <div class="flex items-center gap-2">
+        <select id="runs-filter" onchange="loadRuns(1)" class="field-input text-xs py-1.5 w-auto"><option value="">全部</option></select>
+        <button onclick="loadRuns(currentRunPage)" class="btn btn-ghost text-xs py-1.5">刷新</button>
+      </div>
+    </div>
+    <div id="run-list" class="space-y-2"><p class="text-sm text-dim text-center py-8">暂无运行记录</p></div>
+    <div id="run-pagination" class="flex items-center justify-center gap-3 mt-4 hidden">
+      <button onclick="loadRuns(currentRunPage-1)" id="runs-prev" class="btn btn-ghost text-xs py-1">上一页</button>
+      <span id="runs-page-info" class="text-xs font-mono text-dim"></span>
+      <button onclick="loadRuns(currentRunPage+1)" id="runs-next" class="btn btn-ghost text-xs py-1">下一页</button>
+    </div>
+  </div>
+  <div id="run-detail-panel" class="card p-5 hidden">
+    <div class="flex items-center justify-between mb-4">
+      <div class="section-title mb-0">运行详情</div>
+      <button onclick="hideRunDetail()" class="btn btn-ghost text-xs py-1">关闭</button>
+    </div>
+    <div id="run-detail-content"></div>
+  </div>
+</div>
+
+</main>
+
+<script>
+// Theme
+function initTheme(){
+  const saved=localStorage.getItem('theme');
+  const prefer=saved||(window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');
+  applyTheme(prefer);
+}
+function applyTheme(t){
+  document.documentElement.classList.toggle('light',t==='light');
+  document.getElementById('icon-moon').classList.toggle('hidden',t==='light');
+  document.getElementById('icon-sun').classList.toggle('hidden',t==='dark');
+  localStorage.setItem('theme',t);
+}
+function toggleTheme(){
+  const isLight=document.documentElement.classList.contains('light');
+  applyTheme(isLight?'dark':'light');
+}
+initTheme();
+
+const API='';let configData=null;let taskPollTimer=null;
+
+// Toast
+function toast(msg,type='info'){
+  const c=document.getElementById('toast-container');
+  const cls={info:'toast-info',success:'toast-success',error:'toast-error'};
+  const el=document.createElement('div');
+  el.className=`toast ${cls[type]||cls.info}`;
+  el.textContent=msg;
+  c.appendChild(el);
+  setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .3s';setTimeout(()=>el.remove(),300)},3000);
+}
+
+// API
+async function api(path,opts={}){
+  try{
+    const res=await fetch(API+path,{headers:{'Content-Type':'application/json'},...opts,body:opts.body?JSON.stringify(opts.body):undefined});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    return data;
+  }catch(e){toast(e.message,'error');throw e}
+}
+
+// Tabs
+const ALL_TABS=['dashboard','teams','config','tasks','schedules','runs'];
+function switchTab(name){
+  ALL_TABS.forEach(t=>{
+    document.getElementById('panel-'+t).classList.toggle('hidden',t!==name);
+    const b=document.getElementById('tab-'+t);
+    b.classList.toggle('tab-active',t===name);
+  });
+  if(name==='tasks'){refreshTasks();startTaskPoll()}else{stopTaskPoll()}
+  if(name==='dashboard'||name==='teams'||name==='config') loadConfig();
+  if(name==='schedules'){loadSchedules();startSchedulePoll()}else{stopSchedulePoll()}
+  if(name==='runs'){loadRunsFilter();loadRuns(1)}
+}
+
+// Health
+async function checkHealth(){
+  try{
+    const d=await api('/health');
+    document.getElementById('health-dot').className='w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse-dot';
+    document.getElementById('version-badge').textContent='v'+d.version;
+    const h=Math.floor(d.uptime_secs/3600),m=Math.floor((d.uptime_secs%3600)/60);
+    document.getElementById('uptime-text').textContent=`${h}h ${m}m`;
+  }catch{document.getElementById('health-dot').className='w-1.5 h-1.5 rounded-full bg-red-400'}
+}
+
+// Config
+async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderConfigForm()}catch{}}
+function renderDashboard(){
+  if(!configData)return;
+  document.getElementById('stat-teams').textContent=configData.teams.length;
+  document.getElementById('stat-proxies').textContent=configData.proxy_pool.length;
+  document.getElementById('stat-domains').textContent=configData.email_domains.length;
+  const sel=document.getElementById('q-team');
+  sel.innerHTML=configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('');
+  document.getElementById('q-target').value=configData.defaults.target_count;
+  document.getElementById('q-reg-workers').value=configData.defaults.register_workers;
+  document.getElementById('q-rt-workers').value=configData.defaults.rt_workers;
+}
+function renderTeams(){
+  const el=document.getElementById('team-list');
+  if(!configData||configData.teams.length===0){el.innerHTML='<p class="text-sm text-dim text-center py-6">暂无团队</p>';return}
+  el.innerHTML=configData.teams.map(t=>`
+  <div class="row-item flex items-center justify-between">
+    <div class="flex-1 grid grid-cols-2 md:grid-cols-5 gap-2 text-[.8125rem]">
+      <div><span class="field-label">名称</span><div class="font-medium c-heading">${t.name}</div></div>
+      <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${t.api_base}</div></div>
+      <div><span class="field-label">并发</span><div class="font-mono c-heading">${t.concurrency}</div></div>
+      <div><span class="field-label">优先级</span><div class="font-mono c-heading">${t.priority}</div></div>
+      <div><span class="field-label">分组</span><div class="font-mono c-heading">${t.group_ids?.join(', ')||'-'}</div></div>
+    </div>
+    <button onclick="deleteTeam('${t.name}')" class="btn btn-danger text-xs ml-3 py-1 px-2">删除</button>
+  </div>`).join('');
+}
+function renderConfigForm(){
+  if(!configData)return;
+  const d=configData.defaults,r=configData.register;
+  document.getElementById('cfg-target').value=d.target_count;
+  document.getElementById('cfg-reg-workers').value=d.register_workers;
+  document.getElementById('cfg-rt-workers').value=d.rt_workers;
+  document.getElementById('cfg-rt-retries').value=d.rt_retries;
+  document.getElementById('cfg-mail-base').value=r.mail_api_base;
+  document.getElementById('cfg-mail-path').value=r.mail_api_path;
+  document.getElementById('cfg-mail-token').value=r.mail_api_token;
+  document.getElementById('cfg-mail-timeout').value=r.mail_request_timeout_sec;
+  document.getElementById('cfg-otp-retries').value=r.otp_max_retries;
+  document.getElementById('cfg-req-timeout').value=r.request_timeout_sec;
+  renderEmailDomains();renderD1Cleanup();
+}
+
+// D1
+function renderD1Cleanup(){
+  if(!configData||!configData.d1_cleanup)return;
+  const c=configData.d1_cleanup;
+  document.getElementById('cfg-d1-enabled').checked=c.enabled;
+  document.getElementById('cfg-d1-account-id').value=c.account_id||'';
+  document.getElementById('cfg-d1-api-key').value=c.api_key||'';
+  document.getElementById('cfg-d1-keep-percent').value=c.keep_percent;
+  document.getElementById('cfg-d1-batch-size').value=c.batch_size;
+  const rows=document.getElementById('d1-db-rows');rows.innerHTML='';
+  (c.databases||[]).forEach(db=>addD1DbRow(db.name,db.id));
+}
+let d1DbRowCount=0;
+function addD1DbRow(name='',id=''){
+  const rid=d1DbRowCount++;const rows=document.getElementById('d1-db-rows');
+  const row=document.createElement('div');row.className='flex items-center gap-2';row.id=`d1-db-row-${rid}`;
+  row.innerHTML=`<input class="d1-db-name field-input flex-1" placeholder="名称" value="${name}"><input class="d1-db-id field-input flex-1" placeholder="ID" value="${id}"><button onclick="document.getElementById('d1-db-row-${rid}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
+  rows.appendChild(row);
+}
+async function saveD1Cleanup(){
+  const databases=[];
+  document.querySelectorAll('#d1-db-rows > div').forEach(row=>{const n=row.querySelector('.d1-db-name').value.trim(),i=row.querySelector('.d1-db-id').value.trim();if(n&&i) databases.push({name:n,id:i})});
+  try{await api('/api/config/d1_cleanup',{method:'PUT',body:{enabled:document.getElementById('cfg-d1-enabled').checked,account_id:document.getElementById('cfg-d1-account-id').value.trim(),api_key:document.getElementById('cfg-d1-api-key').value.trim(),keep_percent:parseFloat(document.getElementById('cfg-d1-keep-percent').value)||0.1,batch_size:parseInt(document.getElementById('cfg-d1-batch-size').value)||5000,databases}});toast('D1 配置已保存','success');loadConfig()}catch{}
+}
+
+// Teams
+function showAddTeamForm(){document.getElementById('add-team-form').classList.remove('hidden')}
+function hideAddTeamForm(){document.getElementById('add-team-form').classList.add('hidden')}
+async function submitAddTeam(){
+  const gs=document.getElementById('at-groups').value.trim();
+  const groups=gs?gs.split(',').map(s=>parseInt(s.trim())).filter(n=>!isNaN(n)):[];
+  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups}});toast('团队已添加','success');hideAddTeamForm();['at-name','at-api','at-key'].forEach(id=>document.getElementById(id).value='');loadConfig()}catch{}
+}
+async function deleteTeam(name){if(!confirm(`删除团队 "${name}"?`))return;try{await api(`/api/config/s2a/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`${name} 已删除`,'success');loadConfig()}catch{}}
+
+// Config save
+async function saveDefaults(){try{await api('/api/config/defaults',{method:'PUT',body:{target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}}
+async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value)}});toast('注册配置已保存','success');loadConfig()}catch{}}
+async function saveToFile(){try{const d=await api('/api/config/save',{method:'POST'});toast(d.message,'success')}catch{}}
+
+// Domains
+function renderEmailDomains(){
+  if(!configData)return;const doms=configData.email_domains||[];
+  document.getElementById('domain-count').textContent=doms.length;
+  const el=document.getElementById('email-domain-list');
+  if(!doms.length){el.innerHTML='<p class="text-xs text-dim">暂无域名</p>';return}
+  el.innerHTML=doms.map(d=>`<span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style="background:var(--domain-bg);border:1px solid var(--domain-border);color:var(--text-dim2)">${d}<button onclick="deleteEmailDomain('${d.replace(/'/g,"\\'")}')" class="text-red-400 hover:text-red-300 ml-1">&times;</button></span>`).join('');
+}
+async function addEmailDomain(){const input=document.getElementById('new-domain');const domain=input.value.trim();if(!domain){toast('请输入域名','error');return}try{await api('/api/config/email_domains',{method:'POST',body:{domain}});toast(`${domain} 已添加`,'success');input.value='';loadConfig()}catch{}}
+async function deleteEmailDomain(domain){try{await api('/api/config/email_domains',{method:'DELETE',body:{domain}});toast(`${domain} 已删除`,'success');loadConfig()}catch{}}
+
+// Tasks
+async function quickCreateTask(){
+  const team=document.getElementById('q-team').value;if(!team){toast('请先配置团队','error');return}
+  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,use_chatgpt_mail:document.getElementById('q-mail').value==='true'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks')}catch{}
+}
+async function refreshTasks(){
+  try{
+    const d=await api('/api/tasks');const el=document.getElementById('task-list');
+    const running=d.tasks.filter(t=>t.status==='running'||t.status==='pending').length;
+    document.getElementById('stat-running').textContent=running;
+    if(!d.tasks.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无任务</p>';return}
+    el.innerHTML=d.tasks.map(t=>{
+      const bc={pending:'badge-warn',running:'badge-run',completed:'badge-ok',failed:'badge-err',cancelled:'badge-off'};
+      const lb={pending:'等待',running:'运行',completed:'完成',failed:'失败',cancelled:'取消'};
+      const cc=t.status==='pending'||t.status==='running';
+      const tm=new Date(t.created_at).toLocaleTimeString('zh-CN');
+      return `<div class="row-item flex items-center justify-between cursor-pointer" onclick="showTaskDetail('${t.task_id}')">
+        <div class="flex items-center gap-3 flex-1 min-w-0">
+          <span class="badge ${bc[t.status]||'badge-off'}">${lb[t.status]||t.status}</span>
+          <span class="text-xs font-mono text-dim">${t.task_id}</span>
+          <span class="text-xs text-dim-1">${t.team}</span>
+          <span class="text-xs text-dim">x${t.target}</span>
+          <span class="text-xs text-dim">${tm}</span>
+        </div>
+        ${cc?`<button onclick="event.stopPropagation();cancelTask('${t.task_id}')" class="btn btn-danger text-xs py-1 px-2">取消</button>`:''}
+      </div>`}).join('');
+  }catch{}
+}
+async function showTaskDetail(taskId){
+  try{const t=await api(`/api/tasks/${taskId}`);const r=t.report;
+  let d=`状态: ${t.status}\n团队: ${t.team}\n目标: ${t.target}\n创建: ${t.created_at}`;
+  if(t.error) d+=`\n\n错误: ${t.error}`;
+  if(r){d+=`\n\n── 报告 ──\n注册: ${r.registered_ok}/${r.registered_ok+r.registered_failed}\nRT: ${r.rt_ok}/${r.rt_ok+r.rt_failed}\nS2A: ${r.s2a_ok}/${r.s2a_ok+r.s2a_failed}\n耗时: ${r.elapsed_secs?.toFixed(1)}s`;if(r.output_files?.length)d+=`\n文件: ${r.output_files.join(', ')}`}
+  alert(d)}catch{}
+}
+async function cancelTask(id){if(!confirm('取消此任务?'))return;try{await api(`/api/tasks/${id}/cancel`,{method:'POST'});toast('取消请求已发送','success');refreshTasks()}catch{}}
+function startTaskPoll(){stopTaskPoll();taskPollTimer=setInterval(refreshTasks,3000)}
+function stopTaskPoll(){if(taskPollTimer){clearInterval(taskPollTimer);taskPollTimer=null}}
+
+// Schedules
+async function loadSchedules(){
+  try{const d=await api('/api/schedules');const el=document.getElementById('schedule-list');
+  if(!d.schedules||!d.schedules.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无定时计划</p>';return}
+  el.innerHTML=d.schedules.map(s=>{
+    const bc=s.running?'badge-run':s.enabled?'badge-ok':'badge-off';
+    const bt=s.running?'运行中':s.enabled?'已启用':'已禁用';
+    const dt=s.distribution.map(d=>`${d.team}:${d.percent}%`).join(' / ');
+    const startBtn=s.running
+      ?`<button onclick="stopSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">停止</button>`
+      :`<button onclick="triggerSchedule('${s.name}')" class="btn btn-ghost text-xs py-1 px-2">启动</button>`;
+    return `<div class="row-item">
+      <div class="flex items-center justify-between mb-1.5">
+        <div class="flex items-center gap-2.5">
+          <span class="text-sm font-medium c-heading">${s.name}</span>
+          <span class="badge ${bc}">${bt}</span>
+          <code class="text-xs font-mono text-dim px-2 py-0.5 rounded" style="background:var(--ghost)">${s.start_time} - ${s.end_time}</code>
+        </div>
+        <div class="flex items-center gap-1">
+          ${startBtn}
+          <button onclick="toggleSchedule('${s.name}')" class="btn btn-ghost text-xs py-1 px-2">${s.enabled?'禁用':'启用'}</button>
+          <button onclick="deleteSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-4 text-xs text-dim">
+        <span>每批 <span class="font-mono text-dim-2">${s.target_count}</span></span>
+        <span>间隔 <span class="font-mono text-dim-2">${s.batch_interval_mins}分</span></span>
+        <span>注册 <span class="font-mono text-dim-2">${s.register_workers||'默认'}</span></span>
+        <span>RT <span class="font-mono text-dim-2">${s.rt_workers||'默认'}</span></span>
+        <span>邮箱 <span class="text-dim-2">${s.use_chatgpt_mail?'chatgpt':'kyx'}</span></span>
+      </div>
+      <div class="mt-1.5 text-xs text-dim">分发 <span class="text-dim-2 font-mono">${dt||'无'}</span></div>
+    </div>`}).join('')}catch{}
+}
+function showAddScheduleForm(){document.getElementById('add-schedule-form').classList.remove('hidden');const r=document.getElementById('sched-dist-rows');if(!r.children.length) addDistRow()}
+function hideAddScheduleForm(){document.getElementById('add-schedule-form').classList.add('hidden')}
+let distRowCount=0;
+function addDistRow(){
+  const id=distRowCount++;const rows=document.getElementById('sched-dist-rows');
+  const opts=(configData?.teams||[]).map(t=>`<option value="${t.name}">${t.name}</option>`).join('');
+  const row=document.createElement('div');row.className='flex items-center gap-2';row.id=`dist-row-${id}`;
+  row.innerHTML=`<select class="dist-team field-input flex-1">${opts}</select><input class="dist-percent field-input w-24" type="number" min="1" max="100" placeholder="%" value="100"><button onclick="document.getElementById('dist-row-${id}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
+  rows.appendChild(row);
+}
+async function submitAddSchedule(){
+  const name=document.getElementById('sched-name').value.trim(),startTime=document.getElementById('sched-start').value,endTime=document.getElementById('sched-end').value,target=parseInt(document.getElementById('sched-target').value),interval=parseInt(document.getElementById('sched-interval').value)||30;
+  if(!name||!startTime||!endTime||!target){toast('请填写必填字段','error');return}
+  if(startTime===endTime){toast('开始和结束时间不能相同','error');return}
+  const distribution=[];
+  document.querySelectorAll('#sched-dist-rows > div').forEach(r=>{const t=r.querySelector('.dist-team').value,p=parseInt(r.querySelector('.dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
+  const tot=distribution.reduce((s,d)=>s+d.percent,0);
+  if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
+  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,use_chatgpt_mail:document.getElementById('sched-mail').value==='true'};
+  const rw=document.getElementById('sched-reg-workers').value,rtw=document.getElementById('sched-rt-workers').value,rtr=document.getElementById('sched-rt-retries').value;
+  if(rw) body.register_workers=parseInt(rw);if(rtw) body.rt_workers=parseInt(rtw);if(rtr) body.rt_retries=parseInt(rtr);
+  try{await api('/api/schedules',{method:'POST',body});toast(`${name} 已创建`,'success');hideAddScheduleForm();document.getElementById('sched-name').value='';loadSchedules()}catch{}
+}
+async function toggleSchedule(n){try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/toggle`,{method:'POST'});toast(d.message,'success');loadSchedules()}catch{}}
+async function triggerSchedule(n){if(!confirm(`手动启动 "${n}" 的批次循环?`))return;try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/trigger`,{method:'POST'});toast(d.message,'success');startSchedulePoll();loadSchedules()}catch{}}
+async function stopSchedule(n){if(!confirm(`停止 "${n}"?`))return;try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/stop`,{method:'POST'});toast(d.message,'success');loadSchedules()}catch{}}
+async function deleteSchedule(n){if(!confirm(`删除 "${n}"?`))return;try{await api(`/api/schedules/${encodeURIComponent(n)}`,{method:'DELETE'});toast(`${n} 已删除`,'success');loadSchedules()}catch{}}
+let schedPollTimer=null;
+function startSchedulePoll(){stopSchedulePoll();schedPollTimer=setInterval(loadSchedules,5000)}
+function stopSchedulePoll(){if(schedPollTimer){clearInterval(schedPollTimer);schedPollTimer=null}}
+
+// Runs
+let currentRunPage=1;
+async function loadRunsFilter(){try{const d=await api('/api/schedules');const s=document.getElementById('runs-filter');const p=s.value;s.innerHTML='<option value="">全部</option>'+(d.schedules||[]).map(s=>`<option value="${s.name}">${s.name}</option>`).join('');s.value=p}catch{}}
+async function loadRuns(page){
+  if(page<1) page=1;currentRunPage=page;
+  const f=document.getElementById('runs-filter').value;const params=new URLSearchParams({page,per_page:20});if(f) params.set('schedule',f);
+  try{const d=await api(`/api/runs?${params}`);const el=document.getElementById('run-list');const pg=document.getElementById('run-pagination');
+  if(!d.runs||!d.runs.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无记录</p>';pg.classList.add('hidden');return}
+  el.innerHTML=d.runs.map(r=>{
+    const bc={running:'badge-run',completed:'badge-ok',failed:'badge-err'};
+    const lb={running:'运行',completed:'完成',failed:'失败'};
+    const tm=new Date(r.started_at).toLocaleString('zh-CN');
+    const el=r.elapsed_secs?`${r.elapsed_secs.toFixed(1)}s`:'-';
+    return `<div class="row-item flex items-center justify-between cursor-pointer" onclick="showRunDetail('${r.id}')">
+      <div class="flex items-center gap-3 flex-1 min-w-0">
+        <span class="badge ${bc[r.status]||'badge-off'}">${lb[r.status]||r.status}</span>
+        <span class="text-xs font-mono text-dim">${r.id}</span>
+        <span class="text-xs text-dim-1">${r.schedule_name||'手动'}</span>
+        <span class="text-xs text-dim">${tm}</span>
+      </div>
+      <div class="flex items-center gap-3 text-xs font-mono text-dim">
+        <span>REG <span class="text-dim-2">${r.registered_ok}</span></span>
+        <span>RT <span class="text-dim-2">${r.rt_ok}</span></span>
+        <span>S2A <span class="text-teal-400">${r.total_s2a_ok}</span></span>
+        <span class="text-dim">${el}</span>
+      </div>
+    </div>`}).join('');
+  const tp=Math.ceil(d.total/d.per_page);
+  if(tp>1){pg.classList.remove('hidden');document.getElementById('runs-prev').disabled=page<=1;document.getElementById('runs-next').disabled=page>=tp;document.getElementById('runs-page-info').textContent=`${page}/${tp} (${d.total})`}else{pg.classList.add('hidden')}
+  }catch{}
+}
+async function showRunDetail(runId){
+  try{const d=await api(`/api/runs/${runId}`);const r=d.run;
+  const panel=document.getElementById('run-detail-panel');const content=document.getElementById('run-detail-content');
+  let html=`<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+    <div class="card-inner p-3"><div class="field-label">注册成功</div><div class="stat-num text-lg c-heading">${r.registered_ok}</div></div>
+    <div class="card-inner p-3"><div class="field-label">RT 成功</div><div class="stat-num text-lg c-heading">${r.rt_ok}</div></div>
+    <div class="card-inner p-3"><div class="field-label">S2A 成功</div><div class="stat-num text-lg text-teal-400">${r.total_s2a_ok}</div></div>
+    <div class="card-inner p-3"><div class="field-label">耗时</div><div class="stat-num text-lg c-heading">${r.elapsed_secs?r.elapsed_secs.toFixed(1)+'s':'-'}</div></div>
+  </div>
+  <div class="card-inner p-3 mb-4 text-xs text-dim grid grid-cols-2 md:grid-cols-4 gap-2">
+    <span>ID <span class="font-mono c-heading">${r.id}</span></span>
+    <span>计划 <span class="c-heading">${r.schedule_name||'-'}</span></span>
+    <span>触发 <span class="c-heading">${r.trigger_type}</span></span>
+    <span>状态 <span class="c-heading">${r.status}</span></span>
+    <span>目标 <span class="c-heading">${r.target_count}</span></span>
+    <span>注册失败 <span class="text-red-400">${r.registered_failed}</span></span>
+    <span>RT失败 <span class="text-red-400">${r.rt_failed}</span></span>
+    <span>S2A失败 <span class="text-red-400">${r.total_s2a_failed}</span></span>
+  </div>`;
+  if(r.error) html+=`<div class="card-inner p-3 mb-4 text-xs text-red-400" style="border-color:rgba(248,113,113,.15)">${r.error}</div>`;
+  if(d.distributions&&d.distributions.length){
+    html+=`<div class="section-title">分发详情</div><div class="space-y-2">`;
+    d.distributions.forEach(ds=>{const tot=ds.s2a_ok+ds.s2a_failed;const pct=tot>0?Math.round(ds.s2a_ok/tot*100):0;
+      html+=`<div class="card-inner p-3 flex items-center justify-between">
+        <div class="flex items-center gap-3"><span class="text-sm font-medium c-heading">${ds.team_name}</span><span class="text-xs text-dim font-mono">${ds.percent}%</span><span class="text-xs text-dim">x${ds.assigned_count}</span></div>
+        <div class="flex items-center gap-3 text-xs font-mono">
+          <span class="text-teal-400">${ds.s2a_ok}</span><span class="text-red-400">${ds.s2a_failed}</span>
+          <div class="progress-bar w-20"><div class="progress-fill" style="width:${pct}%"></div></div>
+        </div></div>`});
+    html+='</div>'}
+  content.innerHTML=html;panel.classList.remove('hidden')}catch{}
+}
+function hideRunDetail(){document.getElementById('run-detail-panel').classList.add('hidden')}
+
+// Init
+checkHealth();loadConfig();setInterval(checkHealth,15000);
+</script>
+</body>
+</html>

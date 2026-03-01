@@ -40,3 +40,29 @@ pub struct WorkflowReport {
     pub elapsed_secs: f32,
     pub target_count: usize,
 }
+
+/// 每个 S2A 团队的分发结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamDistResult {
+    pub team_name: String,
+    pub percent: u8,
+    pub assigned_count: usize,
+    pub s2a_ok: usize,
+    pub s2a_failed: usize,
+}
+
+/// 多S2A分发总报告
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DistributionReport {
+    pub run_id: String,
+    pub registered_ok: usize,
+    pub registered_failed: usize,
+    pub rt_ok: usize,
+    pub rt_failed: usize,
+    pub total_s2a_ok: usize,
+    pub total_s2a_failed: usize,
+    pub team_results: Vec<TeamDistResult>,
+    pub output_files: Vec<String>,
+    pub elapsed_secs: f32,
+    pub target_count: usize,
+}

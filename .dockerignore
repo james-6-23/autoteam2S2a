@@ -1,0 +1,25 @@
+# 编译产物
+target/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+
+# 运行时数据
+data/
+accounts/
+*.db
+proxy_failures.json
+
+# 输出文件
+free-accounts-*.json
+accounts-*.json
+
+# 版本控制 & 开发
+.git/
+.github/
+.claude/
+.gitignore
+.dockerignore
+*.md

@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "mcp__auggie-mcp__codebase-retrieval"
+      "mcp__auggie-mcp__codebase-retrieval",
+      "mcp__acemcp__search_context"
     ]
   }
 }

@@ -1,9 +1,9 @@
 use std::{fs, path::Path};
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
     pub proxy_pool: Vec<String>,
@@ -21,6 +21,8 @@ pub struct AppConfig {
     pub email_domains: Vec<String>,
     #[serde(default)]
     pub d1_cleanup: D1CleanupConfig,
+    #[serde(default)]
+    pub server: ServerConfig,
     pub api_base: Option<String>,
     pub admin_key: Option<String>,
     pub concurrency: Option<usize>,
@@ -28,9 +30,11 @@ pub struct AppConfig {
     pub group_ids: Option<Vec<i64>>,
     /// 代理健康检测超时秒数（默认 5）
     pub proxy_check_timeout_sec: Option<u64>,
+    #[serde(default)]
+    pub schedule: Vec<ScheduleConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RuntimeDefaults {
     pub target_count: Option<usize>,
     pub register_workers: Option<usize>,
@@ -38,7 +42,7 @@ pub struct RuntimeDefaults {
     pub rt_retries: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RegisterConfig {
     pub mail_api_base: Option<String>,
     pub mail_api_path: Option<String>,
@@ -62,7 +66,7 @@ pub struct RegisterConfig {
     pub plan_status_timeout_sec: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PaymentConfig {
     pub stripe_public_key: Option<String>,
     pub stripe_version: Option<String>,
@@ -77,7 +81,7 @@ pub struct PaymentConfig {
     pub enabled: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct CodexConfig {
     // 保留这些字段以兼容现有 config.toml，实际邮箱配置已统一由 RegisterRuntimeConfig 提供
     #[allow(dead_code)]
@@ -139,7 +143,7 @@ pub struct CodexRuntimeConfig {
     pub pow_max_iterations: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct S2aConfig {
     pub name: String,
     pub api_base: String,
@@ -152,7 +156,7 @@ pub struct S2aConfig {
     pub group_ids: Vec<i64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct D1CleanupConfig {
     /// 是否启用 D1 清理，默认 false
     pub enabled: Option<bool>,
@@ -168,10 +172,68 @@ pub struct D1CleanupConfig {
     pub batch_size: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct D1Database {
     pub name: String,
     pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ServerConfig {
+    /// 监听地址，默认 0.0.0.0
+    pub host: Option<String>,
+    /// 监听端口，默认 3456
+    pub port: Option<u16>,
+    /// 最大并发任务数，默认 3
+    pub max_concurrent_tasks: Option<usize>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: None,
+            port: None,
+            max_concurrent_tasks: None,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScheduleConfig {
+    pub name: String,
+    /// 时间窗口开始 (HH:MM，本地时间)
+    pub start_time: String,
+    /// 时间窗口结束 (HH:MM，本地时间)
+    pub end_time: String,
+    /// 每批注册数量
+    pub target_count: usize,
+    /// 批次间隔（分钟）
+    #[serde(default = "default_batch_interval")]
+    pub batch_interval_mins: u64,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub register_workers: Option<usize>,
+    pub rt_workers: Option<usize>,
+    pub rt_retries: Option<usize>,
+    #[serde(default = "default_true")]
+    pub push_s2a: bool,
+    #[serde(default)]
+    pub use_chatgpt_mail: bool,
+    pub distribution: Vec<DistributionEntry>,
+}
+
+fn default_batch_interval() -> u64 {
+    30
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DistributionEntry {
+    pub team: String,
+    pub percent: u8,
 }
 
 fn default_concurrency() -> usize {
@@ -223,6 +285,25 @@ impl AppConfig {
         let content = fs::read_to_string(path)?;
         let cfg: AppConfig = toml::from_str(&content)?;
         Ok(cfg)
+    }
+
+    /// 加载配置文件，如果文件不存在则返回默认配置（用于 serve 模式零配置启动）
+    pub fn load_or_default(path: &Path) -> Self {
+        match Self::load(path) {
+            Ok(cfg) => {
+                println!("已加载配置文件: {}", path.display());
+                cfg
+            }
+            Err(_) if !path.exists() => {
+                println!("配置文件不存在 ({})，使用默认配置启动", path.display());
+                println!("提示: 可通过管理面板配置后点击「保存到文件」持久化");
+                Self::default()
+            }
+            Err(e) => {
+                println!("配置文件解析失败: {e}，使用默认配置启动");
+                Self::default()
+            }
+        }
     }
 
     pub fn effective_s2a_configs(&self) -> Vec<S2aConfig> {
