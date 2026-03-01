@@ -404,6 +404,7 @@ async fn add_s2a_handler(
         priority: req.priority.unwrap_or(30),
         group_ids: req.group_ids.unwrap_or_default(),
     });
+    auto_save(&cfg, &state.config_path);
     Ok((
         StatusCode::CREATED,
         Json(MsgResponse {
@@ -425,6 +426,7 @@ async fn delete_s2a_handler(
             &format!("未找到号池: {name}"),
         ));
     }
+    auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse {
         message: format!("号池 {name} 已删除"),
     }))
@@ -571,6 +573,7 @@ async fn update_defaults_handler(
     if let Some(v) = req.rt_retries {
         cfg.defaults.rt_retries = Some(v);
     }
+    auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
         message: "运行参数已更新".to_string(),
     })
@@ -602,6 +605,7 @@ async fn update_register_handler(
     if let Some(v) = req.request_timeout_sec {
         cfg.register.request_timeout_sec = Some(v);
     }
+    auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
         message: "注册配置已更新".to_string(),
     })
@@ -623,6 +627,7 @@ async fn add_email_domain_handler(
         ));
     }
     cfg.email_domains.push(domain.clone());
+    auto_save(&cfg, &state.config_path);
     Ok((
         StatusCode::CREATED,
         Json(MsgResponse {
@@ -645,6 +650,7 @@ async fn delete_email_domain_handler(
             &format!("未找到域名: {domain}"),
         ));
     }
+    auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse {
         message: format!("域名 {domain} 已删除"),
     }))
@@ -673,9 +679,22 @@ async fn update_d1_cleanup_handler(
     if let Some(v) = req.batch_size {
         cfg.d1_cleanup.batch_size = Some(v);
     }
+    auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
         message: "D1 清理配置已更新".to_string(),
     })
+}
+
+/// 自动持久化配置到文件（静默，不阻塞请求）
+fn auto_save(config: &AppConfig, path: &std::path::Path) {
+    match toml::to_string_pretty(config) {
+        Ok(toml_str) => {
+            if let Err(e) = std::fs::write(path, &toml_str) {
+                println!("[自动保存] 写入失败: {e}");
+            }
+        }
+        Err(e) => println!("[自动保存] 序列化失败: {e}"),
+    }
 }
 
 async fn save_config_handler(
@@ -1136,6 +1155,7 @@ async fn create_schedule_handler(
         use_chatgpt_mail: req.use_chatgpt_mail,
         distribution: req.distribution,
     });
+    auto_save(&cfg, &state.config_path);
 
     Ok((
         StatusCode::CREATED,
@@ -1207,6 +1227,7 @@ async fn update_schedule_handler(
             .unwrap()
             .distribution = dist;
     }
+    auto_save(&cfg, &state.config_path);
 
     Ok(Json(MsgResponse {
         message: format!("定时计划 {name} 已更新"),
@@ -1226,6 +1247,7 @@ async fn delete_schedule_handler(
             &format!("定时计划不存在: {name}"),
         ));
     }
+    auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse {
         message: format!("定时计划 {name} 已删除"),
     }))
@@ -1253,6 +1275,7 @@ async fn toggle_schedule_handler(
     if !sched.enabled {
         state.scheduler_state.stop(&name).await;
     }
+    auto_save(&cfg, &state.config_path);
 
     Ok(Json(MsgResponse {
         message: format!("定时计划 {name} {status}"),

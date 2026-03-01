@@ -130,6 +130,14 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
 .toast-error{background:rgba(248,113,113,.15);color:#fca5a5}
 @keyframes toast-in{from{opacity:0;transform:translateX(30px) scale(.95)}to{opacity:1;transform:none}}
 
+/* Refresh button */
+.refresh-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;
+  cursor:pointer;color:var(--text-dim);background:var(--ghost);border:1px solid var(--border);transition:all .2s}
+.refresh-btn:hover{color:var(--text);background:var(--ghost-hover);border-color:var(--border-hover)}
+.refresh-btn svg{width:14px;height:14px;transition:transform .3s ease}
+.refresh-btn.spinning svg{animation:spin .6s linear infinite}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
 .hidden{display:none !important}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -301,7 +309,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
   <div class="card p-5">
     <div class="flex items-center justify-between mb-4">
       <div class="section-title mb-0">任务队列</div>
-      <button onclick="refreshTasks()" class="btn btn-ghost text-xs py-1.5">刷新</button>
+      <button onclick="animateRefresh(this,refreshTasks)" class="refresh-btn" title="刷新"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182"/></svg></button>
     </div>
     <div id="task-list" class="space-y-2"><p class="text-sm text-dim text-center py-8">暂无任务</p></div>
   </div>
@@ -354,7 +362,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <div class="section-title mb-0">运行记录</div>
       <div class="flex items-center gap-2">
         <select id="runs-filter" onchange="loadRuns(1)" class="field-input text-xs py-1.5 w-auto"><option value="">全部</option></select>
-        <button onclick="loadRuns(currentRunPage)" class="btn btn-ghost text-xs py-1.5">刷新</button>
+        <button onclick="animateRefresh(this,()=>loadRuns(currentRunPage))" class="refresh-btn" title="刷新"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182"/></svg></button>
       </div>
     </div>
     <div id="run-list" class="space-y-2"><p class="text-sm text-dim text-center py-8">暂无运行记录</p></div>
@@ -397,6 +405,11 @@ initTheme();
 const API='';let configData=null;let taskPollTimer=null;
 
 // Toast
+async function animateRefresh(btn,fn){
+  btn.classList.add('spinning');btn.disabled=true;
+  try{await fn()}finally{setTimeout(()=>{btn.classList.remove('spinning');btn.disabled=false},400)}
+}
+
 function toast(msg,type='info'){
   const c=document.getElementById('toast-container');
   const cls={info:'toast-info',success:'toast-success',error:'toast-error'};
@@ -478,7 +491,7 @@ function renderTeams(){
       <span>可用 <span class="font-mono text-teal-400" id="stat-available-${t.name}">-</span></span>
       <span>活跃 <span class="font-mono text-dim-2" id="stat-active-${t.name}">-</span></span>
       <span>限流 <span class="font-mono text-red-400" id="stat-ratelimited-${t.name}">-</span></span>
-      <button onclick="loadS2aStats('${t.name}')" class="text-amber-400 hover:text-amber-300 text-xs font-medium ml-auto">刷新</button>
+      <button onclick="animateRefresh(this,()=>loadS2aStats('${t.name}'))" class="refresh-btn ml-auto" title="刷新"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182"/></svg></button>
     </div>
   </div>`).join('');
   // 自动加载统计
