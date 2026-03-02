@@ -170,6 +170,7 @@ impl WorkflowRunner {
                 let seeds = seeds.clone();
                 let base_idx = total_task_index;
                 let cancel = cancel_flag.clone();
+                let prog = progress.cloned();
                 tokio::spawn(async move {
                     let mut reg_failed_count = 0usize;
                     let results = stream::iter(seeds.into_iter().enumerate())
@@ -180,6 +181,7 @@ impl WorkflowRunner {
                             let reg_tx = reg_tx.clone();
                             let task_no = base_idx + idx + 1;
                             let cancel = cancel.clone();
+                            let prog = prog.clone();
                             async move {
                                 if cancel.load(Ordering::Relaxed) {
                                     return (false, task_no, seed.account);
@@ -211,8 +213,12 @@ impl WorkflowRunner {
                                 };
                                 match register_service.register(input).await {
                                     Ok(acc) => match reg_tx.send(acc).await {
-                                        Ok(_) => (true, task_no, seed.account),
+                                        Ok(_) => {
+                                            if let Some(ref p) = prog { p.reg_ok.fetch_add(1, Ordering::Relaxed); }
+                                            (true, task_no, seed.account)
+                                        }
                                         Err(send_err) => {
+                                            if let Some(ref p) = prog { p.reg_failed.fetch_add(1, Ordering::Relaxed); }
                                             log_worker(
                                                 worker_id,
                                                 "ERR",
@@ -225,6 +231,7 @@ impl WorkflowRunner {
                                         }
                                     },
                                     Err(err) => {
+                                        if let Some(ref p) = prog { p.reg_failed.fetch_add(1, Ordering::Relaxed); }
                                         log_worker(
                                             worker_id,
                                             "ERR",
@@ -259,6 +266,7 @@ impl WorkflowRunner {
                 let proxy_pool = Arc::clone(&self.proxy_pool);
                 let rt_retry_max = options.rt_retry_max;
                 let cancel = cancel_flag.clone();
+                let prog = progress.cloned();
                 tokio::spawn(async move {
                     Self::rt_pipeline_consumer(
                         rt_rx,
@@ -267,6 +275,7 @@ impl WorkflowRunner {
                         rt_concurrency,
                         rt_retry_max,
                         cancel,
+                        prog,
                     )
                     .await
                 })
@@ -278,17 +287,8 @@ impl WorkflowRunner {
             total_registered += reg_ok_in_round;
             total_reg_failed += reg_failed_in_round;
             total_task_index += deficit;
-            let rt_ok_in_round = round_rt_ok.len();
-            let rt_failed_in_round = round_rt_failed.len();
             all_rt_success.extend(round_rt_ok);
             all_rt_failed.extend(round_rt_failed);
-
-            if let Some(p) = progress {
-                p.reg_ok.fetch_add(reg_ok_in_round, Ordering::Relaxed);
-                p.reg_failed.fetch_add(reg_failed_in_round, Ordering::Relaxed);
-                p.rt_ok.fetch_add(rt_ok_in_round, Ordering::Relaxed);
-                p.rt_failed.fetch_add(rt_failed_in_round, Ordering::Relaxed);
-            }
 
             broadcast_log(&format!(
                 "本轮结束: RT成功 {}, 累计成功 {}/{}",
@@ -510,6 +510,7 @@ impl WorkflowRunner {
         rt_concurrency: usize,
         rt_retry_max: usize,
         cancel_flag: Arc<AtomicBool>,
+        progress: Option<Arc<TaskProgress>>,
     ) -> (Vec<AccountWithRt>, Vec<crate::models::RegisteredAccount>) {
         use tokio::sync::Semaphore;
 
@@ -537,6 +538,7 @@ impl WorkflowRunner {
             let proxy = proxy_pool.next();
             let retry_max = rt_retry_max;
             let cancel = cancel_flag.clone();
+            let prog = progress.clone();
 
             join_set.spawn(async move {
                 let _permit = permit; // 持有信号量直到任务完成
@@ -563,6 +565,7 @@ impl WorkflowRunner {
                     };
                     match fetch_result {
                         Ok(rt) => {
+                            if let Some(ref p) = prog { p.rt_ok.fetch_add(1, Ordering::Relaxed); }
                             let elapsed_sec = started.elapsed().as_secs_f32();
                             log_worker_green(
                                 worker_id,
@@ -607,6 +610,7 @@ impl WorkflowRunner {
                         }
                     }
                 }
+                if let Some(ref p) = prog { p.rt_failed.fetch_add(1, Ordering::Relaxed); }
                 let elapsed_sec = started.elapsed().as_secs_f32();
                 log_worker(
                     worker_id,
