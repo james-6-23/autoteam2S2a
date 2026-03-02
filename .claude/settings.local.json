@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "mcp__auggie-mcp__codebase-retrieval",
-      "mcp__acemcp__search_context"
+      "mcp__acemcp__search_context",
+      "WebFetch(domain:www.chatgpt.org.uk)",
+      "WebSearch"
     ]
   }
 }

@@ -210,6 +210,23 @@ impl RunHistoryDb {
         Ok(())
     }
 
+    /// 查询某个计划最近一次完成/失败的 finished_at 时间戳（ISO 8601）
+    pub fn last_finished_at(&self, schedule_name: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT finished_at FROM runs
+             WHERE schedule_name = ?1 AND finished_at IS NOT NULL
+             ORDER BY finished_at DESC LIMIT 1",
+            params![schedule_name],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(ts) => Ok(Some(ts)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn update_distribution(
         &self,
         run_id: &str,

@@ -332,6 +332,20 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
   </div>
   <div class="card p-5">
     <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">GPTMail (chatgpt.org.uk)</div>
+      <span id="gptmail-status" class="text-xs text-dim"></span>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">API Key</label><input id="cfg-gptmail-key" class="field-input font-mono" placeholder="gpt-test"></div>
+      <div class="flex items-end gap-2">
+        <button onclick="testGptMail()" class="btn btn-ghost text-xs py-1.5">测试连接</button>
+        <button onclick="saveGptMail()" class="btn btn-amber text-xs py-1.5">保存</button>
+      </div>
+    </div>
+    <div id="gptmail-info" class="hidden mt-3 card-inner p-3 text-xs grid grid-cols-2 md:grid-cols-4 gap-2"></div>
+  </div>
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
       <div class="section-title mb-0">D1 邮件清理</div>
       <label class="flex items-center gap-2 text-xs text-dim"><input id="cfg-d1-enabled" type="checkbox"> 启用</label>
     </div>
@@ -768,6 +782,7 @@ function renderConfigForm(){
   document.getElementById('cfg-mail-timeout').value=r.mail_request_timeout_sec;
   document.getElementById('cfg-otp-retries').value=r.otp_max_retries;
   document.getElementById('cfg-req-timeout').value=r.request_timeout_sec;
+  document.getElementById('cfg-gptmail-key').value=r.chatgpt_mail_api_key||'';
   renderEmailDomains();renderD1Cleanup();
 }
 
@@ -937,6 +952,22 @@ async function submitEditTeam(){
 // Config save
 async function saveDefaults(){try{await api('/api/config/defaults',{method:'PUT',body:{target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}}
 async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value)}});toast('注册配置已保存','success');loadConfig()}catch{}}
+async function saveGptMail(){const key=document.getElementById('cfg-gptmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{chatgpt_mail_api_key:key}});toast('GPTMail API Key 已保存','success');loadConfig()}catch{}}
+async function testGptMail(){
+  const key=document.getElementById('cfg-gptmail-key').value.trim();
+  if(!key){toast('请输入 API Key','error');return}
+  const st=document.getElementById('gptmail-status');const info=document.getElementById('gptmail-info');
+  st.textContent='测试中…';st.className='text-xs text-amber-400';info.classList.add('hidden');
+  try{
+    const resp=await fetch('https://mail.chatgpt.org.uk/api/stats',{headers:{'X-API-Key':key}});
+    const json=await resp.json();
+    if(!json.success){st.textContent='失败: '+(json.error||'未知错误');st.className='text-xs text-red-400';return}
+    const d=json.data;
+    st.textContent='连接成功';st.className='text-xs text-teal-400';
+    info.classList.remove('hidden');
+    info.innerHTML=`<span>累计邮件 <span class="c-heading font-mono">${(d.total_emails||0).toLocaleString()}</span></span><span>今日邮件 <span class="c-heading font-mono">${d.today_emails||0}</span></span><span>活跃域名 <span class="c-heading font-mono">${d.active_domains||0}</span></span><span>总域名 <span class="c-heading font-mono">${d.domain_count||0}</span></span>`;
+  }catch(e){st.textContent='连接失败: '+e.message;st.className='text-xs text-red-400'}
+}
 async function saveToFile(){try{const d=await api('/api/config/save',{method:'POST'});toast(d.message,'success')}catch{}}
 
 // Domains

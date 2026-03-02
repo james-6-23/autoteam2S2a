@@ -206,6 +206,55 @@ async fn run_batch_loop(
         schedule.name, schedule.target_count, schedule.batch_interval_mins
     ));
 
+    // 恢复逻辑：检查上次执行完成时间，避免重启后立即重复执行
+    if let Ok(Some(last_ts)) = db.last_finished_at(&schedule.name) {
+        if let Ok(last_dt) = chrono::DateTime::parse_from_rfc3339(&last_ts) {
+            let now = chrono::Utc::now();
+            let since = now.signed_duration_since(last_dt);
+            let interval = chrono::Duration::seconds((schedule.batch_interval_mins * 60) as i64);
+            let remaining = interval - since;
+
+            if remaining > chrono::Duration::zero() {
+                let wait_secs = remaining.num_seconds() as u64;
+                broadcast_log(&format!(
+                    "[调度器] {} 上次完成于 {:.0} 秒前，还需等待 {} 秒",
+                    schedule.name,
+                    since.num_seconds(),
+                    wait_secs
+                ));
+
+                let next_ts_val =
+                    chrono::Utc::now().timestamp() as u64 + wait_secs;
+                next_batch_ts.store(next_ts_val, Ordering::Relaxed);
+
+                let check_interval = tokio::time::Duration::from_secs(5);
+                let mut elapsed = std::time::Duration::ZERO;
+                let total_wait = std::time::Duration::from_secs(wait_secs);
+
+                while elapsed < total_wait {
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        broadcast_log(&format!(
+                            "[调度器] {} 已停止（恢复等待期间取消）",
+                            schedule.name
+                        ));
+                        state.scheduler_state.remove(&schedule.name).await;
+                        return;
+                    }
+                    if !is_in_window(&schedule.start_time, &schedule.end_time) {
+                        broadcast_log(&format!(
+                            "[调度器] {} 恢复等待期间时间窗口结束",
+                            schedule.name
+                        ));
+                        state.scheduler_state.remove(&schedule.name).await;
+                        return;
+                    }
+                    tokio::time::sleep(check_interval).await;
+                    elapsed += std::time::Duration::from_secs(5);
+                }
+            }
+        }
+    }
+
     loop {
         // 检查取消
         if cancel_flag.load(Ordering::Relaxed) {

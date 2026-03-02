@@ -272,6 +272,7 @@ struct RegisterResp {
     otp_max_retries: usize,
     otp_interval_ms: u64,
     request_timeout_sec: u64,
+    chatgpt_mail_api_key: String,
 }
 
 #[derive(Serialize)]
@@ -322,6 +323,7 @@ struct UpdateRegisterRequest {
     otp_max_retries: Option<usize>,
     otp_interval_ms: Option<u64>,
     request_timeout_sec: Option<u64>,
+    chatgpt_mail_api_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -388,6 +390,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
             otp_max_retries: reg.otp_max_retries.unwrap_or(18),
             otp_interval_ms: reg.otp_interval_ms.unwrap_or(1000),
             request_timeout_sec: reg.request_timeout_sec.unwrap_or(20),
+            chatgpt_mail_api_key: reg.chatgpt_mail_api_key.clone().unwrap_or_default(),
         },
         proxy_pool: cfg.proxy_pool.clone(),
         email_domains: cfg.email_domains.clone(),
@@ -552,7 +555,6 @@ async fn s2a_stats_handler(
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到号池: {name}")))?;
     drop(cfg);
 
-    let svc = S2aHttpService::new();
     let base = S2aHttpService::normalized_api_base(&team.api_base);
 
     // 构建 group 参数
@@ -587,49 +589,36 @@ async fn s2a_stats_handler(
     );
 
     // 并发获取所有统计（包括 free 分组）
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
     let (active_res, rl_res, free_active_res, free_rl_res) = tokio::join!(
-        fetch_s2a_total(&svc, &active_url, &team.admin_key),
-        fetch_s2a_total(&svc, &rl_url, &team.admin_key),
+        fetch_s2a_total(&client, &active_url, &team.admin_key),
+        fetch_s2a_total(&client, &rl_url, &team.admin_key),
         async {
             if has_free {
-                fetch_s2a_total(&svc, &free_active_url, &team.admin_key).await
+                fetch_s2a_total(&client, &free_active_url, &team.admin_key).await
             } else {
                 Ok(0)
             }
         },
         async {
             if has_free {
-                fetch_s2a_total(&svc, &free_rl_url, &team.admin_key).await
+                fetch_s2a_total(&client, &free_rl_url, &team.admin_key).await
             } else {
                 Ok(0)
             }
         },
     );
 
-    let active = active_res.map_err(|e| {
-        error_json(
-            StatusCode::BAD_GATEWAY,
-            &format!("获取 active 数据失败: {e:#}"),
-        )
-    })?;
-    let rate_limited = rl_res.map_err(|e| {
-        error_json(
-            StatusCode::BAD_GATEWAY,
-            &format!("获取 rate_limited 数据失败: {e:#}"),
-        )
-    })?;
-    let free_active = free_active_res.map_err(|e| {
-        error_json(
-            StatusCode::BAD_GATEWAY,
-            &format!("获取 free active 数据失败: {e:#}"),
-        )
-    })?;
-    let free_rate_limited = free_rl_res.map_err(|e| {
-        error_json(
-            StatusCode::BAD_GATEWAY,
-            &format!("获取 free rate_limited 数据失败: {e:#}"),
-        )
-    })?;
+    // 容错：单个请求失败不影响整体，返回 0
+    let active = active_res.unwrap_or(0);
+    let rate_limited = rl_res.unwrap_or(0);
+    let free_active = free_active_res.unwrap_or(0);
+    let free_rate_limited = free_rl_res.unwrap_or(0);
 
     Ok(Json(S2aStatsResponse {
         active,
@@ -642,15 +631,10 @@ async fn s2a_stats_handler(
 }
 
 async fn fetch_s2a_total(
-    _svc: &S2aHttpService,
+    client: &rquest::Client,
     url: &str,
     admin_key: &str,
 ) -> anyhow::Result<usize> {
-    let client = rquest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| rquest::Client::new());
-
     let key = admin_key.trim();
     let bearer = if key.to_ascii_lowercase().starts_with("bearer ") {
         key.to_string()
@@ -814,6 +798,9 @@ async fn update_register_handler(
     }
     if let Some(v) = req.request_timeout_sec {
         cfg.register.request_timeout_sec = Some(v);
+    }
+    if let Some(v) = req.chatgpt_mail_api_key {
+        cfg.register.chatgpt_mail_api_key = Some(v);
     }
     auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
