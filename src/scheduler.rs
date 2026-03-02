@@ -39,7 +39,10 @@ impl SchedulerState {
     }
 
     /// 尝试启动一个计划。如果已在运行则返回 None。
-    pub async fn start(&self, name: &str) -> Option<(Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>)> {
+    pub async fn start(
+        &self,
+        name: &str,
+    ) -> Option<(Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>)> {
         let mut active = self.active.lock().await;
         if active.contains_key(name) {
             return None;
@@ -85,11 +88,10 @@ impl SchedulerState {
         active.get(name).map(|e| {
             let ts = e.next_batch_ts.load(Ordering::Relaxed);
             let next = if ts > 0 {
-                chrono::DateTime::from_timestamp(ts as i64, 0)
-                    .map(|dt| {
-                        let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
-                        dt.with_timezone(&tz).format("%H:%M:%S").to_string()
-                    })
+                chrono::DateTime::from_timestamp(ts as i64, 0).map(|dt| {
+                    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+                    dt.with_timezone(&tz).format("%H:%M:%S").to_string()
+                })
             } else {
                 None
             };
@@ -160,7 +162,9 @@ async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
 
             if in_window && !is_active {
                 // 进入时间窗口且未运行 → 启动批次循环
-                if let Some((cancel_flag, batch_num, next_ts)) = state.scheduler_state.start(&schedule_cfg.name).await {
+                if let Some((cancel_flag, batch_num, next_ts)) =
+                    state.scheduler_state.start(&schedule_cfg.name).await
+                {
                     broadcast_log(&format!(
                         "[调度器] 进入时间窗口，启动计划: {} ({}-{})",
                         schedule_cfg.name, schedule_cfg.start_time, schedule_cfg.end_time
@@ -171,7 +175,15 @@ async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
                     let schedule_clone = schedule_cfg.clone();
 
                     tokio::spawn(async move {
-                        run_batch_loop(state_clone, db_clone, schedule_clone, cancel_flag, batch_num, next_ts).await;
+                        run_batch_loop(
+                            state_clone,
+                            db_clone,
+                            schedule_clone,
+                            cancel_flag,
+                            batch_num,
+                            next_ts,
+                        )
+                        .await;
                     });
                 }
             }
@@ -222,7 +234,10 @@ async fn run_batch_loop(
             match crate::server::build_workflow_runner(&cfg, state.proxy_file.as_deref()).await {
                 Ok(r) => r,
                 Err(e) => {
-                    broadcast_log(&format!("[调度器] 构建 runner 失败 ({}): {e}", schedule.name));
+                    broadcast_log(&format!(
+                        "[调度器] 构建 runner 失败 ({}): {e}",
+                        schedule.name
+                    ));
                     // 短暂等待后重试
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                     continue;
@@ -252,7 +267,10 @@ async fn run_batch_loop(
                 ));
             }
             Err(e) => {
-                broadcast_log(&format!("[调度器] {} 第 {} 批失败: {e:#}", schedule.name, batch_num));
+                broadcast_log(&format!(
+                    "[调度器] {} 第 {} 批失败: {e:#}",
+                    schedule.name, batch_num
+                ));
                 // 如果是被取消的，直接退出
                 if cancel_flag.load(Ordering::Relaxed) {
                     broadcast_log(&format!("[调度器] {} 已停止（运行中取消）", schedule.name));
@@ -277,7 +295,10 @@ async fn run_batch_loop(
 
         while elapsed < total_wait {
             if cancel_flag.load(Ordering::Relaxed) {
-                broadcast_log(&format!("[调度器] {} 已停止（等待期间取消）", schedule.name));
+                broadcast_log(&format!(
+                    "[调度器] {} 已停止（等待期间取消）",
+                    schedule.name
+                ));
                 break;
             }
             if !is_in_window(&schedule.start_time, &schedule.end_time) {
@@ -300,6 +321,7 @@ async fn run_batch_loop(
     state.scheduler_state.remove(&schedule.name).await;
     broadcast_log(&format!(
         "[调度器] {} 批次循环结束（共执行 {} 批）",
-        schedule.name, batch_counter.load(Ordering::Relaxed)
+        schedule.name,
+        batch_counter.load(Ordering::Relaxed)
     ));
 }

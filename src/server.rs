@@ -1304,6 +1304,7 @@ fn default_batch_interval_serde() -> u64 {
 
 #[derive(Deserialize)]
 struct UpdateScheduleRequest {
+    name: Option<String>,
     start_time: Option<String>,
     end_time: Option<String>,
     enabled: Option<bool>,
@@ -1436,11 +1437,37 @@ async fn update_schedule_handler(
     Json(req): Json<UpdateScheduleRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let mut cfg = state.config.write().await;
+    // verify schedule exists
+    cfg.schedule
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("定时计划不存在: {name}")))?;
+
+    if let Some(ref new_name) = req.name {
+        let trimmed = new_name.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(error_json(StatusCode::BAD_REQUEST, "名称不能为空"));
+        }
+        if trimmed != name && cfg.schedule.iter().any(|s| s.name == trimmed) {
+            return Err(error_json(
+                StatusCode::CONFLICT,
+                &format!("定时计划已存在: {trimmed}"),
+            ));
+        }
+        // re-borrow after the check
+        cfg.schedule
+            .iter_mut()
+            .find(|s| s.name == name)
+            .unwrap()
+            .name = trimmed;
+    }
+    // re-borrow with (possibly new) name for remaining updates
+    let actual_name = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
     let sched = cfg
         .schedule
         .iter_mut()
-        .find(|s| s.name == name)
-        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("定时计划不存在: {name}")))?;
+        .find(|s| s.name == actual_name)
+        .unwrap();
 
     if let Some(ref st) = req.start_time {
         crate::scheduler::validate_time(st).map_err(|e| error_json(StatusCode::BAD_REQUEST, &e))?;
@@ -1489,16 +1516,18 @@ async fn update_schedule_handler(
             return Err(error_json(StatusCode::BAD_REQUEST, &e));
         }
         // re-borrow since we used cfg above
+        let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
         cfg.schedule
             .iter_mut()
-            .find(|s| s.name == name)
+            .find(|s| s.name == actual)
             .unwrap()
             .distribution = dist;
     }
     auto_save(&cfg, &state.config_path);
 
+    let display_name = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
     Ok(Json(MsgResponse {
-        message: format!("定时计划 {name} 已更新"),
+        message: format!("定时计划 {display_name} 已更新"),
     }))
 }
 
@@ -1582,13 +1611,19 @@ async fn trigger_schedule_handler(
 
         loop {
             if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                crate::log_broadcast::broadcast_log(&format!("[手动触发] {} 已停止", schedule.name));
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[手动触发] {} 已停止",
+                    schedule.name
+                ));
                 break;
             }
 
             let batch_num = batch_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             next_batch_ts.store(0, std::sync::atomic::Ordering::Relaxed);
-            crate::log_broadcast::broadcast_log(&format!("[手动触发] {} 开始第 {} 批次", schedule.name, batch_num));
+            crate::log_broadcast::broadcast_log(&format!(
+                "[手动触发] {} 开始第 {} 批次",
+                schedule.name, batch_num
+            ));
 
             let config_snapshot = state_clone.config.read().await.clone();
             let runner =
@@ -1597,7 +1632,10 @@ async fn trigger_schedule_handler(
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        crate::log_broadcast::broadcast_log(&format!("[手动触发] 构建 runner 失败 ({}): {e}", schedule.name));
+                        crate::log_broadcast::broadcast_log(&format!(
+                            "[手动触发] 构建 runner 失败 ({}): {e}",
+                            schedule.name
+                        ));
                         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                         continue;
                     }
@@ -1654,7 +1692,8 @@ async fn trigger_schedule_handler(
         state_clone.scheduler_state.remove(&schedule.name).await;
         crate::log_broadcast::broadcast_log(&format!(
             "[手动触发] {} 批次循环结束（共 {} 批）",
-            schedule.name, batch_counter.load(std::sync::atomic::Ordering::Relaxed)
+            schedule.name,
+            batch_counter.load(std::sync::atomic::Ordering::Relaxed)
         ));
     });
 
@@ -1863,7 +1902,10 @@ pub async fn start_server(
         // Config management
         .route("/api/config", get(config_handler))
         .route("/api/config/s2a", post(add_s2a_handler))
-        .route("/api/config/s2a/{name}", delete(delete_s2a_handler).put(update_s2a_handler))
+        .route(
+            "/api/config/s2a/{name}",
+            delete(delete_s2a_handler).put(update_s2a_handler),
+        )
         .route("/api/config/s2a/{name}/test", post(test_s2a_handler))
         .route("/api/config/s2a/{name}/stats", get(s2a_stats_handler))
         .route("/api/s2a/fetch-groups", post(fetch_s2a_groups_handler))
@@ -1907,7 +1949,10 @@ pub async fn start_server(
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     crate::log_broadcast::broadcast_log("═══════════════════════════════════════════");
-    crate::log_broadcast::broadcast_log(&format!("   autoteam2s2a 服务模式 v{}", env!("CARGO_PKG_VERSION")));
+    crate::log_broadcast::broadcast_log(&format!(
+        "   autoteam2s2a 服务模式 v{}",
+        env!("CARGO_PKG_VERSION")
+    ));
     crate::log_broadcast::broadcast_log(&format!("   监听地址: http://{addr}"));
     crate::log_broadcast::broadcast_log(&format!("   管理面板: http://{addr}/"));
     crate::log_broadcast::broadcast_log(&format!("   最大并发任务: {max_concurrent}"));

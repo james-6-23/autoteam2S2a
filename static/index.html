@@ -479,10 +479,11 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
   </div>
   <div id="edit-schedule-form" class="card p-5 hidden">
     <div class="flex items-center justify-between mb-3">
-      <div class="section-title mb-0">编辑计划: <span id="es-name" class="text-amber-400"></span></div>
+      <div class="section-title mb-0">编辑计划</div>
       <button onclick="document.getElementById('edit-schedule-form').classList.add('hidden')" class="btn btn-ghost text-xs py-1">关闭</button>
     </div>
     <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div><label class="field-label">名称</label><input id="es-name" class="field-input"></div>
       <div><label class="field-label">开始时间</label><input id="es-start" class="field-input" type="time"></div>
       <div><label class="field-label">结束时间</label><input id="es-end" class="field-input" type="time"></div>
       <div><label class="field-label">每批数量</label><input id="es-target" type="number" min="1" class="field-input"></div>
@@ -1175,7 +1176,7 @@ async function editSchedule(name){
   const s=d.schedules.find(x=>x.name===name);if(!s) return;
   const f=document.getElementById('edit-schedule-form');
   f.classList.remove('hidden');
-  document.getElementById('es-name').textContent=name;
+  document.getElementById('es-name').value=name;
   document.getElementById('es-start').value=s.start_time;
   document.getElementById('es-end').value=s.end_time;
   document.getElementById('es-target').value=s.target_count;
@@ -1203,7 +1204,10 @@ function addEditDistRow(team,pct){
 }
 async function submitEditSchedule(){
   if(!editSchedName) return;
+  const newName=document.getElementById('es-name').value.trim();
+  if(!newName){toast('名称不能为空','error');return}
   const body={
+    name:newName,
     start_time:document.getElementById('es-start').value,
     end_time:document.getElementById('es-end').value,
     target_count:parseInt(document.getElementById('es-target').value),

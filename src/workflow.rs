@@ -131,12 +131,10 @@ impl WorkflowRunner {
                     round, deficit, current_ok, target
                 ));
             } else {
-                let plan_label = if options.free_mode {
-                    "free"
-                } else {
-                    "team"
-                };
-                broadcast_log(&format!("阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标 {target})"));
+                let plan_label = if options.free_mode { "free" } else { "team" };
+                broadcast_log(&format!(
+                    "阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标 {target})"
+                ));
             }
 
             // 根据邮箱系统选择生成 seeds
@@ -150,7 +148,9 @@ impl WorkflowRunner {
                         Ok(Some(email)) => seed.account = email,
                         Ok(None) => {}
                         Err(e) => {
-                            broadcast_log(&format!("[chatgpt.org.uk] 生成邮箱失败: {e}，使用域名列表邮箱"));
+                            broadcast_log(&format!(
+                                "[chatgpt.org.uk] 生成邮箱失败: {e}，使用域名列表邮箱"
+                            ));
                         }
                     }
                     out.push(seed);
@@ -217,11 +217,15 @@ impl WorkflowRunner {
                                 match register_service.register(input).await {
                                     Ok(acc) => match reg_tx.send(acc).await {
                                         Ok(_) => {
-                                            if let Some(ref p) = prog { p.reg_ok.fetch_add(1, Ordering::Relaxed); }
+                                            if let Some(ref p) = prog {
+                                                p.reg_ok.fetch_add(1, Ordering::Relaxed);
+                                            }
                                             (true, task_no, seed.account)
                                         }
                                         Err(send_err) => {
-                                            if let Some(ref p) = prog { p.reg_failed.fetch_add(1, Ordering::Relaxed); }
+                                            if let Some(ref p) = prog {
+                                                p.reg_failed.fetch_add(1, Ordering::Relaxed);
+                                            }
                                             log_worker(
                                                 worker_id,
                                                 "ERR",
@@ -234,7 +238,9 @@ impl WorkflowRunner {
                                         }
                                     },
                                     Err(err) => {
-                                        if let Some(ref p) = prog { p.reg_failed.fetch_add(1, Ordering::Relaxed); }
+                                        if let Some(ref p) = prog {
+                                            p.reg_failed.fetch_add(1, Ordering::Relaxed);
+                                        }
                                         log_worker(
                                             worker_id,
                                             "ERR",
@@ -393,11 +399,15 @@ impl WorkflowRunner {
                 match ret {
                     Ok(_) => {
                         s2a_ok += 1;
-                        if let Some(p) = progress { p.s2a_ok.fetch_add(1, Ordering::Relaxed); }
+                        if let Some(p) = progress {
+                            p.s2a_ok.fetch_add(1, Ordering::Relaxed);
+                        }
                         broadcast_log(&format!("[S2A成功] {}", acc.account));
                     }
                     Err(err) => {
-                        if let Some(p) = progress { p.s2a_failed.fetch_add(1, Ordering::Relaxed); }
+                        if let Some(p) = progress {
+                            p.s2a_failed.fetch_add(1, Ordering::Relaxed);
+                        }
                         broadcast_log(&format!("[S2A失败] {}: {err}", acc.account));
                         round_failed.push(acc);
                     }
@@ -438,15 +448,21 @@ impl WorkflowRunner {
     ) -> Result<WorkflowReport> {
         let workflow_started = Instant::now();
 
-        if let Some(ref p) = progress { p.set_stage("注册 + RT"); }
-        let reg_result = self.run_register_and_rt(cfg, options, cancel_flag, progress.as_ref()).await?;
+        if let Some(ref p) = progress {
+            p.set_stage("注册 + RT");
+        }
+        let reg_result = self
+            .run_register_and_rt(cfg, options, cancel_flag, progress.as_ref())
+            .await?;
 
         let rt_ok = reg_result.rt_success.len();
         let rt_failed = reg_result.rt_failed.len();
         let mut output_files = reg_result.output_files;
 
         let (s2a_ok, s2a_failed, free_s2a_ok, free_s2a_failed) = if options.push_s2a {
-            if let Some(ref p) = progress { p.set_stage("S2A 入库"); }
+            if let Some(ref p) = progress {
+                p.set_stage("S2A 入库");
+            }
             broadcast_log(&format!("阶段3: 入库 S2A [{}]", team.name));
 
             // 分离 free 账号
@@ -462,7 +478,8 @@ impl WorkflowRunner {
                     "[S2A] 准备入库 {} 个 team 账号",
                     s2a_eligible.len()
                 ));
-                self.push_to_s2a(team, s2a_eligible, progress.as_ref()).await
+                self.push_to_s2a(team, s2a_eligible, progress.as_ref())
+                    .await
             } else {
                 (0, 0)
             };
@@ -474,14 +491,16 @@ impl WorkflowRunner {
                         "[S2A] 跳过 {} 个 free 账号（未配置 free 分组）",
                         free_accounts.len()
                     ));
-                    if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)? {
+                    if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)?
+                    {
                         output_files.push(path.display().to_string());
                     }
                     (0, 0)
                 } else {
                     broadcast_log(&format!(
                         "[S2A] 推送 {} 个 free 账号到 free 分组 {:?}",
-                        free_accounts.len(), team.free_group_ids
+                        free_accounts.len(),
+                        team.free_group_ids
                     ));
                     let free_team = S2aConfig {
                         group_ids: team.free_group_ids.clone(),
@@ -489,7 +508,8 @@ impl WorkflowRunner {
                         concurrency: team.free_concurrency.unwrap_or(team.concurrency),
                         ..team.clone()
                     };
-                    self.push_to_s2a(&free_team, free_accounts, progress.as_ref()).await
+                    self.push_to_s2a(&free_team, free_accounts, progress.as_ref())
+                        .await
                 }
             } else {
                 (0, 0)

@@ -219,15 +219,21 @@ pub async fn run_distribution(
             let remainder = free_accounts.len() % n;
             let mut offset = 0usize;
             for (i, team_cfg) in free_eligible_teams.iter().enumerate() {
-                if cancel_flag.load(Ordering::Relaxed) { break; }
+                if cancel_flag.load(Ordering::Relaxed) {
+                    break;
+                }
                 let count = chunk_size + if i < remainder { 1 } else { 0 };
-                if count == 0 { continue; }
+                if count == 0 {
+                    continue;
+                }
                 let chunk = free_accounts[offset..offset + count].to_vec();
                 offset += count;
 
                 broadcast_log(&format!(
                     "[分发-Free] 推送 {} 个 free 账号到 {} (分组 {:?})",
-                    chunk.len(), team_cfg.name, team_cfg.free_group_ids
+                    chunk.len(),
+                    team_cfg.name,
+                    team_cfg.free_group_ids
                 ));
                 let free_cfg = crate::config::S2aConfig {
                     group_ids: team_cfg.free_group_ids.clone(),
