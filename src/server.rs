@@ -435,6 +435,60 @@ async fn add_s2a_handler(
     ))
 }
 
+#[derive(Deserialize)]
+struct UpdateS2aRequest {
+    api_base: Option<String>,
+    admin_key: Option<String>,
+    concurrency: Option<usize>,
+    priority: Option<usize>,
+    group_ids: Option<Vec<i64>>,
+    free_group_ids: Option<Vec<i64>>,
+    free_priority: Option<Option<usize>>,
+    free_concurrency: Option<Option<usize>>,
+}
+
+async fn update_s2a_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateS2aRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    let team = cfg
+        .s2a
+        .iter_mut()
+        .find(|t| t.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到号池: {name}")))?;
+
+    if let Some(v) = req.api_base {
+        team.api_base = v;
+    }
+    if let Some(v) = req.admin_key {
+        team.admin_key = v;
+    }
+    if let Some(v) = req.concurrency {
+        team.concurrency = v;
+    }
+    if let Some(v) = req.priority {
+        team.priority = v;
+    }
+    if let Some(v) = req.group_ids {
+        team.group_ids = v;
+    }
+    if let Some(v) = req.free_group_ids {
+        team.free_group_ids = v;
+    }
+    if let Some(v) = req.free_priority {
+        team.free_priority = v;
+    }
+    if let Some(v) = req.free_concurrency {
+        team.free_concurrency = v;
+    }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse {
+        message: format!("号池 {name} 已更新"),
+    }))
+}
+
 async fn delete_s2a_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -1809,7 +1863,7 @@ pub async fn start_server(
         // Config management
         .route("/api/config", get(config_handler))
         .route("/api/config/s2a", post(add_s2a_handler))
-        .route("/api/config/s2a/{name}", delete(delete_s2a_handler))
+        .route("/api/config/s2a/{name}", delete(delete_s2a_handler).put(update_s2a_handler))
         .route("/api/config/s2a/{name}/test", post(test_s2a_handler))
         .route("/api/config/s2a/{name}/stats", get(s2a_stats_handler))
         .route("/api/s2a/fetch-groups", post(fetch_s2a_groups_handler))
