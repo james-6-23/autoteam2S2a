@@ -69,6 +69,7 @@ pub struct WorkflowOptions {
     pub rt_retry_max: usize,
     pub push_s2a: bool,
     pub use_chatgpt_mail: bool,
+    pub free_mode: bool,
 }
 
 pub struct WorkflowRunner {
@@ -130,10 +131,10 @@ impl WorkflowRunner {
                     round, deficit, current_ok, target
                 ));
             } else {
-                let plan_label = if cfg.payment_enabled() {
-                    "team"
-                } else {
+                let plan_label = if options.free_mode {
                     "free"
+                } else {
+                    "team"
                 };
                 broadcast_log(&format!("阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标 {target})"));
             }
@@ -171,6 +172,7 @@ impl WorkflowRunner {
                 let base_idx = total_task_index;
                 let cancel = cancel_flag.clone();
                 let prog = progress.cloned();
+                let free_mode = options.free_mode;
                 tokio::spawn(async move {
                     let mut reg_failed_count = 0usize;
                     let results = stream::iter(seeds.into_iter().enumerate())
@@ -210,6 +212,7 @@ impl WorkflowRunner {
                                     worker_id,
                                     task_index: task_no,
                                     task_total: target,
+                                    skip_payment: free_mode,
                                 };
                                 match register_service.register(input).await {
                                     Ok(acc) => match reg_tx.send(acc).await {
@@ -442,43 +445,60 @@ impl WorkflowRunner {
         let rt_failed = reg_result.rt_failed.len();
         let mut output_files = reg_result.output_files;
 
-        let (s2a_ok, s2a_failed) = if options.push_s2a {
+        let (s2a_ok, s2a_failed, free_s2a_ok, free_s2a_failed) = if options.push_s2a {
             if let Some(ref p) = progress { p.set_stage("S2A 入库"); }
             broadcast_log(&format!("阶段3: 入库 S2A [{}]", team.name));
 
-            // 过滤掉 free 账号
+            // 分离 free 账号
             let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
                 reg_result
                     .rt_success
                     .into_iter()
                     .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
 
-            if !free_accounts.is_empty() {
+            // 推送 team 账号
+            let (team_ok, team_fail) = if !s2a_eligible.is_empty() {
                 broadcast_log(&format!(
-                    "[S2A] 跳过 {} 个 free 账号（plan_type=free 不入库）",
-                    free_accounts.len()
-                ));
-                for acc in &free_accounts {
-                    broadcast_log(&format!("[S2A跳过] {} (plan={})", acc.account, acc.plan_type));
-                }
-                if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)? {
-                    output_files.push(path.display().to_string());
-                }
-            }
-
-            if s2a_eligible.is_empty() {
-                broadcast_log("[S2A] 没有可入库的账号（全部为 free）");
-                (0, 0)
-            } else {
-                broadcast_log(&format!(
-                    "[S2A] 准备入库 {} 个账号（已排除 {} 个 free）",
-                    s2a_eligible.len(),
-                    free_accounts.len()
+                    "[S2A] 准备入库 {} 个 team 账号",
+                    s2a_eligible.len()
                 ));
                 self.push_to_s2a(team, s2a_eligible, progress.as_ref()).await
-            }
+            } else {
+                (0, 0)
+            };
+
+            // 推送 free 账号到 free 分组（如已配置）
+            let (free_ok, free_fail) = if !free_accounts.is_empty() {
+                if team.free_group_ids.is_empty() {
+                    broadcast_log(&format!(
+                        "[S2A] 跳过 {} 个 free 账号（未配置 free 分组）",
+                        free_accounts.len()
+                    ));
+                    if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)? {
+                        output_files.push(path.display().to_string());
+                    }
+                    (0, 0)
+                } else {
+                    broadcast_log(&format!(
+                        "[S2A] 推送 {} 个 free 账号到 free 分组 {:?}",
+                        free_accounts.len(), team.free_group_ids
+                    ));
+                    let free_team = S2aConfig {
+                        group_ids: team.free_group_ids.clone(),
+                        priority: team.free_priority.unwrap_or(team.priority),
+                        concurrency: team.free_concurrency.unwrap_or(team.concurrency),
+                        ..team.clone()
+                    };
+                    self.push_to_s2a(&free_team, free_accounts, progress.as_ref()).await
+                }
+            } else {
+                (0, 0)
+            };
+
+            // s2a_ok/s2a_failed 包含总数（向后兼容）
+            (team_ok + free_ok, team_fail + free_fail, free_ok, free_fail)
         } else {
-            (0, 0)
+            (0, 0, 0, 0)
         };
 
         // D1 清理
@@ -496,6 +516,8 @@ impl WorkflowRunner {
             rt_failed,
             s2a_ok,
             s2a_failed,
+            free_s2a_ok,
+            free_s2a_failed,
             output_files,
             elapsed_secs: workflow_started.elapsed().as_secs_f32(),
             target_count: options.target_count,

@@ -29,6 +29,7 @@ pub struct RegisterInput {
     pub worker_id: usize,
     pub task_index: usize,
     pub task_total: usize,
+    pub skip_payment: bool,
 }
 
 #[async_trait]
@@ -250,7 +251,7 @@ impl LiveRegisterService {
         );
 
         // ========== 支付步骤 ==========
-        if self.cfg.payment.payment_retries > 0 {
+        if !input.skip_payment && self.cfg.payment.payment_retries > 0 {
             log_worker(input.worker_id, "支付", "获取 checkout URL...");
             let checkout_url = self
                 .get_checkout_url(client, &access_token, &oai_did)
@@ -262,11 +263,11 @@ impl LiveRegisterService {
                 .await?;
             log_worker(input.worker_id, "OK", "支付成功");
         } else {
-            log_worker(input.worker_id, "跳过", "支付未启用，注册 free 账号");
+            log_worker(input.worker_id, "跳过", "Free 模式，跳过支付");
         }
 
         // 支付后轮询等待 plan_type 更新（Stripe → OpenAI 同步需要时间）
-        let paid = self.cfg.payment.payment_retries > 0;
+        let paid = !input.skip_payment && self.cfg.payment.payment_retries > 0;
         let (account_id, plan_type) = if paid {
             self.wait_for_plan_activation(client, &access_token, input.worker_id)
                 .await?

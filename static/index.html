@@ -217,12 +217,13 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
   </div>
   <div class="card p-5">
     <div class="section-title">快速创建</div>
-    <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
+    <div class="grid grid-cols-2 md:grid-cols-7 gap-3">
       <div><label class="field-label">号池</label><select id="q-team" class="field-input"></select></div>
       <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" value="4" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" value="4" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" value="4" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div><label class="field-label">模式</label><select id="q-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div class="flex items-end"><button onclick="quickCreateTask()" class="btn btn-amber w-full justify-center">执行</button></div>
     </div>
   </div>
@@ -255,6 +256,14 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
           <span class="text-xs text-dim">请先填写 API 地址和 Admin Key</span>
         </div>
       </div>
+      <div>
+        <label class="field-label">Free 分组 <span class="text-dim">(可选)</span></label>
+        <div id="at-free-groups-container" class="field-input" style="min-height:38px;max-height:120px;overflow-y:auto;padding:6px 8px">
+          <span class="text-xs text-dim">获取分组后可选</span>
+        </div>
+      </div>
+      <div><label class="field-label">Free 优先级 <span class="text-dim">(可选)</span></label><input id="at-free-priority" type="number" class="field-input" placeholder="默认同 team"></div>
+      <div><label class="field-label">Free 并发 <span class="text-dim">(可选)</span></label><input id="at-free-concurrency" type="number" class="field-input" placeholder="默认同 team"></div>
     </div>
     <div class="flex gap-2 mt-4">
       <button onclick="submitAddTeam()" class="btn btn-teal">确认</button>
@@ -416,6 +425,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="sched-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div><label class="field-label">模式</label><select id="sched-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div class="flex items-center gap-4 pt-5">
         <label class="flex items-center gap-2 text-xs text-dim-1"><input id="sched-push-s2a" type="checkbox" checked> S2A</label>
         <label class="flex items-center gap-2 text-xs text-dim-1"><input id="sched-enabled" type="checkbox" checked> 启用</label>
@@ -447,6 +457,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="es-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div><label class="field-label">模式</label><select id="es-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div class="flex items-center gap-4 pt-5">
         <label class="flex items-center gap-2 text-xs text-dim-1"><input id="es-push-s2a" type="checkbox" checked> S2A</label>
         <label class="flex items-center gap-2 text-xs text-dim-1"><input id="es-enabled" type="checkbox" checked> 启用</label>
@@ -618,31 +629,46 @@ function renderTeams(){
   el.innerHTML=configData.teams.map(t=>`
   <div class="row-item" id="team-card-${t.name}">
     <div class="flex items-center justify-between mb-2">
-      <div class="flex-1 grid grid-cols-2 md:grid-cols-5 gap-2 text-[.8125rem]">
+      <div class="flex-1 grid grid-cols-2 md:grid-cols-6 gap-2 text-[.8125rem]">
         <div><span class="field-label">名称</span><div class="font-medium c-heading">${t.name}</div></div>
         <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${t.api_base}</div></div>
         <div><span class="field-label">并发</span><div class="font-mono c-heading">${t.concurrency}</div></div>
         <div><span class="field-label">优先级</span><div class="font-mono c-heading">${t.priority}</div></div>
         <div><span class="field-label">分组</span><div class="font-mono c-heading" id="team-groups-${t.name}">${t.group_ids?.join(', ')||'-'}</div></div>
+        <div><span class="field-label">Free 分组</span><div class="font-mono ${t.free_group_ids?.length?'text-amber-400':'text-dim'}" id="team-free-groups-${t.name}">${t.free_group_ids?.join(', ')||'-'}</div></div>
       </div>
       <div class="flex items-center gap-1 ml-3">
         <button onclick="testS2a('${t.name}')" class="btn btn-ghost text-xs py-1 px-2" id="test-btn-${t.name}">测试</button>
         <button onclick="deleteTeam('${t.name}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
       </div>
     </div>
-    <div id="s2a-stats-${t.name}" class="flex items-center gap-4 text-xs text-dim pt-1 border-t" style="border-color:var(--border)">
-      <span class="text-dim">账号统计</span>
-      <span>可用 <span class="font-mono text-teal-400" id="stat-available-${t.name}">-</span></span>
-      <span>活跃 <span class="font-mono text-dim-2" id="stat-active-${t.name}">-</span></span>
-      <span>限流 <span class="font-mono text-red-400" id="stat-ratelimited-${t.name}">-</span></span>
-      <button onclick="animateRefresh(this,()=>loadS2aStats('${t.name}'))" class="refresh-btn ml-auto" title="刷新"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182"/></svg></button>
+    <div class="flex items-center gap-4 text-[.8125rem] mt-1 ${t.free_group_ids?.length?'':'hidden'}">
+      <div><span class="field-label">Free 优先级</span><span class="font-mono ${t.free_priority?'text-amber-400':'text-dim'} ml-1">${t.free_priority||'同 team'}</span></div>
+      <div><span class="field-label">Free 并发</span><span class="font-mono ${t.free_concurrency?'text-amber-400':'text-dim'} ml-1">${t.free_concurrency||'同 team'}</span></div>
+    </div>
+    <div id="s2a-stats-${t.name}" class="flex flex-col gap-1 text-xs text-dim pt-1 border-t" style="border-color:var(--border)">
+      <div class="flex items-center gap-4">
+        <span class="text-dim">账号统计</span>
+        <span>可用 <span class="font-mono text-teal-400" id="stat-available-${t.name}">-</span></span>
+        <span>活跃 <span class="font-mono text-dim-2" id="stat-active-${t.name}">-</span></span>
+        <span>限流 <span class="font-mono text-red-400" id="stat-ratelimited-${t.name}">-</span></span>
+        <button onclick="animateRefresh(this,()=>loadS2aStats('${t.name}'))" class="refresh-btn ml-auto" title="刷新"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182"/></svg></button>
+      </div>
+      <div class="flex items-center gap-4 ${t.free_group_ids?.length?'':'hidden'}" id="s2a-free-stats-${t.name}">
+        <span class="text-amber-400">Free 统计</span>
+        <span>可用 <span class="font-mono text-amber-400" id="stat-free-available-${t.name}">-</span></span>
+        <span>活跃 <span class="font-mono text-dim-2" id="stat-free-active-${t.name}">-</span></span>
+        <span>限流 <span class="font-mono text-red-400" id="stat-free-ratelimited-${t.name}">-</span></span>
+      </div>
     </div>
   </div>`).join('');
   // 自动加载统计 + 分组名称
   configData.teams.forEach(t=>{loadS2aStats(t.name);resolveGroupNames(t)});
 }
 async function resolveGroupNames(team){
-  if(!team.group_ids||team.group_ids.length===0) return;
+  const hasGroups=team.group_ids&&team.group_ids.length>0;
+  const hasFree=team.free_group_ids&&team.free_group_ids.length>0;
+  if(!hasGroups&&!hasFree) return;
   const cacheKey=team.api_base;
   try{
     let groups=teamGroupsCache[cacheKey];
@@ -652,10 +678,14 @@ async function resolveGroupNames(team){
       groups=await res.json();
       teamGroupsCache[cacheKey]=groups;
     }
-    const el=document.getElementById('team-groups-'+team.name);
-    if(!el) return;
-    const names=team.group_ids.map(id=>{const g=groups.find(x=>x.id===id);return g?`${g.name}(${id})`:String(id)});
-    el.textContent=names.join(', ');
+    if(hasGroups){
+      const el=document.getElementById('team-groups-'+team.name);
+      if(el){const names=team.group_ids.map(id=>{const g=groups.find(x=>x.id===id);return g?`${g.name}(${id})`:String(id)});el.textContent=names.join(', ')}
+    }
+    if(hasFree){
+      const el=document.getElementById('team-free-groups-'+team.name);
+      if(el){const names=team.free_group_ids.map(id=>{const g=groups.find(x=>x.id===id);return g?`${g.name}(${id})`:String(id)});el.textContent=names.join(', ')}
+    }
   }catch{}
 }
 async function testS2a(name){
@@ -671,10 +701,22 @@ async function loadS2aStats(name){
     document.getElementById('stat-available-'+name).textContent=d.available;
     document.getElementById('stat-active-'+name).textContent=d.active;
     document.getElementById('stat-ratelimited-'+name).textContent=d.rate_limited;
+    const freeEl=document.getElementById('stat-free-available-'+name);
+    if(freeEl){
+      document.getElementById('stat-free-available-'+name).textContent=d.free_available;
+      document.getElementById('stat-free-active-'+name).textContent=d.free_active;
+      document.getElementById('stat-free-ratelimited-'+name).textContent=d.free_rate_limited;
+    }
   }catch{
     document.getElementById('stat-available-'+name).textContent='?';
     document.getElementById('stat-active-'+name).textContent='?';
     document.getElementById('stat-ratelimited-'+name).textContent='?';
+    const freeEl=document.getElementById('stat-free-available-'+name);
+    if(freeEl){
+      document.getElementById('stat-free-available-'+name).textContent='?';
+      document.getElementById('stat-free-active-'+name).textContent='?';
+      document.getElementById('stat-free-ratelimited-'+name).textContent='?';
+    }
   }
 }
 function renderConfigForm(){
@@ -723,6 +765,7 @@ function showAddTeamForm(){document.getElementById('add-team-form').classList.re
 function hideAddTeamForm(){
   document.getElementById('add-team-form').classList.add('hidden');
   document.getElementById('at-groups-container').innerHTML='<span class="text-xs text-dim">请先填写 API 地址和 Admin Key</span>';
+  document.getElementById('at-free-groups-container').innerHTML='<span class="text-xs text-dim">获取分组后可选</span>';
 }
 let atGroupsData=[];
 async function fetchGroups(){
@@ -739,12 +782,20 @@ async function fetchGroups(){
     atGroupsData=data;
     const container=document.getElementById('at-groups-container');
     if(data.length===0){container.innerHTML='<span class="text-xs text-dim">未找到分组</span>';return}
-    container.innerHTML=data.map(g=>`<label class="flex items-center gap-2 py-1 cursor-pointer text-xs" style="border-bottom:1px solid var(--border)">
+    const groupHtml=data.map(g=>`<label class="flex items-center gap-2 py-1 cursor-pointer text-xs" style="border-bottom:1px solid var(--border)">
       <input type="checkbox" value="${g.id}" class="at-group-cb" style="accent-color:#14b8a6">
       <span class="c-heading font-medium">${g.name}</span>
       <span class="text-dim font-mono">#${g.id}</span>
       <span class="text-dim">${g.account_count} 账号</span>
       <span class="text-[.6rem] px-1.5 py-0.5 rounded" style="background:${g.status==='active'?'rgba(45,212,191,.12);color:#2dd4bf':'var(--ghost);color:var(--text-dim)'}">${g.status}</span>
+    </label>`).join('');
+    container.innerHTML=groupHtml;
+    // free 分组选择器
+    const freeContainer=document.getElementById('at-free-groups-container');
+    freeContainer.innerHTML=data.map(g=>`<label class="flex items-center gap-2 py-1 cursor-pointer text-xs" style="border-bottom:1px solid var(--border)">
+      <input type="checkbox" value="${g.id}" class="at-free-group-cb" style="accent-color:#f59e0b">
+      <span class="c-heading font-medium">${g.name}</span>
+      <span class="text-dim font-mono">#${g.id}</span>
     </label>`).join('');
     status.textContent=`共 ${data.length} 个分组`;status.style.color='#2dd4bf';
   }catch(e){status.textContent=e.message;status.style.color='#f87171';toast(e.message,'error')}
@@ -758,9 +809,15 @@ function autoFetchGroups(){
 function getSelectedGroupIds(){
   return Array.from(document.querySelectorAll('.at-group-cb:checked')).map(cb=>parseInt(cb.value));
 }
+function getSelectedFreeGroupIds(){
+  return Array.from(document.querySelectorAll('.at-free-group-cb:checked')).map(cb=>parseInt(cb.value));
+}
 async function submitAddTeam(){
   const groups=getSelectedGroupIds();
-  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups}});toast('号池已添加','success');hideAddTeamForm();['at-name','at-api','at-key'].forEach(id=>document.getElementById(id).value='');atGroupsData=[];loadConfig()}catch{}
+  const freeGroups=getSelectedFreeGroupIds();
+  const freePri=parseInt(document.getElementById('at-free-priority').value);
+  const freeConc=parseInt(document.getElementById('at-free-concurrency').value);
+  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups,free_group_ids:freeGroups,free_priority:freePri||undefined,free_concurrency:freeConc||undefined}});toast('号池已添加','success');hideAddTeamForm();['at-name','at-api','at-key','at-free-priority','at-free-concurrency'].forEach(id=>document.getElementById(id).value='');atGroupsData=[];loadConfig()}catch{}
 }
 async function deleteTeam(name){if(!confirm(`删除号池 "${name}"?`))return;try{await api(`/api/config/s2a/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`${name} 已删除`,'success');loadConfig()}catch{}}
 
@@ -783,7 +840,7 @@ async function deleteEmailDomain(domain){try{await api('/api/config/email_domain
 // Tasks
 async function quickCreateTask(){
   const team=document.getElementById('q-team').value;if(!team){toast('请先配置号池','error');return}
-  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,use_chatgpt_mail:document.getElementById('q-mail').value==='true'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks');setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
+  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,use_chatgpt_mail:document.getElementById('q-mail').value==='true',free_mode:document.getElementById('q-mode').value==='free'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks');setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
 }
 async function refreshTasks(){
   try{
@@ -961,6 +1018,7 @@ async function loadSchedules(){
         <span>注册 <span class="font-mono text-dim-2">${s.register_workers||'默认'}</span></span>
         <span>RT <span class="font-mono text-dim-2">${s.rt_workers||'默认'}</span></span>
         <span>邮箱 <span class="text-dim-2">${s.use_chatgpt_mail?'chatgpt':'kyx'}</span></span>
+        <span>模式 <span class="text-dim-2">${s.free_mode?'free':'team'}</span></span>
         <span>分发 <span class="text-dim-2 font-mono">${dt||'无'}</span></span>
       </div>${runHtml}
     </div>`}).join('')}catch{}
@@ -983,7 +1041,7 @@ async function submitAddSchedule(){
   document.querySelectorAll('#sched-dist-rows > div').forEach(r=>{const t=r.querySelector('.dist-team').value,p=parseInt(r.querySelector('.dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
   const tot=distribution.reduce((s,d)=>s+d.percent,0);
   if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
-  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,use_chatgpt_mail:document.getElementById('sched-mail').value==='true'};
+  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,use_chatgpt_mail:document.getElementById('sched-mail').value==='true',free_mode:document.getElementById('sched-mode').value==='free'};
   const rw=document.getElementById('sched-reg-workers').value,rtw=document.getElementById('sched-rt-workers').value,rtr=document.getElementById('sched-rt-retries').value;
   if(rw) body.register_workers=parseInt(rw);if(rtw) body.rt_workers=parseInt(rtw);if(rtr) body.rt_retries=parseInt(rtr);
   try{await api('/api/schedules',{method:'POST',body});toast(`${name} 已创建`,'success');hideAddScheduleForm();document.getElementById('sched-name').value='';loadSchedules()}catch{}
@@ -1009,6 +1067,7 @@ async function editSchedule(name){
   document.getElementById('es-rt-workers').value=s.rt_workers||'';
   document.getElementById('es-rt-retries').value=s.rt_retries||'';
   document.getElementById('es-mail').value=s.use_chatgpt_mail?'true':'false';
+  document.getElementById('es-mode').value=s.free_mode?'free':'team';
   document.getElementById('es-push-s2a').checked=s.push_s2a;
   document.getElementById('es-enabled').checked=s.enabled;
   // dist rows
@@ -1034,6 +1093,7 @@ async function submitEditSchedule(){
     batch_interval_mins:parseInt(document.getElementById('es-interval').value)||30,
     push_s2a:document.getElementById('es-push-s2a').checked,
     use_chatgpt_mail:document.getElementById('es-mail').value==='true',
+    free_mode:document.getElementById('es-mode').value==='free',
     enabled:document.getElementById('es-enabled').checked
   };
   const rw=document.getElementById('es-reg-workers').value,rtw=document.getElementById('es-rt-workers').value,rtr=document.getElementById('es-rt-retries').value;

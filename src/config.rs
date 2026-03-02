@@ -154,6 +154,15 @@ pub struct S2aConfig {
     pub priority: usize,
     #[serde(default)]
     pub group_ids: Vec<i64>,
+    /// 可选：free 账号入库分组 ID。配置后 free 账号会推送到该分组
+    #[serde(default)]
+    pub free_group_ids: Vec<i64>,
+    /// 可选：free 账号入库优先级（未配置则沿用 team priority）
+    #[serde(default)]
+    pub free_priority: Option<usize>,
+    /// 可选：free 账号入库并发数（未配置则沿用 team concurrency）
+    #[serde(default)]
+    pub free_concurrency: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -223,6 +232,8 @@ pub struct ScheduleConfig {
     pub push_s2a: bool,
     #[serde(default)]
     pub use_chatgpt_mail: bool,
+    #[serde(default)]
+    pub free_mode: bool,
     pub distribution: Vec<DistributionEntry>,
 }
 
@@ -319,6 +330,9 @@ impl AppConfig {
                 concurrency: self.concurrency.unwrap_or(default_concurrency()),
                 priority: self.priority.unwrap_or(default_priority()),
                 group_ids: self.group_ids.clone().unwrap_or_default(),
+                free_group_ids: Vec::new(),
+                free_priority: None,
+                free_concurrency: None,
             }];
         }
         Vec::new()

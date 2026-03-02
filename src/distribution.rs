@@ -88,6 +88,7 @@ pub async fn run_distribution(
             .max(1),
         push_s2a: schedule.push_s2a,
         use_chatgpt_mail: schedule.use_chatgpt_mail,
+        free_mode: schedule.free_mode,
     };
 
     // 2. 注册 + RT
@@ -115,21 +116,11 @@ pub async fn run_distribution(
     let rt_failed = reg_result.rt_failed.len();
     let mut output_files = reg_result.output_files;
 
-    // 3. 过滤 free 账号
+    // 3. 分离 free 账号
     let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) = reg_result
         .rt_success
         .into_iter()
         .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
-
-    if !free_accounts.is_empty() {
-        broadcast_log(&format!(
-            "[分发] 跳过 {} 个 free 账号（plan_type=free 不入库）",
-            free_accounts.len()
-        ));
-        if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)? {
-            output_files.push(path.display().to_string());
-        }
-    }
 
     // 4. 按百分比分割
     let dist_pairs: Vec<(String, u8)> = schedule
@@ -199,6 +190,68 @@ pub async fn run_distribution(
             s2a_ok: ok,
             s2a_failed: failed,
         });
+    }
+
+    // 6.5 分发 free 账号到配置了 free_group_ids 的号池（平均分配）
+    if !free_accounts.is_empty() && options.push_s2a && !cancel_flag.load(Ordering::Relaxed) {
+        let free_eligible_teams: Vec<_> = teams
+            .iter()
+            .filter(|t| !t.free_group_ids.is_empty())
+            .collect();
+
+        if free_eligible_teams.is_empty() {
+            broadcast_log(&format!(
+                "[分发] 跳过 {} 个 free 账号（无号池配置 free 分组）",
+                free_accounts.len()
+            ));
+            if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)? {
+                output_files.push(path.display().to_string());
+            }
+        } else {
+            broadcast_log(&format!(
+                "[分发] 将 {} 个 free 账号平均分配到 {} 个号池",
+                free_accounts.len(),
+                free_eligible_teams.len()
+            ));
+            // 平均分配
+            let n = free_eligible_teams.len();
+            let chunk_size = free_accounts.len() / n;
+            let remainder = free_accounts.len() % n;
+            let mut offset = 0usize;
+            for (i, team_cfg) in free_eligible_teams.iter().enumerate() {
+                if cancel_flag.load(Ordering::Relaxed) { break; }
+                let count = chunk_size + if i < remainder { 1 } else { 0 };
+                if count == 0 { continue; }
+                let chunk = free_accounts[offset..offset + count].to_vec();
+                offset += count;
+
+                broadcast_log(&format!(
+                    "[分发-Free] 推送 {} 个 free 账号到 {} (分组 {:?})",
+                    chunk.len(), team_cfg.name, team_cfg.free_group_ids
+                ));
+                let free_cfg = crate::config::S2aConfig {
+                    group_ids: team_cfg.free_group_ids.clone(),
+                    priority: team_cfg.free_priority.unwrap_or(team_cfg.priority),
+                    concurrency: team_cfg.free_concurrency.unwrap_or(team_cfg.concurrency),
+                    ..(*team_cfg).clone()
+                };
+                let (fok, ffail) = runner.push_to_s2a(&free_cfg, chunk, None).await;
+                total_s2a_ok += fok;
+                total_s2a_failed += ffail;
+
+                // 更新 SQLite 中该号池 free 分发的统计
+                let free_team_name = format!("{}-free", team_cfg.name);
+                let _ = db.update_distribution(&run_id, &free_team_name, count, fok, ffail);
+
+                team_results.push(TeamDistResult {
+                    team_name: free_team_name,
+                    percent: 0,
+                    assigned_count: count,
+                    s2a_ok: fok,
+                    s2a_failed: ffail,
+                });
+            }
+        }
     }
 
     let elapsed = workflow_started.elapsed().as_secs_f32();

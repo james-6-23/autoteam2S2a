@@ -193,6 +193,7 @@ pub struct CreateTaskRequest {
     pub rt_retries: Option<usize>,
     pub push_s2a: Option<bool>,
     pub use_chatgpt_mail: Option<bool>,
+    pub free_mode: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -299,6 +300,9 @@ struct AddS2aRequest {
     concurrency: Option<usize>,
     priority: Option<usize>,
     group_ids: Option<Vec<i64>>,
+    free_group_ids: Option<Vec<i64>>,
+    free_priority: Option<usize>,
+    free_concurrency: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -418,6 +422,9 @@ async fn add_s2a_handler(
         concurrency: req.concurrency.unwrap_or(50),
         priority: req.priority.unwrap_or(30),
         group_ids: req.group_ids.unwrap_or_default(),
+        free_group_ids: req.free_group_ids.unwrap_or_default(),
+        free_priority: req.free_priority,
+        free_concurrency: req.free_concurrency,
     });
     auto_save(&cfg, &state.config_path);
     Ok((
@@ -474,6 +481,9 @@ struct S2aStatsResponse {
     active: usize,
     rate_limited: usize,
     available: usize,
+    free_active: usize,
+    free_rate_limited: usize,
+    free_available: usize,
 }
 
 async fn s2a_stats_handler(
@@ -498,6 +508,14 @@ async fn s2a_stats_handler(
         .map(|g| format!("&group={g}"))
         .unwrap_or_default();
 
+    // 构建 free group 参数
+    let free_group_param = team
+        .free_group_ids
+        .first()
+        .map(|g| format!("&group={g}"))
+        .unwrap_or_default();
+    let has_free = !team.free_group_ids.is_empty();
+
     // 并发获取 active 和 rate_limited 数量
     let active_url = format!(
         "{base}/admin/accounts?page=1&page_size=1&status=active{group_param}&timezone=Asia%2FShanghai"
@@ -506,9 +524,32 @@ async fn s2a_stats_handler(
         "{base}/admin/accounts?page=1&page_size=1&status=rate_limited{group_param}&timezone=Asia%2FShanghai"
     );
 
-    let (active_res, rl_res) = tokio::join!(
+    // free 分组的 URL（仅在配置了 free_group_ids 时使用）
+    let free_active_url = format!(
+        "{base}/admin/accounts?page=1&page_size=1&status=active{free_group_param}&timezone=Asia%2FShanghai"
+    );
+    let free_rl_url = format!(
+        "{base}/admin/accounts?page=1&page_size=1&status=rate_limited{free_group_param}&timezone=Asia%2FShanghai"
+    );
+
+    // 并发获取所有统计（包括 free 分组）
+    let (active_res, rl_res, free_active_res, free_rl_res) = tokio::join!(
         fetch_s2a_total(&svc, &active_url, &team.admin_key),
         fetch_s2a_total(&svc, &rl_url, &team.admin_key),
+        async {
+            if has_free {
+                fetch_s2a_total(&svc, &free_active_url, &team.admin_key).await
+            } else {
+                Ok(0)
+            }
+        },
+        async {
+            if has_free {
+                fetch_s2a_total(&svc, &free_rl_url, &team.admin_key).await
+            } else {
+                Ok(0)
+            }
+        },
     );
 
     let active = active_res.map_err(|e| {
@@ -523,11 +564,26 @@ async fn s2a_stats_handler(
             &format!("获取 rate_limited 数据失败: {e:#}"),
         )
     })?;
+    let free_active = free_active_res.map_err(|e| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("获取 free active 数据失败: {e:#}"),
+        )
+    })?;
+    let free_rate_limited = free_rl_res.map_err(|e| {
+        error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("获取 free rate_limited 数据失败: {e:#}"),
+        )
+    })?;
 
     Ok(Json(S2aStatsResponse {
         active,
         rate_limited,
         available: active.saturating_sub(rate_limited),
+        free_active,
+        free_rate_limited,
+        free_available: free_active.saturating_sub(free_rate_limited),
     }))
 }
 
@@ -860,6 +916,7 @@ async fn create_task_handler(
         .max(1);
     let push_s2a = req.push_s2a.unwrap_or(true);
     let use_chatgpt_mail = req.use_chatgpt_mail.unwrap_or(false);
+    let free_mode = req.free_mode.unwrap_or(false);
     let config_snapshot = cfg.clone();
     drop(cfg); // release read lock
 
@@ -887,6 +944,7 @@ async fn create_task_handler(
             rt_retries,
             push_s2a,
             use_chatgpt_mail,
+            free_mode,
             proxy_file,
         )
         .await;
@@ -1019,6 +1077,7 @@ async fn execute_task(
     rt_retries: usize,
     push_s2a: bool,
     use_chatgpt_mail: bool,
+    free_mode: bool,
     proxy_file: Option<PathBuf>,
 ) {
     task_manager.set_running(&task_id).await;
@@ -1109,6 +1168,7 @@ async fn execute_task(
         rt_retry_max: rt_retries,
         push_s2a,
         use_chatgpt_mail,
+        free_mode,
     };
 
     let progress = task_manager.get_progress(&task_id).await;
@@ -1175,6 +1235,8 @@ struct CreateScheduleRequest {
     push_s2a: bool,
     #[serde(default)]
     use_chatgpt_mail: bool,
+    #[serde(default)]
+    free_mode: bool,
     distribution: Vec<crate::config::DistributionEntry>,
 }
 
@@ -1198,6 +1260,7 @@ struct UpdateScheduleRequest {
     rt_retries: Option<usize>,
     push_s2a: Option<bool>,
     use_chatgpt_mail: Option<bool>,
+    free_mode: Option<bool>,
     distribution: Option<Vec<crate::config::DistributionEntry>>,
 }
 
@@ -1300,6 +1363,7 @@ async fn create_schedule_handler(
         rt_retries: req.rt_retries,
         push_s2a: req.push_s2a,
         use_chatgpt_mail: req.use_chatgpt_mail,
+        free_mode: req.free_mode,
         distribution: req.distribution,
     });
     auto_save(&cfg, &state.config_path);
@@ -1361,6 +1425,9 @@ async fn update_schedule_handler(
     }
     if let Some(cm) = req.use_chatgpt_mail {
         sched.use_chatgpt_mail = cm;
+    }
+    if let Some(fm) = req.free_mode {
+        sched.free_mode = fm;
     }
     if let Some(dist) = req.distribution {
         let teams = cfg.effective_s2a_configs();

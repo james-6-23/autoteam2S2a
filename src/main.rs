@@ -319,6 +319,7 @@ async fn run(
         rt_retry_max,
         push_s2a,
         use_chatgpt_mail,
+        free_mode: !cfg.payment_enabled(),
     };
     let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, proxy_pool);
     let report = runner

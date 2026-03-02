@@ -36,6 +36,12 @@ pub struct WorkflowReport {
     pub rt_failed: usize,
     pub s2a_ok: usize,
     pub s2a_failed: usize,
+    /// free 账号独立推送成功数（已包含在 s2a_ok 总数中）
+    #[serde(default)]
+    pub free_s2a_ok: usize,
+    /// free 账号独立推送失败数（已包含在 s2a_failed 总数中）
+    #[serde(default)]
+    pub free_s2a_failed: usize,
     pub output_files: Vec<String>,
     pub elapsed_secs: f32,
     pub target_count: usize,
