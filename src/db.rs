@@ -191,6 +191,16 @@ impl RunHistoryDb {
         Ok(())
     }
 
+    /// 重命名计划时同步更新所有历史 run 记录的 schedule_name
+    pub fn rename_schedule(&self, old_name: &str, new_name: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            "UPDATE runs SET schedule_name = ?2 WHERE schedule_name = ?1",
+            params![old_name, new_name],
+        )?;
+        Ok(affected)
+    }
+
     pub fn fail_run(&self, run_id: &str, error: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

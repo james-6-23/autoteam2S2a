@@ -116,11 +116,18 @@ pub async fn run_distribution(
     let rt_failed = reg_result.rt_failed.len();
     let mut output_files = reg_result.output_files;
 
-    // 3. 分离 free 账号
-    let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) = reg_result
-        .rt_success
-        .into_iter()
-        .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
+    // 3. 分离 free 账号（free_mode 时跳过分离，全部按百分比分配到 free 分组）
+    let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) = if options
+        .free_mode
+    {
+        // Free 模式: 所有账号都走百分比分配流程，推送到 free_group_ids
+        (reg_result.rt_success, Vec::new())
+    } else {
+        reg_result
+            .rt_success
+            .into_iter()
+            .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"))
+    };
 
     // 4. 按百分比分割
     let dist_pairs: Vec<(String, u8)> = schedule
@@ -165,14 +172,39 @@ pub async fn run_distribution(
         };
 
         broadcast_log(&format!(
-            "[分发] 推送 {} 个账号到 {} ({}%)",
+            "[分发] 推送 {} 个{}账号到 {} ({}%)",
             accounts.len(),
+            if options.free_mode { "free " } else { "" },
             team_name,
             percent
         ));
 
         let (ok, failed) = if options.push_s2a && !accounts.is_empty() {
-            runner.push_to_s2a(team_cfg, accounts.clone(), None).await
+            if options.free_mode {
+                // Free 模式: 推送到 free_group_ids
+                if team_cfg.free_group_ids.is_empty() {
+                    broadcast_log(&format!(
+                        "[分发] {} 未配置 free 分组，保存到文件",
+                        team_name
+                    ));
+                    if let Some(path) =
+                        save_json_records("accounts-free-skipped", &accounts.clone())?
+                    {
+                        output_files.push(path.display().to_string());
+                    }
+                    (0, 0)
+                } else {
+                    let free_cfg = crate::config::S2aConfig {
+                        group_ids: team_cfg.free_group_ids.clone(),
+                        priority: team_cfg.free_priority.unwrap_or(team_cfg.priority),
+                        concurrency: team_cfg.free_concurrency.unwrap_or(team_cfg.concurrency),
+                        ..team_cfg.clone()
+                    };
+                    runner.push_to_s2a(&free_cfg, accounts.clone(), None).await
+                }
+            } else {
+                runner.push_to_s2a(team_cfg, accounts.clone(), None).await
+            }
         } else {
             (0, 0)
         };

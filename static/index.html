@@ -138,10 +138,10 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
 .refresh-btn.spinning svg{animation:spin .6s linear infinite}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
-.run-detail-inline{overflow:hidden;animation:detail-expand .3s ease-out both}
-.run-detail-inline.collapsing{animation:detail-collapse .2s ease-in both}
-@keyframes detail-expand{from{opacity:0;max-height:0}to{opacity:1;max-height:800px}}
-@keyframes detail-collapse{from{opacity:1;max-height:800px}to{opacity:0;max-height:0}}
+.run-detail-inline{animation:detail-expand .2s ease-out both;transform-origin:top}
+.run-detail-inline.collapsing{animation:detail-collapse .15s ease-in both}
+@keyframes detail-expand{from{opacity:0;transform:translateY(-6px) scaleY(.97)}to{opacity:1;transform:translateY(0) scaleY(1)}}
+@keyframes detail-collapse{from{opacity:1;transform:translateY(0) scaleY(1)}to{opacity:0;transform:translateY(-6px) scaleY(.97)}}
 .hidden{display:none !important}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -1326,16 +1326,20 @@ async function loadRuns(page){
 }
 let _openRunId=null;
 async function showRunDetail(runId){
-  // If clicking the same row, toggle (collapse)
   if(_openRunId===runId){hideRunDetail();return}
-  // Remove any existing inline detail
   hideRunDetail(true);
   _openRunId=runId;
   const rowEl=document.getElementById('run-row-'+runId);
   if(!rowEl) return;
   rowEl.style.borderColor='var(--border-hover)';
+  // 立即插入加载骨架
+  const panel=document.createElement('div');
+  panel.id='run-detail-inline';
+  panel.className='card run-detail-inline p-5 mt-1';
+  panel.innerHTML='<div class="flex items-center gap-2 text-xs text-dim"><svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity=".25"/><path fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"/></svg>加载中…</div>';
+  rowEl.insertAdjacentElement('afterend',panel);
   try{const d=await api(`/api/runs/${runId}`);const r=d.run;
-  if(_openRunId!==runId) return; // stale
+  if(_openRunId!==runId) return;
   const detailAvg=(r.elapsed_secs&&r.target_count>0)?(r.elapsed_secs/r.target_count).toFixed(1)+'s':'-';
   let html=`<div class="flex items-center justify-between mb-4">
     <div class="section-title mb-0">运行详情</div>
@@ -1369,12 +1373,8 @@ async function showRunDetail(runId){
           <div class="progress-bar w-20"><div class="progress-fill" style="width:${pct}%"></div></div>
         </div></div>`});
     html+='</div>'}
-  const panel=document.createElement('div');
-  panel.id='run-detail-inline';
-  panel.className='card run-detail-inline p-5 mt-1';
   panel.innerHTML=html;
-  rowEl.insertAdjacentElement('afterend',panel);
-  }catch{_openRunId=null}
+  }catch{_openRunId=null;panel.remove()}
 }
 function hideRunDetail(instant){
   const el=document.getElementById('run-detail-inline');

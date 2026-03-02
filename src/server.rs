@@ -1454,6 +1454,12 @@ async fn update_schedule_handler(
                 &format!("定时计划已存在: {trimmed}"),
             ));
         }
+        // 同步更新历史 run 记录中的 schedule_name
+        if trimmed != name {
+            if let Err(e) = state.run_history_db.rename_schedule(&name, &trimmed) {
+                tracing::warn!("[调度] 同步重命名历史记录失败: {e}");
+            }
+        }
         // re-borrow after the check
         cfg.schedule
             .iter_mut()
