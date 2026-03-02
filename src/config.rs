@@ -58,6 +58,8 @@ pub struct RegisterConfig {
     pub user_agent: Option<String>,
     pub tls_emulation: Option<String>,
     pub chatgpt_mail_api_key: Option<String>,
+    /// 邮件 API 最大并发数（默认 50）
+    pub mail_max_concurrency: Option<usize>,
     /// 支付后 plan 激活轮询最大次数
     pub plan_poll_max_attempts: Option<usize>,
     /// 支付后 plan 激活轮询初始等待（毫秒）
@@ -121,6 +123,7 @@ pub struct RegisterRuntimeConfig {
     pub user_agent: String,
     pub tls_emulation: String,
     pub chatgpt_mail_api_key: String,
+    pub mail_max_concurrency: usize,
     pub plan_poll_max_attempts: usize,
     pub plan_poll_initial_delay_ms: u64,
     pub plan_poll_max_delay_ms: u64,
@@ -387,6 +390,7 @@ impl AppConfig {
                 .chatgpt_mail_api_key
                 .clone()
                 .unwrap_or_else(|| "sk-HQ5kHZao".to_string()),
+            mail_max_concurrency: self.register.mail_max_concurrency.unwrap_or(50).max(1),
             plan_poll_max_attempts,
             plan_poll_initial_delay_ms,
             plan_poll_max_delay_ms,

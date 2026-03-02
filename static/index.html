@@ -327,6 +327,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <div><label class="field-label">邮件超时(秒)</label><input id="cfg-mail-timeout" type="number" class="field-input"></div>
       <div><label class="field-label">OTP 重试</label><input id="cfg-otp-retries" type="number" class="field-input"></div>
       <div><label class="field-label">请求超时(秒)</label><input id="cfg-req-timeout" type="number" class="field-input"></div>
+      <div><label class="field-label">邮件并发数</label><input id="cfg-mail-concurrency" type="number" class="field-input" placeholder="50"></div>
     </div>
     <div class="mt-3">
       <div class="flex items-center justify-between mb-2">
@@ -793,6 +794,7 @@ function renderConfigForm(){
   document.getElementById('cfg-mail-timeout').value=r.mail_request_timeout_sec;
   document.getElementById('cfg-otp-retries').value=r.otp_max_retries;
   document.getElementById('cfg-req-timeout').value=r.request_timeout_sec;
+  document.getElementById('cfg-mail-concurrency').value=r.mail_max_concurrency||50;
   document.getElementById('cfg-gptmail-key').value=r.chatgpt_mail_api_key||'';
   renderEmailDomains();renderGptMailDomains();renderD1Cleanup();
 }
@@ -962,7 +964,7 @@ async function submitEditTeam(){
 
 // Config save
 async function saveDefaults(){try{await api('/api/config/defaults',{method:'PUT',body:{target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}}
-async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value)}});toast('注册配置已保存','success');loadConfig()}catch{}}
+async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value),mail_max_concurrency:parseInt(document.getElementById('cfg-mail-concurrency').value)||50}});toast('注册配置已保存','success');loadConfig()}catch{}}
 async function saveGptMail(){const key=document.getElementById('cfg-gptmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{chatgpt_mail_api_key:key}});toast('GPTMail API Key 已保存','success');loadConfig()}catch{}}
 function renderGptMailDomains(){
   if(!configData)return;const doms=configData.chatgpt_mail_domains||[];

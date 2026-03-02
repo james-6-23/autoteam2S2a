@@ -250,10 +250,11 @@ async fn run(
         let api_key = register_runtime.chatgpt_mail_api_key.clone();
         let gpt_domains = cfg.chatgpt_mail_domains.clone();
         println!("邮箱系统: chatgpt.org.uk (自动生成邮箱, 域名: {})", if gpt_domains.is_empty() { "随机".to_string() } else { format!("{}", gpt_domains.len()) });
+        let mail_concurrency = register_runtime.mail_max_concurrency;
         let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(), gpt_domains.clone(),
+            api_key.clone(), gpt_domains.clone(), mail_concurrency,
         ));
-        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(api_key, gpt_domains));
+        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(api_key, gpt_domains, mail_concurrency));
         (
             Arc::new(LiveRegisterService::new(
                 register_runtime.clone(),
@@ -270,8 +271,9 @@ async fn run(
             request_timeout_sec: register_runtime.mail_request_timeout_sec,
         };
         println!("邮箱系统: kyx-cloud (自定义域名)");
-        let reg_email = Arc::new(email_service::EmailService::new_http(email_cfg.clone()));
-        let rt_email = Arc::new(email_service::EmailService::new_http(email_cfg));
+        let mail_concurrency = register_runtime.mail_max_concurrency;
+        let reg_email = Arc::new(email_service::EmailService::new_http(email_cfg.clone(), mail_concurrency));
+        let rt_email = Arc::new(email_service::EmailService::new_http(email_cfg, mail_concurrency));
         (
             Arc::new(LiveRegisterService::new(
                 register_runtime.clone(),

@@ -376,9 +376,6 @@ impl EmailProvider for ChatgptOrgUkProvider {
     }
 }
 
-/// 默认邮件 API 最大并发数
-const DEFAULT_MAIL_CONCURRENCY: usize = 20;
-
 pub struct EmailService {
     provider: Arc<dyn EmailProvider>,
     /// 限制同时访问邮件 API 的并发数，避免高并发时打垮邮件服务
@@ -386,10 +383,6 @@ pub struct EmailService {
 }
 
 impl EmailService {
-    pub fn new(provider: Arc<dyn EmailProvider>) -> Self {
-        Self::with_concurrency(provider, DEFAULT_MAIL_CONCURRENCY)
-    }
-
     pub fn with_concurrency(provider: Arc<dyn EmailProvider>, max_concurrency: usize) -> Self {
         Self {
             provider,
@@ -397,12 +390,12 @@ impl EmailService {
         }
     }
 
-    pub fn new_http(cfg: EmailServiceConfig) -> Self {
-        Self::new(Arc::new(HttpEmailProvider::new(cfg)))
+    pub fn new_http(cfg: EmailServiceConfig, max_concurrency: usize) -> Self {
+        Self::with_concurrency(Arc::new(HttpEmailProvider::new(cfg)), max_concurrency)
     }
 
-    pub fn new_chatgpt_org_uk(api_key: String, domains: Vec<String>) -> Self {
-        Self::new(Arc::new(ChatgptOrgUkProvider::new(api_key, domains)))
+    pub fn new_chatgpt_org_uk(api_key: String, domains: Vec<String>, max_concurrency: usize) -> Self {
+        Self::with_concurrency(Arc::new(ChatgptOrgUkProvider::new(api_key, domains)), max_concurrency)
     }
 
     /// 通过 provider 自动生成邮箱（仅 chatgpt.org.uk 等支持）

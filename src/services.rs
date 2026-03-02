@@ -165,9 +165,7 @@ impl LiveRegisterService {
             .await
             .unwrap_or(0);
 
-        log_worker(input.worker_id, "注册", "发送验证码...");
-        self.send_verification_email(client).await?;
-
+        // 先启动后台轮询再发送验证码，利用发送耗时提前开始轮询
         let mut otp_handle = self
             .email_service
             .start_background_poll(
@@ -183,11 +181,15 @@ impl LiveRegisterService {
                 },
             )
             .await?;
-        log_worker(input.worker_id, "注册", "等待验证码 (20s超时)...");
+
+        log_worker(input.worker_id, "注册", "发送验证码...");
+        self.send_verification_email(client).await?;
+
+        log_worker(input.worker_id, "注册", "等待验证码 (35s超时)...");
 
         // === 分级超时策略 ===
-        // 第1轮：20s 超时等待后台轮询结果
-        let otp_code = match tokio::time::timeout(Duration::from_secs(20), otp_handle.wait()).await
+        // 第1轮：35s 超时等待后台轮询结果
+        let otp_code = match tokio::time::timeout(Duration::from_secs(35), otp_handle.wait()).await
         {
             Ok(Ok(Ok(code))) => code,
             Ok(Ok(Err(e))) => bail!("验证码轮询失败: {e}"),
@@ -198,7 +200,7 @@ impl LiveRegisterService {
                 log_worker(
                     input.worker_id,
                     "注册",
-                    "验证码 20s 超时，重新轮询邮箱 (10s重试)...",
+                    "验证码 35s 超时，重新轮询邮箱 (20s重试)...",
                 );
 
                 let mail_proxy_retry = if self.cfg.use_proxy_for_mail {
@@ -213,7 +215,7 @@ impl LiveRegisterService {
                         mail_proxy_retry,
                         WaitCodeOptions {
                             after_email_id: baseline_email_id,
-                            max_retries: 8,
+                            max_retries: 15,
                             interval_ms: 800,
                             size: 5,
                             subject_must_contain_code_word: false,
@@ -222,11 +224,11 @@ impl LiveRegisterService {
                     )
                     .await?;
 
-                match tokio::time::timeout(Duration::from_secs(10), retry_handle.wait()).await {
+                match tokio::time::timeout(Duration::from_secs(20), retry_handle.wait()).await {
                     Ok(Ok(Ok(code))) => code,
                     _ => {
                         retry_handle.cancel();
-                        log_worker(input.worker_id, "ERR", "验证码 10s 重试仍超时，跳过此账号");
+                        log_worker(input.worker_id, "ERR", "验证码 20s 重试仍超时，跳过此账号");
                         bail!("otp_timeout_skip");
                     }
                 }
