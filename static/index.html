@@ -138,6 +138,10 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
 .refresh-btn.spinning svg{animation:spin .6s linear infinite}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
+.run-detail-inline{overflow:hidden;animation:detail-expand .3s ease-out both}
+.run-detail-inline.collapsing{animation:detail-collapse .2s ease-in both}
+@keyframes detail-expand{from{opacity:0;max-height:0}to{opacity:1;max-height:800px}}
+@keyframes detail-collapse{from{opacity:1;max-height:800px}to{opacity:0;max-height:0}}
 .hidden{display:none !important}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -498,13 +502,6 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <button onclick="loadRuns(Math.ceil(document.getElementById('runs-total-pages').value))" id="runs-last" class="btn btn-ghost text-xs py-1 px-2" title="末页">»</button>
       <input type="hidden" id="runs-total-pages" value="1">
     </div>
-  </div>
-  <div id="run-detail-panel" class="card p-5 hidden">
-    <div class="flex items-center justify-between mb-4">
-      <div class="section-title mb-0">运行详情</div>
-      <button onclick="hideRunDetail()" class="btn btn-ghost text-xs py-1">关闭</button>
-    </div>
-    <div id="run-detail-content"></div>
   </div>
 </div>
 
@@ -1086,7 +1083,7 @@ function fmtBjTime(iso){
     return `${mm}-${dd} ${hh}:${mi}:${ss}`}catch{return iso||'-'}
 }
 async function loadRuns(page){
-  if(page<1) page=1;currentRunPage=page;
+  if(page<1) page=1;currentRunPage=page;_openRunId=null;
   const f=document.getElementById('runs-filter').value;const params=new URLSearchParams({page,per_page:15});if(f) params.set('schedule',f);
   try{const d=await api(`/api/runs?${params}`);const el=document.getElementById('run-list');const pg=document.getElementById('run-pagination');
   if(!d.runs||!d.runs.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无记录</p>';pg.classList.add('hidden');return}
@@ -1103,7 +1100,7 @@ async function loadRuns(page){
     const s2aTotal=r.total_s2a_ok+r.total_s2a_failed;
     const s2aPct=s2aTotal>0?Math.round(r.total_s2a_ok/s2aTotal*100):0;
     const errHtml=r.error?`<div class="text-[.7rem] text-red-400 mt-1.5 truncate" title="${r.error}">${r.error}</div>`:'';
-    return `<div class="row-item cursor-pointer" onclick="showRunDetail('${r.id}')" style="padding:10px 14px">
+    return `<div class="row-item cursor-pointer" id="run-row-${r.id}" onclick="showRunDetail('${r.id}')" style="padding:10px 14px">
       <div class="flex items-center justify-between mb-2">
         <div class="flex items-center gap-2">
           <span class="badge ${bc[r.status]||'badge-off'}">${lb[r.status]||r.status}</span>
@@ -1141,11 +1138,24 @@ async function loadRuns(page){
   if(tp>1){pg.classList.remove('hidden');document.getElementById('runs-prev').disabled=page<=1;document.getElementById('runs-next').disabled=page>=tp;document.getElementById('runs-page-info').textContent=`第 ${page}/${tp} 页 (共 ${d.total} 条)`;document.getElementById('runs-total-pages').value=tp;document.getElementById('runs-last').disabled=page>=tp}else{pg.classList.add('hidden')}
   }catch{}
 }
+let _openRunId=null;
 async function showRunDetail(runId){
+  // If clicking the same row, toggle (collapse)
+  if(_openRunId===runId){hideRunDetail();return}
+  // Remove any existing inline detail
+  hideRunDetail(true);
+  _openRunId=runId;
+  const rowEl=document.getElementById('run-row-'+runId);
+  if(!rowEl) return;
+  rowEl.style.borderColor='var(--border-hover)';
   try{const d=await api(`/api/runs/${runId}`);const r=d.run;
-  const panel=document.getElementById('run-detail-panel');const content=document.getElementById('run-detail-content');
+  if(_openRunId!==runId) return; // stale
   const detailAvg=(r.elapsed_secs&&r.target_count>0)?(r.elapsed_secs/r.target_count).toFixed(1)+'s':'-';
-  let html=`<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+  let html=`<div class="flex items-center justify-between mb-4">
+    <div class="section-title mb-0">运行详情</div>
+    <button onclick="hideRunDetail()" class="btn btn-ghost text-xs py-1">关闭</button>
+  </div>
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
     <div class="card-inner p-3"><div class="field-label">注册成功</div><div class="stat-num text-lg c-heading">${r.registered_ok}</div></div>
     <div class="card-inner p-3"><div class="field-label">RT 成功</div><div class="stat-num text-lg c-heading">${r.rt_ok}</div></div>
     <div class="card-inner p-3"><div class="field-label">S2A 成功</div><div class="stat-num text-lg text-teal-400">${r.total_s2a_ok}</div></div>
@@ -1173,9 +1183,22 @@ async function showRunDetail(runId){
           <div class="progress-bar w-20"><div class="progress-fill" style="width:${pct}%"></div></div>
         </div></div>`});
     html+='</div>'}
-  content.innerHTML=html;panel.classList.remove('hidden')}catch{}
+  const panel=document.createElement('div');
+  panel.id='run-detail-inline';
+  panel.className='card run-detail-inline p-5 mt-1';
+  panel.innerHTML=html;
+  rowEl.insertAdjacentElement('afterend',panel);
+  }catch{_openRunId=null}
 }
-function hideRunDetail(){document.getElementById('run-detail-panel').classList.add('hidden')}
+function hideRunDetail(instant){
+  const el=document.getElementById('run-detail-inline');
+  if(_openRunId){const row=document.getElementById('run-row-'+_openRunId);if(row) row.style.borderColor=''}
+  _openRunId=null;
+  if(!el) return;
+  if(instant){el.remove();return}
+  el.classList.add('collapsing');
+  el.addEventListener('animationend',()=>el.remove(),{once:true});
+}
 
 // Logs SSE — text buffer + batched RAF for performance
 let logEs=null;let logAutoScroll=true;let logLineCount=0;
