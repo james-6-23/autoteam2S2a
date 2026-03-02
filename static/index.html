@@ -1018,13 +1018,14 @@ async function refreshTasks(){
     let html='';
     // running schedules
     if(runningScheds.length){
-      html+=runningScheds.map(s=>`<div class="row-item flex items-center justify-between">
+      html+=runningScheds.map(s=>`<div class="row-item flex items-center justify-between cursor-pointer" onclick="switchTab('logs')">
         <div class="flex items-center gap-3 flex-1 min-w-0">
           <span class="badge badge-run">调度中</span>
           <span class="text-xs font-medium c-heading">${s.name}</span>
           <span class="text-xs text-dim">x${s.target_count}/批</span>
           <span class="text-xs text-dim">${s.start_time}-${s.end_time}</span>
           <span class="text-xs text-dim">间隔 ${s.batch_interval_mins}m</span>
+          <span class="text-xs text-teal-400">点击查看日志</span>
         </div>
         <button onclick="event.stopPropagation();stopSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">停止</button>
       </div>`).join('');
