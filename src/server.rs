@@ -533,6 +533,61 @@ async fn test_s2a_handler(
     }))
 }
 
+async fn test_gptmail_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let key = cfg
+        .register
+        .chatgpt_mail_api_key
+        .clone()
+        .unwrap_or_default();
+    drop(cfg);
+
+    if key.is_empty() {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            "未配置 GPTMail API Key",
+        ));
+    }
+
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let resp = client
+        .get("https://mail.chatgpt.org.uk/api/stats")
+        .header("X-API-Key", &key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("请求失败: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err(error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("HTTP {}", resp.status()),
+        ));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("解析失败: {e}")))?;
+
+    if json.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        let err = json
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        return Err(error_json(StatusCode::BAD_GATEWAY, &format!("API 错误: {err}")));
+    }
+
+    Ok(Json(json))
+}
+
 #[derive(Serialize)]
 struct S2aStatsResponse {
     active: usize,
@@ -1904,6 +1959,7 @@ pub async fn start_server(
         .route("/api/s2a/fetch-groups", post(fetch_s2a_groups_handler))
         .route("/api/config/defaults", put(update_defaults_handler))
         .route("/api/config/register", put(update_register_handler))
+        .route("/api/test/gptmail", post(test_gptmail_handler))
         .route("/api/config/d1_cleanup", put(update_d1_cleanup_handler))
         .route("/api/config/email_domains", post(add_email_domain_handler))
         .route(

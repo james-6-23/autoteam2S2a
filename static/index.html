@@ -955,18 +955,18 @@ async function saveRegister(){try{await api('/api/config/register',{method:'PUT'
 async function saveGptMail(){const key=document.getElementById('cfg-gptmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{chatgpt_mail_api_key:key}});toast('GPTMail API Key 已保存','success');loadConfig()}catch{}}
 async function testGptMail(){
   const key=document.getElementById('cfg-gptmail-key').value.trim();
-  if(!key){toast('请输入 API Key','error');return}
+  if(!key){toast('请先输入 API Key 并保存','error');return}
   const st=document.getElementById('gptmail-status');const info=document.getElementById('gptmail-info');
   st.textContent='测试中…';st.className='text-xs text-amber-400';info.classList.add('hidden');
   try{
-    const resp=await fetch('https://mail.chatgpt.org.uk/api/stats',{headers:{'X-API-Key':key}});
-    const json=await resp.json();
-    if(!json.success){st.textContent='失败: '+(json.error||'未知错误');st.className='text-xs text-red-400';return}
+    // 先保存 key，再通过后端代理测试
+    await api('/api/config/register',{method:'PUT',body:{chatgpt_mail_api_key:key}});
+    const json=await api('/api/test/gptmail',{method:'POST'});
     const d=json.data;
     st.textContent='连接成功';st.className='text-xs text-teal-400';
     info.classList.remove('hidden');
     info.innerHTML=`<span>累计邮件 <span class="c-heading font-mono">${(d.total_emails||0).toLocaleString()}</span></span><span>今日邮件 <span class="c-heading font-mono">${d.today_emails||0}</span></span><span>活跃域名 <span class="c-heading font-mono">${d.active_domains||0}</span></span><span>总域名 <span class="c-heading font-mono">${d.domain_count||0}</span></span>`;
-  }catch(e){st.textContent='连接失败: '+e.message;st.className='text-xs text-red-400'}
+  }catch(e){st.textContent='连接失败';st.className='text-xs text-red-400'}
 }
 async function saveToFile(){try{const d=await api('/api/config/save',{method:'POST'});toast(d.message,'success')}catch{}}
 
