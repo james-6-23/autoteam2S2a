@@ -1231,6 +1231,18 @@ async fn execute_task(
 ) {
     task_manager.set_running(&task_id).await;
 
+    {
+        let rt = cfg.register_runtime();
+        crate::log_broadcast::broadcast_log(&format!(
+            "[配置] 邮件并发: {} | OTP重试: {} | OTP间隔: {}ms | 邮件超时: {}s | 请求超时: {}s",
+            rt.mail_max_concurrency,
+            rt.otp_max_retries,
+            rt.otp_interval_ms,
+            rt.mail_request_timeout_sec,
+            rt.request_timeout_sec,
+        ));
+    }
+
     // 写入运行记录
     let run_id = task_id.clone();
     if let Err(e) = run_history_db.insert_run(&crate::db::NewRun {
@@ -1894,6 +1906,15 @@ pub async fn build_workflow_runner(
     let proxy_pool = build_proxy_pool(cfg, proxy_file).await?;
     let register_runtime = cfg.register_runtime();
     let codex_runtime = cfg.codex_runtime();
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[配置] 邮件并发: {} | OTP重试: {} | OTP间隔: {}ms | 邮件超时: {}s | 请求超时: {}s",
+        register_runtime.mail_max_concurrency,
+        register_runtime.otp_max_retries,
+        register_runtime.otp_interval_ms,
+        register_runtime.mail_request_timeout_sec,
+        register_runtime.request_timeout_sec,
+    ));
 
     let (register_service, codex_service): (
         Arc<dyn crate::services::RegisterService>,
