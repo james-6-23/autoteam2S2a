@@ -319,14 +319,25 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
     <button onclick="saveDefaults()" class="btn btn-amber mt-4">保存</button>
   </div>
   <div class="card p-5">
-    <div class="section-title">注册服务</div>
+    <div class="section-title">Kyx-Cloud 邮箱</div>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
       <div><label class="field-label">邮件 API 地址</label><input id="cfg-mail-base" class="field-input"></div>
       <div><label class="field-label">邮件 API 路径</label><input id="cfg-mail-path" class="field-input"></div>
       <div><label class="field-label">邮件 API Token</label><input id="cfg-mail-token" class="field-input"></div>
-      <div><label class="field-label">请求超时(秒)</label><input id="cfg-mail-timeout" type="number" class="field-input"></div>
+      <div><label class="field-label">邮件超时(秒)</label><input id="cfg-mail-timeout" type="number" class="field-input"></div>
       <div><label class="field-label">OTP 重试</label><input id="cfg-otp-retries" type="number" class="field-input"></div>
       <div><label class="field-label">请求超时(秒)</label><input id="cfg-req-timeout" type="number" class="field-input"></div>
+    </div>
+    <div class="mt-3">
+      <div class="flex items-center justify-between mb-2">
+        <label class="field-label mb-0">邮箱域名</label>
+        <span id="domain-count" class="text-xs font-mono text-dim">0</span>
+      </div>
+      <div id="email-domain-list" class="flex flex-wrap gap-2 mb-2"></div>
+      <div class="flex gap-2">
+        <input id="new-domain" class="field-input flex-1" placeholder="@example.com">
+        <button onclick="addEmailDomain()" class="btn btn-teal text-xs py-1.5">添加</button>
+      </div>
     </div>
     <button onclick="saveRegister()" class="btn btn-amber mt-4">保存</button>
   </div>
@@ -343,6 +354,17 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       </div>
     </div>
     <div id="gptmail-info" class="hidden mt-3 card-inner p-3 text-xs grid grid-cols-2 md:grid-cols-4 gap-2"></div>
+    <div class="mt-3">
+      <div class="flex items-center justify-between mb-2">
+        <label class="field-label mb-0">指定域名 <span class="text-dim">(留空则随机)</span></label>
+        <span id="gptmail-domain-count" class="text-xs font-mono text-dim">0</span>
+      </div>
+      <div id="gptmail-domain-list" class="flex flex-wrap gap-2 mb-2"></div>
+      <div class="flex gap-2">
+        <input id="new-gptmail-domain" class="field-input flex-1" placeholder="example.com">
+        <button onclick="addGptMailDomain()" class="btn btn-teal text-xs py-1.5">添加</button>
+      </div>
+    </div>
   </div>
   <div class="card p-5">
     <div class="flex items-center justify-between mb-3">
@@ -363,17 +385,6 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <div id="d1-db-rows" class="space-y-2"></div>
     </div>
     <button onclick="saveD1Cleanup()" class="btn btn-amber mt-4">保存</button>
-  </div>
-  <div class="card p-5">
-    <div class="flex items-center justify-between mb-3">
-      <div class="section-title mb-0">邮箱域名</div>
-      <span id="domain-count" class="text-xs font-mono text-dim">0</span>
-    </div>
-    <div id="email-domain-list" class="flex flex-wrap gap-2 mb-3"></div>
-    <div class="flex gap-2">
-      <input id="new-domain" class="field-input flex-1" placeholder="@example.com">
-      <button onclick="addEmailDomain()" class="btn btn-teal text-xs py-1.5">添加</button>
-    </div>
   </div>
   <div class="card p-5 flex items-center justify-between">
     <div><div class="text-sm font-medium c-heading">持久化配置</div><div class="text-xs c-dim mt-0.5">写入 config.toml 文件，容器重启后保留</div></div>
@@ -783,7 +794,7 @@ function renderConfigForm(){
   document.getElementById('cfg-otp-retries').value=r.otp_max_retries;
   document.getElementById('cfg-req-timeout').value=r.request_timeout_sec;
   document.getElementById('cfg-gptmail-key').value=r.chatgpt_mail_api_key||'';
-  renderEmailDomains();renderD1Cleanup();
+  renderEmailDomains();renderGptMailDomains();renderD1Cleanup();
 }
 
 // D1
@@ -953,6 +964,15 @@ async function submitEditTeam(){
 async function saveDefaults(){try{await api('/api/config/defaults',{method:'PUT',body:{target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}}
 async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value)}});toast('注册配置已保存','success');loadConfig()}catch{}}
 async function saveGptMail(){const key=document.getElementById('cfg-gptmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{chatgpt_mail_api_key:key}});toast('GPTMail API Key 已保存','success');loadConfig()}catch{}}
+function renderGptMailDomains(){
+  if(!configData)return;const doms=configData.chatgpt_mail_domains||[];
+  document.getElementById('gptmail-domain-count').textContent=doms.length;
+  const el=document.getElementById('gptmail-domain-list');
+  if(!doms.length){el.innerHTML='<p class="text-xs text-dim">未配置（使用随机域名）</p>';return}
+  el.innerHTML=doms.map(d=>`<span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style="background:var(--domain-bg);border:1px solid var(--domain-border);color:var(--text-dim2)">${d}<button onclick="deleteGptMailDomain('${d.replace(/'/g,"\\'")}')" class="text-red-400 hover:text-red-300 ml-1">&times;</button></span>`).join('');
+}
+async function addGptMailDomain(){const v=document.getElementById('new-gptmail-domain').value.trim();if(!v){toast('请输入域名','error');return}try{await api('/api/config/gptmail_domains',{method:'POST',body:{domain:v}});document.getElementById('new-gptmail-domain').value='';toast('域名已添加','success');loadConfig()}catch{}}
+async function deleteGptMailDomain(d){try{await api('/api/config/gptmail_domains',{method:'DELETE',body:{domain:d}});toast('域名已删除','success');loadConfig()}catch{}}
 async function testGptMail(){
   const key=document.getElementById('cfg-gptmail-key').value.trim();
   if(!key){toast('请先输入 API Key 并保存','error');return}

@@ -280,7 +280,7 @@ async fn run_batch_loop(
 
         // 构建 runner
         let runner =
-            match crate::server::build_workflow_runner(&cfg, state.proxy_file.as_deref()).await {
+            match crate::server::build_workflow_runner(&cfg, state.proxy_file.as_deref(), schedule.use_chatgpt_mail).await {
                 Ok(r) => r,
                 Err(e) => {
                     broadcast_log(&format!(

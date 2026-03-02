@@ -20,6 +20,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub email_domains: Vec<String>,
     #[serde(default)]
+    pub chatgpt_mail_domains: Vec<String>,
+    #[serde(default)]
     pub d1_cleanup: D1CleanupConfig,
     #[serde(default)]
     pub server: ServerConfig,

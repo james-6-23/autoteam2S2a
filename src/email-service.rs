@@ -221,14 +221,16 @@ impl EmailProvider for HttpEmailProvider {
 pub struct ChatgptOrgUkProvider {
     api_base: String,
     api_key: String,
+    domains: Vec<String>,
     clients: Mutex<HashMap<String, rquest::Client>>,
 }
 
 impl ChatgptOrgUkProvider {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: String, domains: Vec<String>) -> Self {
         Self {
             api_base: "https://mail.chatgpt.org.uk".to_string(),
             api_key,
+            domains,
             clients: Mutex::new(HashMap::new()),
         }
     }
@@ -333,12 +335,31 @@ impl EmailProvider for ChatgptOrgUkProvider {
     async fn generate_email(&self, proxy: Option<&str>) -> Result<Option<String>> {
         let client = self.get_client(proxy)?;
         let url = format!("{}/api/generate-email", self.api_base);
-        let resp = client
-            .get(&url)
-            .header("X-API-Key", &self.api_key)
-            .header("User-Agent", "Mozilla/5.0")
-            .send()
-            .await?;
+
+        let resp = if self.domains.is_empty() {
+            // 无域名配置：GET 完全随机
+            client
+                .get(&url)
+                .header("X-API-Key", &self.api_key)
+                .header("User-Agent", "Mozilla/5.0")
+                .send()
+                .await?
+        } else {
+            // 从配置的域名列表中随机选一个
+            use rand::Rng;
+            let idx = rand::rng().random_range(0..self.domains.len());
+            let domain = self.domains[idx]
+                .trim_start_matches('@')
+                .to_string();
+            client
+                .post(&url)
+                .header("X-API-Key", &self.api_key)
+                .header("User-Agent", "Mozilla/5.0")
+                .header("Content-Type", "application/json")
+                .body(serde_json::json!({"domain": domain}).to_string())
+                .send()
+                .await?
+        };
         if resp.status() != StatusCode::OK {
             bail!("chatgpt.org.uk 生成邮箱失败: HTTP {}", resp.status());
         }
@@ -380,8 +401,8 @@ impl EmailService {
         Self::new(Arc::new(HttpEmailProvider::new(cfg)))
     }
 
-    pub fn new_chatgpt_org_uk(api_key: String) -> Self {
-        Self::new(Arc::new(ChatgptOrgUkProvider::new(api_key)))
+    pub fn new_chatgpt_org_uk(api_key: String, domains: Vec<String>) -> Self {
+        Self::new(Arc::new(ChatgptOrgUkProvider::new(api_key, domains)))
     }
 
     /// 通过 provider 自动生成邮箱（仅 chatgpt.org.uk 等支持）

@@ -248,11 +248,12 @@ async fn run(
         )
     } else if use_chatgpt_mail {
         let api_key = register_runtime.chatgpt_mail_api_key.clone();
-        println!("邮箱系统: chatgpt.org.uk (自动生成邮箱)");
+        let gpt_domains = cfg.chatgpt_mail_domains.clone();
+        println!("邮箱系统: chatgpt.org.uk (自动生成邮箱, 域名: {})", if gpt_domains.is_empty() { "随机".to_string() } else { format!("{}", gpt_domains.len()) });
         let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(),
+            api_key.clone(), gpt_domains.clone(),
         ));
-        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(api_key));
+        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(api_key, gpt_domains));
         (
             Arc::new(LiveRegisterService::new(
                 register_runtime.clone(),

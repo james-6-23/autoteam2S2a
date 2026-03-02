@@ -242,6 +242,7 @@ struct FullConfigResponse {
     register: RegisterResp,
     proxy_pool: Vec<String>,
     email_domains: Vec<String>,
+    chatgpt_mail_domains: Vec<String>,
     d1_cleanup: D1CleanupResp,
 }
 
@@ -394,6 +395,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
         },
         proxy_pool: cfg.proxy_pool.clone(),
         email_domains: cfg.email_domains.clone(),
+        chatgpt_mail_domains: cfg.chatgpt_mail_domains.clone(),
         d1_cleanup: D1CleanupResp {
             enabled: cfg.d1_cleanup.enabled.unwrap_or(false),
             account_id: cfg.d1_cleanup.account_id.clone().unwrap_or_default(),
@@ -908,6 +910,51 @@ async fn delete_email_domain_handler(
     }))
 }
 
+async fn add_gptmail_domain_handler(
+    State(state): State<AppState>,
+    Json(req): Json<EmailDomainRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let domain = req.domain.trim().to_string();
+    if domain.is_empty() {
+        return Err(error_json(StatusCode::BAD_REQUEST, "域名不能为空"));
+    }
+    let mut cfg = state.config.write().await;
+    if cfg.chatgpt_mail_domains.contains(&domain) {
+        return Err(error_json(
+            StatusCode::CONFLICT,
+            &format!("域名已存在: {domain}"),
+        ));
+    }
+    cfg.chatgpt_mail_domains.push(domain.clone());
+    auto_save(&cfg, &state.config_path);
+    Ok((
+        StatusCode::CREATED,
+        Json(MsgResponse {
+            message: format!("GPTMail 域名 {domain} 已添加"),
+        }),
+    ))
+}
+
+async fn delete_gptmail_domain_handler(
+    State(state): State<AppState>,
+    Json(req): Json<EmailDomainRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let domain = req.domain.trim().to_string();
+    let mut cfg = state.config.write().await;
+    let before = cfg.chatgpt_mail_domains.len();
+    cfg.chatgpt_mail_domains.retain(|d| d != &domain);
+    if cfg.chatgpt_mail_domains.len() == before {
+        return Err(error_json(
+            StatusCode::NOT_FOUND,
+            &format!("未找到域名: {domain}"),
+        ));
+    }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse {
+        message: format!("GPTMail 域名 {domain} 已删除"),
+    }))
+}
+
 async fn update_d1_cleanup_handler(
     State(state): State<AppState>,
     Json(req): Json<UpdateD1CleanupRequest>,
@@ -1224,10 +1271,11 @@ async fn execute_task(
         Arc<dyn crate::services::CodexService>,
     ) = if use_chatgpt_mail {
         let api_key = register_runtime.chatgpt_mail_api_key.clone();
+        let gpt_domains = cfg.chatgpt_mail_domains.clone();
         let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(),
+            api_key.clone(), gpt_domains.clone(),
         ));
-        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(api_key));
+        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(api_key, gpt_domains));
         (
             Arc::new(LiveRegisterService::new(
                 register_runtime.clone(),
@@ -1675,7 +1723,7 @@ async fn trigger_schedule_handler(
 
             let config_snapshot = state_clone.config.read().await.clone();
             let runner =
-                match build_workflow_runner(&config_snapshot, state_clone.proxy_file.as_deref())
+                match build_workflow_runner(&config_snapshot, state_clone.proxy_file.as_deref(), schedule.use_chatgpt_mail)
                     .await
                 {
                     Ok(r) => r,
@@ -1833,33 +1881,44 @@ async fn get_run_handler(
 pub async fn build_workflow_runner(
     cfg: &AppConfig,
     proxy_file: Option<&std::path::Path>,
+    use_chatgpt_mail: bool,
 ) -> anyhow::Result<WorkflowRunner> {
     let proxy_pool = build_proxy_pool(cfg, proxy_file).await?;
     let register_runtime = cfg.register_runtime();
     let codex_runtime = cfg.codex_runtime();
 
-    let chatgpt_mail_api_key = register_runtime.chatgpt_mail_api_key.clone();
     let (register_service, codex_service): (
         Arc<dyn crate::services::RegisterService>,
         Arc<dyn crate::services::CodexService>,
-    ) = {
+    ) = if use_chatgpt_mail {
+        let api_key = register_runtime.chatgpt_mail_api_key.clone();
+        let gpt_domains = cfg.chatgpt_mail_domains.clone();
+        let reg_email = Arc::new(crate::email_service::EmailService::new_chatgpt_org_uk(
+            api_key.clone(), gpt_domains.clone(),
+        ));
+        let rt_email = Arc::new(crate::email_service::EmailService::new_chatgpt_org_uk(
+            api_key, gpt_domains,
+        ));
+        (
+            Arc::new(LiveRegisterService::new(register_runtime.clone(), reg_email))
+                as Arc<dyn crate::services::RegisterService>,
+            Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                as Arc<dyn crate::services::CodexService>,
+        )
+    } else {
         let email_cfg = crate::email_service::EmailServiceConfig {
             mail_api_base: register_runtime.mail_api_base.clone(),
             mail_api_path: register_runtime.mail_api_path.clone(),
             mail_api_token: register_runtime.mail_api_token.clone(),
             request_timeout_sec: register_runtime.mail_request_timeout_sec,
         };
-        // 默认使用 kyx-cloud 邮箱系统（调度器场景下通过 schedule 配置决定）
-        let _ = chatgpt_mail_api_key; // suppress unused warning
         let reg_email = Arc::new(crate::email_service::EmailService::new_http(
             email_cfg.clone(),
         ));
         let rt_email = Arc::new(crate::email_service::EmailService::new_http(email_cfg));
         (
-            Arc::new(LiveRegisterService::new(
-                register_runtime.clone(),
-                reg_email,
-            )) as Arc<dyn crate::services::RegisterService>,
+            Arc::new(LiveRegisterService::new(register_runtime.clone(), reg_email))
+                as Arc<dyn crate::services::RegisterService>,
             Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
                 as Arc<dyn crate::services::CodexService>,
         )
@@ -1965,6 +2024,10 @@ pub async fn start_server(
         .route(
             "/api/config/email_domains",
             delete(delete_email_domain_handler),
+        )
+        .route(
+            "/api/config/gptmail_domains",
+            post(add_gptmail_domain_handler).delete(delete_gptmail_domain_handler),
         )
         .route("/api/config/save", post(save_config_handler))
         // Task management
