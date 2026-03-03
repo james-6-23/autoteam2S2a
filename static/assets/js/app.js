@@ -521,8 +521,33 @@ async function refreshTasks(){
 }
 let _tpTimer=null;
 let _tpTaskId=null;
+let _tpElapsedTick=null;
+let _tpStartedAtMs=0;
+let _tpFinalElapsedSec=null;
+function formatElapsedSec(sec){
+  const v=Math.max(0,Number(sec)||0);
+  return `${v.toFixed(1)}s`;
+}
+function renderTaskElapsed(){
+  const el=document.getElementById('tp-elapsed');
+  if(!el) return;
+  const sec=_tpFinalElapsedSec!=null
+    ? Number(_tpFinalElapsedSec)||0
+    : (_tpStartedAtMs>0?(Date.now()-_tpStartedAtMs)/1000:0);
+  el.textContent=`耗时 ${formatElapsedSec(sec)}`;
+}
+function startTaskElapsedTick(){
+  if(_tpElapsedTick){clearInterval(_tpElapsedTick);_tpElapsedTick=null}
+  renderTaskElapsed();
+  _tpElapsedTick=setInterval(renderTaskElapsed,100);
+}
+function stopTaskElapsedTick(){
+  if(_tpElapsedTick){clearInterval(_tpElapsedTick);_tpElapsedTick=null}
+}
 function showTaskDetail(taskId){
   _tpTaskId=taskId;
+  _tpStartedAtMs=Date.now();
+  _tpFinalElapsedSec=null;
   const panel=document.getElementById('task-progress-panel');
   panel.classList.remove('hidden');
   // reset
@@ -534,10 +559,24 @@ function showTaskDetail(taskId){
   });
   document.getElementById('tp-id').textContent=taskId;
   document.getElementById('tp-stage').textContent='';
+  renderTaskElapsed();
   document.getElementById('tp-error').classList.add('hidden');
   document.getElementById('tp-report').classList.add('hidden');
   document.getElementById('tp-badge').className='badge badge-run tp-pulse';
   document.getElementById('tp-badge').textContent='运行';
+  startTaskElapsedTick();
+  // 预取任务详情，用 created_at 校准耗时；若已完成则直接显示最终耗时
+  api(`/api/tasks/${taskId}`).then(t=>{
+    if(_tpTaskId!==taskId) return;
+    if(t&&t.created_at){
+      const started=Date.parse(t.created_at);
+      if(!Number.isNaN(started)) _tpStartedAtMs=started;
+    }
+    if(t&&t.report&&typeof t.report.elapsed_secs==='number'){
+      _tpFinalElapsedSec=t.report.elapsed_secs;
+    }
+    renderTaskElapsed();
+  }).catch(()=>{});
   // start polling
   pollTaskProgress();
   _tpTimer=setInterval(pollTaskProgress,1500);
@@ -545,7 +584,12 @@ function showTaskDetail(taskId){
 }
 function closeTaskProgress(){
   if(_tpTimer){clearInterval(_tpTimer);_tpTimer=null}
+  stopTaskElapsedTick();
   _tpTaskId=null;
+  _tpStartedAtMs=0;
+  _tpFinalElapsedSec=null;
+  const elapsedEl=document.getElementById('tp-elapsed');
+  if(elapsedEl) elapsedEl.textContent='耗时 0.0s';
   document.getElementById('task-progress-panel').classList.add('hidden');
 }
 async function pollTaskProgress(){
@@ -582,6 +626,10 @@ async function pollTaskProgress(){
     // if done, show report
     if(p.status==='completed'||p.status==='failed'||p.status==='cancelled'){
       if(_tpTimer){clearInterval(_tpTimer);_tpTimer=null}
+      if(_tpFinalElapsedSec==null&&_tpStartedAtMs>0){
+        _tpFinalElapsedSec=(Date.now()-_tpStartedAtMs)/1000;
+        renderTaskElapsed();
+      }
       // fetch full task detail for report & error
       try{
         const t=await api(`/api/tasks/${_tpTaskId}`);
@@ -594,12 +642,26 @@ async function pollTaskProgress(){
           const r=t.report;
           const rp=document.getElementById('tp-report');
           rp.classList.remove('hidden');
+          if(typeof r.elapsed_secs==='number'){
+            _tpFinalElapsedSec=r.elapsed_secs;
+            renderTaskElapsed();
+          }
+          const totalS2aOk=Number(r.s2a_ok??0);
+          const totalS2aFailed=Number(r.s2a_failed??0);
+          const freeS2aOk=Number(r.free_s2a_ok??0);
+          const freeS2aFailed=Number(r.free_s2a_failed??0);
+          const teamS2aOk=Math.max(0,totalS2aOk-freeS2aOk);
+          const teamS2aFailed=Math.max(0,totalS2aFailed-freeS2aFailed);
           let lines=[
             `耗时: ${r.elapsed_secs?.toFixed(1)}s`,
             `注册: ${r.registered_ok} 成功 / ${r.registered_failed} 失败`,
             `RT: ${r.rt_ok} 成功 / ${r.rt_failed} 失败`,
           ];
-          if(r.s2a_ok!==undefined) lines.push(`S2A: ${r.s2a_ok} 成功 / ${r.s2a_failed} 失败`);
+          if(r.s2a_ok!==undefined){
+            lines.push(`S2A 总计: ${totalS2aOk} 成功 / ${totalS2aFailed} 失败`);
+            lines.push(`S2A Team分组: ${teamS2aOk} 成功 / ${teamS2aFailed} 失败`);
+            lines.push(`S2A Free分组: ${freeS2aOk} 成功 / ${freeS2aFailed} 失败`);
+          }
           if(r.output_files?.length) lines.push(`文件: ${r.output_files.join(', ')}`);
           document.getElementById('tp-report-content').innerHTML=lines.map(l=>`<div>${l}</div>`).join('');
         }
@@ -929,6 +991,24 @@ async function showRunDetail(runId){
   </div>`;
   if(r.error) html+=`<div class="card-inner p-3 mb-4 text-xs text-red-400" style="border-color:rgba(248,113,113,.15)">${r.error}</div>`;
   if(d.distributions&&d.distributions.length){
+    const teamRows=d.distributions.filter(ds=>!String(ds.team_name||'').endsWith('-free'));
+    const freeRows=d.distributions.filter(ds=>String(ds.team_name||'').endsWith('-free'));
+    const sumRows=rows=>rows.reduce((acc,ds)=>{
+      acc.ok+=Number(ds.s2a_ok||0);
+      acc.fail+=Number(ds.s2a_failed||0);
+      acc.assigned+=Number(ds.assigned_count||0);
+      return acc;
+    },{ok:0,fail:0,assigned:0});
+    const teamAgg=sumRows(teamRows);
+    const freeAgg=sumRows(freeRows);
+    const teamTot=teamAgg.ok+teamAgg.fail;
+    const freeTot=freeAgg.ok+freeAgg.fail;
+    html+=`<div class="card-inner p-3 mb-4 text-xs grid grid-cols-1 md:grid-cols-2 gap-2">
+      <div>Team分组推送: <span class="text-teal-400 font-mono">${teamAgg.ok}</span> 成功 / <span class="text-red-400 font-mono">${teamAgg.fail}</span> 失败 <span class="text-dim">（入队 ${teamAgg.assigned}）</span></div>
+      <div>Free分组推送: <span class="text-teal-400 font-mono">${freeAgg.ok}</span> 成功 / <span class="text-red-400 font-mono">${freeAgg.fail}</span> 失败 <span class="text-dim">（入队 ${freeAgg.assigned}）</span></div>
+      <div class="text-dim">Team成功率: <span class="c-heading font-mono">${teamTot>0?Math.round(teamAgg.ok/teamTot*100):0}%</span></div>
+      <div class="text-dim">Free成功率: <span class="c-heading font-mono">${freeTot>0?Math.round(freeAgg.ok/freeTot*100):0}%</span></div>
+    </div>`;
     html+=`<div class="section-title">分发详情</div><div class="space-y-2">`;
     d.distributions.forEach(ds=>{const tot=ds.s2a_ok+ds.s2a_failed;const pct=tot>0?Math.round(ds.s2a_ok/tot*100):0;
       html+=`<div class="card-inner p-3 flex items-center justify-between">
