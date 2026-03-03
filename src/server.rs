@@ -33,8 +33,8 @@ const APP_JS: &str = include_str!("../static/assets/js/app.js");
 const TASK_FINISHED_KEEP: usize = 300;
 const TASK_PRUNE_THRESHOLD: usize = 600;
 const MAX_TARGET_COUNT: usize = 5000;
-const MAX_REGISTER_WORKERS: usize = 128;
-const MAX_RT_WORKERS: usize = 128;
+const MAX_REGISTER_WORKERS: usize = 512;
+const MAX_RT_WORKERS: usize = 512;
 const MAX_RT_RETRIES: usize = 20;
 
 // ─── Data types ──────────────────────────────────────────────────────────────
@@ -328,11 +328,21 @@ struct D1CleanupResp {
 }
 
 #[derive(Serialize)]
+struct ModeDefaultsResp {
+    target_count: usize,
+    register_workers: usize,
+    rt_workers: usize,
+    rt_retries: usize,
+}
+
+#[derive(Serialize)]
 struct DefaultsResp {
     target_count: usize,
     register_workers: usize,
     rt_workers: usize,
     rt_retries: usize,
+    team: ModeDefaultsResp,
+    free: ModeDefaultsResp,
 }
 
 #[derive(Serialize)]
@@ -383,6 +393,7 @@ struct AddS2aRequest {
 
 #[derive(Deserialize)]
 struct UpdateDefaultsRequest {
+    mode: Option<String>,
     target_count: Option<usize>,
     register_workers: Option<usize>,
     rt_workers: Option<usize>,
@@ -497,13 +508,31 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.config.read().await;
     let teams = cfg.effective_s2a_configs();
     let reg = &cfg.register;
+    let common_target = cfg.defaults.target_count.unwrap_or(1);
+    let common_reg = cfg.defaults.register_workers.unwrap_or(15);
+    let common_rt = cfg.defaults.rt_workers.unwrap_or(10);
+    let common_retry = cfg.defaults.rt_retries.unwrap_or(4);
+    let team_defaults = ModeDefaultsResp {
+        target_count: cfg.defaults.team_target_count.unwrap_or(common_target),
+        register_workers: cfg.defaults.team_register_workers.unwrap_or(common_reg),
+        rt_workers: cfg.defaults.team_rt_workers.unwrap_or(common_rt),
+        rt_retries: cfg.defaults.team_rt_retries.unwrap_or(common_retry),
+    };
+    let free_defaults = ModeDefaultsResp {
+        target_count: cfg.defaults.free_target_count.unwrap_or(common_target),
+        register_workers: cfg.defaults.free_register_workers.unwrap_or(common_reg),
+        rt_workers: cfg.defaults.free_rt_workers.unwrap_or(common_rt),
+        rt_retries: cfg.defaults.free_rt_retries.unwrap_or(common_retry),
+    };
     Json(FullConfigResponse {
         teams,
         defaults: DefaultsResp {
-            target_count: cfg.defaults.target_count.unwrap_or(1),
-            register_workers: cfg.defaults.register_workers.unwrap_or(15),
-            rt_workers: cfg.defaults.rt_workers.unwrap_or(10),
-            rt_retries: cfg.defaults.rt_retries.unwrap_or(4),
+            target_count: common_target,
+            register_workers: common_reg,
+            rt_workers: common_rt,
+            rt_retries: common_retry,
+            team: team_defaults,
+            free: free_defaults,
         },
         register: RegisterResp {
             mail_api_base: reg
@@ -935,17 +964,49 @@ async fn update_defaults_handler(
     Json(req): Json<UpdateDefaultsRequest>,
 ) -> impl IntoResponse {
     let mut cfg = state.config.write().await;
-    if let Some(v) = req.target_count {
-        cfg.defaults.target_count = Some(v);
-    }
-    if let Some(v) = req.register_workers {
-        cfg.defaults.register_workers = Some(v);
-    }
-    if let Some(v) = req.rt_workers {
-        cfg.defaults.rt_workers = Some(v);
-    }
-    if let Some(v) = req.rt_retries {
-        cfg.defaults.rt_retries = Some(v);
+    match req.mode.as_deref() {
+        Some("team") => {
+            if let Some(v) = req.target_count {
+                cfg.defaults.team_target_count = Some(v);
+            }
+            if let Some(v) = req.register_workers {
+                cfg.defaults.team_register_workers = Some(v);
+            }
+            if let Some(v) = req.rt_workers {
+                cfg.defaults.team_rt_workers = Some(v);
+            }
+            if let Some(v) = req.rt_retries {
+                cfg.defaults.team_rt_retries = Some(v);
+            }
+        }
+        Some("free") => {
+            if let Some(v) = req.target_count {
+                cfg.defaults.free_target_count = Some(v);
+            }
+            if let Some(v) = req.register_workers {
+                cfg.defaults.free_register_workers = Some(v);
+            }
+            if let Some(v) = req.rt_workers {
+                cfg.defaults.free_rt_workers = Some(v);
+            }
+            if let Some(v) = req.rt_retries {
+                cfg.defaults.free_rt_retries = Some(v);
+            }
+        }
+        _ => {
+            if let Some(v) = req.target_count {
+                cfg.defaults.target_count = Some(v);
+            }
+            if let Some(v) = req.register_workers {
+                cfg.defaults.register_workers = Some(v);
+            }
+            if let Some(v) = req.rt_workers {
+                cfg.defaults.rt_workers = Some(v);
+            }
+            if let Some(v) = req.rt_retries {
+                cfg.defaults.rt_retries = Some(v);
+            }
+        }
     }
     auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
@@ -1181,26 +1242,67 @@ async fn create_task_handler(
         teams[0].clone()
     };
 
-    let target = req.target.or(cfg.defaults.target_count).unwrap_or(1).max(1);
+    let free_mode = req.free_mode.unwrap_or(false);
+    let default_target = if free_mode {
+        cfg.defaults
+            .free_target_count
+            .or(cfg.defaults.target_count)
+            .unwrap_or(1)
+    } else {
+        cfg.defaults
+            .team_target_count
+            .or(cfg.defaults.target_count)
+            .unwrap_or(1)
+    };
+    let default_reg_workers = if free_mode {
+        cfg.defaults
+            .free_register_workers
+            .or(cfg.defaults.register_workers)
+            .unwrap_or(15)
+    } else {
+        cfg.defaults
+            .team_register_workers
+            .or(cfg.defaults.register_workers)
+            .unwrap_or(15)
+    };
+    let default_rt_workers = if free_mode {
+        cfg.defaults
+            .free_rt_workers
+            .or(cfg.defaults.rt_workers)
+            .unwrap_or(10)
+    } else {
+        cfg.defaults
+            .team_rt_workers
+            .or(cfg.defaults.rt_workers)
+            .unwrap_or(10)
+    };
+    let default_rt_retries = if free_mode {
+        cfg.defaults
+            .free_rt_retries
+            .or(cfg.defaults.rt_retries)
+            .unwrap_or(4)
+    } else {
+        cfg.defaults
+            .team_rt_retries
+            .or(cfg.defaults.rt_retries)
+            .unwrap_or(4)
+    };
+    let target = req.target.unwrap_or(default_target).max(1);
     let target = target.min(MAX_TARGET_COUNT);
     let register_workers = req
         .register_workers
-        .or(cfg.defaults.register_workers)
-        .unwrap_or(15)
+        .unwrap_or(default_reg_workers)
         .clamp(1, MAX_REGISTER_WORKERS);
     let rt_workers = req
         .rt_workers
-        .or(cfg.defaults.rt_workers)
-        .unwrap_or(10)
+        .unwrap_or(default_rt_workers)
         .clamp(1, MAX_RT_WORKERS);
     let rt_retries = req
         .rt_retries
-        .or(cfg.defaults.rt_retries)
-        .unwrap_or(4)
+        .unwrap_or(default_rt_retries)
         .clamp(1, MAX_RT_RETRIES);
     let push_s2a = req.push_s2a.unwrap_or(true);
     let use_chatgpt_mail = req.use_chatgpt_mail.unwrap_or(false);
-    let free_mode = req.free_mode.unwrap_or(false);
     let config_snapshot = cfg.clone();
     drop(cfg); // release read lock
 

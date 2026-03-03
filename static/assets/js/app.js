@@ -72,6 +72,37 @@ async function checkHealth(){
 
 // Config
 async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderConfigForm()}catch{}}
+function resolveModeDefaults(mode){
+  const d=configData?.defaults||{};
+  const common={
+    target_count:d.target_count??1,
+    register_workers:d.register_workers??15,
+    rt_workers:d.rt_workers??10,
+    rt_retries:d.rt_retries??4,
+  };
+  const modeData=mode==='free'?(d.free||{}):(d.team||{});
+  return {
+    target_count:modeData.target_count??common.target_count,
+    register_workers:modeData.register_workers??common.register_workers,
+    rt_workers:modeData.rt_workers??common.rt_workers,
+    rt_retries:modeData.rt_retries??common.rt_retries,
+  };
+}
+function applyQuickDefaultsByMode(mode){
+  if(!configData)return;
+  const resolved=resolveModeDefaults(mode);
+  document.getElementById('q-target').value=resolved.target_count;
+  document.getElementById('q-reg-workers').value=resolved.register_workers;
+  document.getElementById('q-rt-workers').value=resolved.rt_workers;
+}
+function applyConfigDefaultsByMode(mode){
+  if(!configData)return;
+  const resolved=resolveModeDefaults(mode);
+  document.getElementById('cfg-target').value=resolved.target_count;
+  document.getElementById('cfg-reg-workers').value=resolved.register_workers;
+  document.getElementById('cfg-rt-workers').value=resolved.rt_workers;
+  document.getElementById('cfg-rt-retries').value=resolved.rt_retries;
+}
 function renderDashboard(){
   if(!configData)return;
   document.getElementById('stat-teams').textContent=configData.teams.length;
@@ -79,9 +110,9 @@ function renderDashboard(){
   document.getElementById('stat-domains').textContent=configData.email_domains.length;
   const sel=document.getElementById('q-team');
   sel.innerHTML=configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('');
-  document.getElementById('q-target').value=configData.defaults.target_count;
-  document.getElementById('q-reg-workers').value=configData.defaults.register_workers;
-  document.getElementById('q-rt-workers').value=configData.defaults.rt_workers;
+  const modeEl=document.getElementById('q-mode');
+  const mode=modeEl?.value==='free'?'free':'team';
+  applyQuickDefaultsByMode(mode);
 }
 let teamGroupsCache={};
 function groupSummaryText(groupIds){
@@ -237,10 +268,10 @@ async function loadS2aStats(name){
 function renderConfigForm(){
   if(!configData)return;
   const d=configData.defaults,r=configData.register;
-  document.getElementById('cfg-target').value=d.target_count;
-  document.getElementById('cfg-reg-workers').value=d.register_workers;
-  document.getElementById('cfg-rt-workers').value=d.rt_workers;
-  document.getElementById('cfg-rt-retries').value=d.rt_retries;
+  const modeEl=document.getElementById('cfg-default-mode');
+  const mode=modeEl?.value==='free'?'free':'team';
+  if(modeEl) modeEl.value=mode;
+  applyConfigDefaultsByMode(mode);
   document.getElementById('cfg-mail-base').value=r.mail_api_base;
   document.getElementById('cfg-mail-path').value=r.mail_api_path;
   document.getElementById('cfg-mail-token').value=r.mail_api_token;
@@ -432,7 +463,11 @@ async function submitEditTeam(){
 }
 
 // Config save
-async function saveDefaults(){try{await api('/api/config/defaults',{method:'PUT',body:{target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}}
+async function saveDefaults(){
+  const modeEl=document.getElementById('cfg-default-mode');
+  const mode=modeEl?.value==='free'?'free':'team';
+  try{await api('/api/config/defaults',{method:'PUT',body:{mode,target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}
+}
 async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value),mail_max_concurrency:parseInt(document.getElementById('cfg-mail-concurrency').value)||50,register_log_mode:document.getElementById('cfg-reg-log-mode').value||'verbose',register_perf_mode:document.getElementById('cfg-reg-perf-mode').value||'baseline'}});toast('注册配置已保存','success');loadConfig()}catch{}}
 async function saveGptMail(){const key=document.getElementById('cfg-gptmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{chatgpt_mail_api_key:key}});toast('GPTMail API Key 已保存','success');loadConfig()}catch{}}
 function renderGptMailDomains(){
@@ -1099,6 +1134,14 @@ function updateBeijingClock(){
   document.getElementById('beijing-clock').textContent=`${h}:${m}:${s} CST`;
 }
 updateBeijingClock();setInterval(updateBeijingClock,1000);
+const qModeEl=document.getElementById('q-mode');
+if(qModeEl){
+  qModeEl.addEventListener('change',e=>applyQuickDefaultsByMode(e.target.value==='free'?'free':'team'));
+}
+const cfgModeEl=document.getElementById('cfg-default-mode');
+if(cfgModeEl){
+  cfgModeEl.addEventListener('change',e=>applyConfigDefaultsByMode(e.target.value==='free'?'free':'team'));
+}
 
 // Init
 checkHealth();loadConfig();setInterval(checkHealth,15000);

@@ -409,13 +409,13 @@ async fn run_interactive() -> Result<()> {
         "注册并发数",
         cfg.defaults.register_workers.unwrap_or(15).max(1),
         1,
-        256,
+        512,
     )?;
     let rt_workers = prompt_usize(
         "RT 并发数",
         cfg.defaults.rt_workers.unwrap_or(10).max(1),
         1,
-        256,
+        512,
     )?;
     let rt_retries = prompt_usize(
         "RT 重试轮次",

@@ -81,8 +81,8 @@ tailwind.config={theme:{extend:{
     <div class="grid grid-cols-2 md:grid-cols-7 gap-3">
       <div><label class="field-label">号池</label><select id="q-team" class="field-input"></select></div>
       <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" step="25" value="4" class="field-input"></div>
-      <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" step="25" value="4" class="field-input"></div>
-      <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" step="25" value="4" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" max="512" step="25" value="4" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" max="512" step="25" value="4" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
       <div><label class="field-label">模式</label><select id="q-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div class="flex items-end"><button onclick="quickCreateTask()" class="btn btn-amber w-full justify-center">执行</button></div>
@@ -197,10 +197,17 @@ tailwind.config={theme:{extend:{
 <div id="panel-config" class="hidden animate-enter space-y-4">
   <div class="card p-5">
     <div class="section-title">运行默认参数</div>
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div>
+        <label class="field-label">默认参数模式</label>
+        <select id="cfg-default-mode" class="field-input">
+          <option value="team">Team（支付）</option>
+          <option value="free">Free（免费）</option>
+        </select>
+      </div>
       <div><label class="field-label">目标账号数</label><input id="cfg-target" type="number" min="1" class="field-input"></div>
-      <div><label class="field-label">注册并发</label><input id="cfg-reg-workers" type="number" min="1" class="field-input"></div>
-      <div><label class="field-label">RT 并发</label><input id="cfg-rt-workers" type="number" min="1" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="cfg-reg-workers" type="number" min="1" max="512" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="cfg-rt-workers" type="number" min="1" max="512" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="cfg-rt-retries" type="number" min="1" class="field-input"></div>
     </div>
     <button onclick="saveDefaults()" class="btn btn-amber mt-4">保存</button>
@@ -383,8 +390,8 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">结束时间 *</label><input id="sched-end" class="field-input" type="time" value="14:00"></div>
       <div><label class="field-label">每批数量 *</label><input id="sched-target" type="number" min="1" value="50" class="field-input"></div>
       <div><label class="field-label">批次间隔(分)</label><input id="sched-interval" type="number" min="1" value="30" class="field-input"></div>
-      <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" step="25" placeholder="默认" class="field-input"></div>
-      <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" step="25" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="sched-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
       <div><label class="field-label">模式</label><select id="sched-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
@@ -432,8 +439,8 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">结束时间</label><input id="es-end" class="field-input" type="time"></div>
       <div><label class="field-label">每批数量</label><input id="es-target" type="number" min="1" class="field-input"></div>
       <div><label class="field-label">批次间隔(分)</label><input id="es-interval" type="number" min="1" class="field-input"></div>
-      <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" step="25" placeholder="默认" class="field-input"></div>
-      <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" step="25" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="es-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
       <div><label class="field-label">模式</label><select id="es-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>

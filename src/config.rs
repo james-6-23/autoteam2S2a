@@ -42,6 +42,16 @@ pub struct RuntimeDefaults {
     pub register_workers: Option<usize>,
     pub rt_workers: Option<usize>,
     pub rt_retries: Option<usize>,
+    /// Team（支付）模式默认参数
+    pub team_target_count: Option<usize>,
+    pub team_register_workers: Option<usize>,
+    pub team_rt_workers: Option<usize>,
+    pub team_rt_retries: Option<usize>,
+    /// Free（免费）模式默认参数
+    pub free_target_count: Option<usize>,
+    pub free_register_workers: Option<usize>,
+    pub free_rt_workers: Option<usize>,
+    pub free_rt_retries: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
