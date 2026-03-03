@@ -156,6 +156,12 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
 .row-item{background:var(--bg-inner);border:1px solid var(--border);border-radius:10px;padding:14px 16px;
   transition:background .15s,border-color .15s;cursor:default}
 .row-item:hover{background:var(--bg-row-hover);border-color:var(--border-hover)}
+.team-grid{display:grid;grid-template-columns:1fr;gap:10px}
+.team-grid .row-item{height:100%}
+.team-grid-empty{grid-column:1/-1}
+@media (min-width:1024px){
+  .team-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+}
 .progress-bar{height:4px;border-radius:2px;background:var(--ghost);overflow:hidden}
 .progress-bar.h-2{height:8px;border-radius:4px}
 .progress-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,#14b8a6,#2dd4bf);transition:width .4s ease}
@@ -228,18 +234,24 @@ nav{-webkit-overflow-scrolling:touch}
   .stat-num{font-size:1.35rem}
 
   #task-list .row-item,
+  #team-list .row-item>div:first-child,
   #schedule-list .row-item>div:first-child,
   #run-list .row-item>div:first-child{
     flex-wrap:wrap;
     gap:8px;
   }
   #task-list .row-item>div:last-child,
+  #team-list .row-item>div:first-child>div:last-child,
   #schedule-list .row-item>div:first-child>div:last-child{
     width:100%;
     display:flex;
     justify-content:flex-end;
     flex-wrap:wrap;
     gap:6px;
+  }
+  #team-list .row-item [id^="s2a-stats-"]>div{
+    flex-wrap:wrap;
+    gap:8px;
   }
   #schedule-list .row-item>div:nth-child(2){
     gap:10px;
@@ -338,9 +350,9 @@ nav{-webkit-overflow-scrolling:touch}
     <div class="section-title">快速创建</div>
     <div class="grid grid-cols-2 md:grid-cols-7 gap-3">
       <div><label class="field-label">号池</label><select id="q-team" class="field-input"></select></div>
-      <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" value="4" class="field-input"></div>
-      <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" value="4" class="field-input"></div>
-      <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" value="4" class="field-input"></div>
+      <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" step="25" value="4" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" step="25" value="4" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" step="25" value="4" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
       <div><label class="field-label">模式</label><select id="q-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div class="flex items-end"><button onclick="quickCreateTask()" class="btn btn-amber w-full justify-center">执行</button></div>
@@ -355,7 +367,7 @@ nav{-webkit-overflow-scrolling:touch}
       <div class="section-title mb-0">S2A 号池</div>
       <button onclick="showAddTeamForm()" class="btn btn-teal text-xs py-1.5">+ 添加</button>
     </div>
-    <div id="team-list" class="space-y-2"></div>
+    <div id="team-list" class="team-grid"></div>
   </div>
   <div id="add-team-form" class="card p-5 hidden">
     <div class="section-title">新建号池</div>
@@ -392,7 +404,7 @@ nav{-webkit-overflow-scrolling:touch}
   <div id="edit-team-form" class="card p-5 hidden">
     <div class="flex items-center justify-between mb-3">
       <div class="section-title mb-0">编辑号池: <span id="et-name" class="text-amber-400"></span></div>
-      <button onclick="document.getElementById('edit-team-form').classList.add('hidden')" class="btn btn-ghost text-xs py-1">关闭</button>
+      <button onclick="hideEditTeamForm()" class="btn btn-ghost text-xs py-1">关闭</button>
     </div>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
       <div><label class="field-label">API 地址</label><input id="et-api" class="field-input" placeholder="https://..." onchange="autoFetchGroupsEdit()"></div>
@@ -420,7 +432,7 @@ nav{-webkit-overflow-scrolling:touch}
     </div>
     <div class="flex gap-2 mt-4">
       <button onclick="submitEditTeam()" class="btn btn-amber">保存</button>
-      <button onclick="document.getElementById('edit-team-form').classList.add('hidden')" class="btn btn-ghost">取消</button>
+      <button onclick="hideEditTeamForm()" class="btn btn-ghost">取消</button>
     </div>
   </div>
 </div>
@@ -614,8 +626,8 @@ nav{-webkit-overflow-scrolling:touch}
       <div><label class="field-label">结束时间 *</label><input id="sched-end" class="field-input" type="time" value="14:00"></div>
       <div><label class="field-label">每批数量 *</label><input id="sched-target" type="number" min="1" value="50" class="field-input"></div>
       <div><label class="field-label">批次间隔(分)</label><input id="sched-interval" type="number" min="1" value="30" class="field-input"></div>
-      <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
-      <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" step="25" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="sched-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
       <div><label class="field-label">模式</label><select id="sched-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
@@ -663,8 +675,8 @@ nav{-webkit-overflow-scrolling:touch}
       <div><label class="field-label">结束时间</label><input id="es-end" class="field-input" type="time"></div>
       <div><label class="field-label">每批数量</label><input id="es-target" type="number" min="1" class="field-input"></div>
       <div><label class="field-label">批次间隔(分)</label><input id="es-interval" type="number" min="1" class="field-input"></div>
-      <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
-      <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" step="25" placeholder="默认" class="field-input"></div>
+      <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="es-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
       <div><label class="field-label">模式</label><select id="es-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
@@ -851,11 +863,14 @@ function renderDashboard(){
 let teamGroupsCache={};
 function renderTeams(){
   const el=document.getElementById('team-list');
-  if(!configData||configData.teams.length===0){el.innerHTML='<p class="text-sm text-dim text-center py-6">暂无号池</p>';return}
+  restoreEditTeamFormHome();
+  const form=document.getElementById('edit-team-form');
+  if(form) form.classList.add('hidden');
+  if(!configData||configData.teams.length===0){el.innerHTML='<p class="team-grid-empty text-sm text-dim text-center py-6">暂无号池</p>';return}
   el.innerHTML=configData.teams.map(t=>`
   <div class="row-item" id="team-card-${t.name}">
-    <div class="flex items-center justify-between mb-2">
-      <div class="flex-1 grid grid-cols-2 md:grid-cols-6 gap-2 text-[.8125rem]">
+    <div class="flex items-start justify-between mb-2">
+      <div class="flex-1 grid grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-2 text-[.8125rem]">
         <div><span class="field-label">名称</span><div class="font-medium c-heading">${t.name}</div></div>
         <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${t.api_base}</div></div>
         <div><span class="field-label">并发</span><div class="font-mono c-heading">${t.concurrency}</div></div>
@@ -863,7 +878,7 @@ function renderTeams(){
         <div><span class="field-label">分组</span><div class="font-mono c-heading" id="team-groups-${t.name}">${t.group_ids?.join(', ')||'-'}</div></div>
         <div><span class="field-label">Free 分组</span><div class="font-mono ${t.free_group_ids?.length?'text-amber-400':'text-dim'}" id="team-free-groups-${t.name}">${t.free_group_ids?.join(', ')||'-'}</div></div>
       </div>
-      <div class="flex items-center gap-1 ml-3">
+      <div class="flex items-center gap-1 ml-3 shrink-0">
         <button onclick="testS2a('${t.name}')" class="btn btn-ghost text-xs py-1 px-2" id="test-btn-${t.name}">测试</button>
         <button onclick="editTeam('${t.name.replace(/'/g,"\\'")}')" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
         <button onclick="deleteTeam('${t.name}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
@@ -992,7 +1007,7 @@ async function saveD1Cleanup(){
 }
 
 // Teams
-function showAddTeamForm(){document.getElementById('add-team-form').classList.remove('hidden')}
+function showAddTeamForm(){hideEditTeamForm();document.getElementById('add-team-form').classList.remove('hidden')}
 function hideAddTeamForm(){
   document.getElementById('add-team-form').classList.add('hidden');
   document.getElementById('at-groups-container').innerHTML='<span class="text-xs text-dim">请先填写 API 地址和 Admin Key</span>';
@@ -1053,10 +1068,42 @@ async function submitAddTeam(){
 async function deleteTeam(name){if(!confirm(`删除号池 "${name}"?`))return;try{await api(`/api/config/s2a/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`${name} 已删除`,'success');loadConfig()}catch{}}
 let editTeamName=null;
 let etGroupsData=[];
+let editTeamFormHomeParent=null;
+let editTeamFormHomeNextSibling=null;
+function ensureEditTeamFormHome(){
+  if(editTeamFormHomeParent) return;
+  const form=document.getElementById('edit-team-form');
+  if(!form) return;
+  editTeamFormHomeParent=form.parentElement;
+  editTeamFormHomeNextSibling=form.nextElementSibling;
+}
+function restoreEditTeamFormHome(){
+  const form=document.getElementById('edit-team-form');
+  if(!form) return;
+  ensureEditTeamFormHome();
+  if(!editTeamFormHomeParent) return;
+  if(form.parentElement!==editTeamFormHomeParent){
+    const anchor=(editTeamFormHomeNextSibling&&editTeamFormHomeNextSibling.parentElement===editTeamFormHomeParent)?editTeamFormHomeNextSibling:null;
+    editTeamFormHomeParent.insertBefore(form,anchor);
+  }
+}
+function hideEditTeamForm(){
+  const form=document.getElementById('edit-team-form');
+  if(!form) return;
+  form.classList.add('hidden');
+  restoreEditTeamFormHome();
+}
 function editTeam(name){
   editTeamName=name;
   const t=configData?.teams?.find(x=>x.name===name);if(!t) return;
-  const f=document.getElementById('edit-team-form');f.classList.remove('hidden');
+  hideAddTeamForm();
+  const f=document.getElementById('edit-team-form');
+  ensureEditTeamFormHome();
+  const card=document.getElementById(`team-card-${name}`);
+  if(card&&card.parentElement){
+    card.insertAdjacentElement('afterend',f);
+  }
+  f.classList.remove('hidden');
   document.getElementById('et-name').textContent=name;
   document.getElementById('et-api').value=t.api_base||'';
   document.getElementById('et-key').value=t.admin_key||'';
@@ -1068,7 +1115,7 @@ function editTeam(name){
   document.getElementById('et-groups-container').innerHTML=t.group_ids?.length?`<span class="text-xs text-dim">当前: [${t.group_ids.join(', ')}] — 点击获取分组可修改</span>`:'<span class="text-xs text-dim">点击获取分组</span>';
   document.getElementById('et-free-groups-container').innerHTML=t.free_group_ids?.length?`<span class="text-xs text-dim">当前: [${t.free_group_ids.join(', ')}] — 获取分组后可修改</span>`:'<span class="text-xs text-dim">获取分组后可选</span>';
   etGroupsData=[];
-  f.scrollIntoView({behavior:'smooth'});
+  f.scrollIntoView({behavior:'smooth',block:'nearest'});
   // auto-fetch if api_base and admin_key are present
   if(t.api_base&&t.admin_key) fetchGroupsEdit();
 }
@@ -1126,7 +1173,7 @@ async function submitEditTeam(){
   const fc=document.getElementById('et-free-concurrency').value;
   body.free_priority=fp?parseInt(fp):null;
   body.free_concurrency=fc?parseInt(fc):null;
-  try{await api(`/api/config/s2a/${encodeURIComponent(editTeamName)}`,{method:'PUT',body});toast(`${editTeamName} 已更新`,'success');document.getElementById('edit-team-form').classList.add('hidden');loadConfig()}catch{}
+  try{await api(`/api/config/s2a/${encodeURIComponent(editTeamName)}`,{method:'PUT',body});toast(`${editTeamName} 已更新`,'success');hideEditTeamForm();loadConfig()}catch{}
 }
 
 // Config save
