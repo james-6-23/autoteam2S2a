@@ -207,7 +207,7 @@ async fn run_batch_loop(
     next_batch_ts: Arc<AtomicU64>,
 ) {
     broadcast_log(&format!(
-        "[调度器] {} 批次循环开始 (每批 {} 个, 间隔 {} 分钟)",
+        "[调度器] {} 批次循环开始 (每批 RT 成功目标 {} 个, 间隔 {} 分钟)",
         schedule.name, schedule.target_count, schedule.batch_interval_mins
     ));
 
@@ -281,7 +281,7 @@ async fn run_batch_loop(
         let batch_num = batch_counter.fetch_add(1, Ordering::Relaxed) + 1;
         next_batch_ts.store(0, Ordering::Relaxed); // 0 = 执行中
         broadcast_log(&format!(
-            "[调度器] {} 开始第 {} 批次（每批 {} 个）",
+            "[调度器] {} 开始第 {} 批次（每批 RT 成功目标 {} 个）",
             schedule.name, batch_num, schedule.target_count
         ));
 

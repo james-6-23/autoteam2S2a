@@ -526,7 +526,7 @@ async function refreshTasks(){
         <div class="flex items-center gap-3 flex-1 min-w-0">
           <span class="badge badge-run">调度中</span>
           <span class="text-xs font-medium c-heading">${s.name}</span>
-          <span class="text-xs text-dim">x${s.target_count}/批</span>
+          <span class="text-xs text-dim">RT目标 x${s.target_count}/批</span>
           <span class="text-xs text-dim">${s.start_time}-${s.end_time}</span>
           <span class="text-xs text-dim">间隔 ${s.batch_interval_mins}m</span>
           <span class="text-xs text-teal-400">点击查看日志</span>
@@ -770,7 +770,7 @@ async function loadSchedules(){
         </div>
       </div>
       <div class="flex items-center gap-4 text-xs text-dim flex-wrap">
-        <span>每批 <span class="font-mono text-dim-2">${s.target_count}</span></span>
+        <span>每批RT目标 <span class="font-mono text-dim-2">${s.target_count}</span></span>
         <span>间隔 <span class="font-mono text-dim-2">${s.batch_interval_mins}分</span></span>
         <span>注册 <span class="font-mono text-dim-2">${s.register_workers||'默认'}</span></span>
         <span>RT <span class="font-mono text-dim-2">${s.rt_workers||'默认'}</span></span>
@@ -899,6 +899,28 @@ function stopSchedulePoll(){if(schedPollTimer){clearInterval(schedPollTimer);sch
 
 // Runs
 let currentRunPage=1;
+let runScheduleModeMap={};
+function normalizeDistTeamName(name){
+  const raw=String(name||'');
+  return raw.endsWith('-free')?raw.slice(0,-5):raw;
+}
+function splitRunDistributionRows(run,distributions){
+  const rows=Array.isArray(distributions)?distributions:[];
+  const hasFreeSuffix=rows.some(ds=>String(ds.team_name||'').endsWith('-free'));
+  if(hasFreeSuffix){
+    return {
+      mode:'mixed',
+      teamRows:rows.filter(ds=>!String(ds.team_name||'').endsWith('-free')),
+      freeRows:rows.filter(ds=>String(ds.team_name||'').endsWith('-free')),
+      inferredBySchedule:false,
+    };
+  }
+  const scheduleName=String(run?.schedule_name||'');
+  const scheduleIsFree=!!(scheduleName&&runScheduleModeMap[scheduleName]===true);
+  return scheduleIsFree
+    ? {mode:'free',teamRows:[],freeRows:rows,inferredBySchedule:true}
+    : {mode:'team',teamRows:rows,freeRows:[],inferredBySchedule:false};
+}
 async function loadRunStats(){
   try{
     const s=await api('/api/runs/stats');
@@ -908,22 +930,37 @@ async function loadRunStats(){
     document.getElementById('rs-reg').textContent=s.total_reg_ok;
     const regAll=s.total_reg_ok+s.total_reg_failed;
     document.getElementById('rs-reg-rate').textContent=regAll>0?` ${Math.round(s.total_reg_ok/regAll*100)}%`:'';
-    document.getElementById('rs-reg-fail').textContent=s.total_reg_failed;
     document.getElementById('rs-rt').textContent=s.total_rt_ok;
     const rtAll=s.total_rt_ok+s.total_rt_failed;
     document.getElementById('rs-rt-rate').textContent=rtAll>0?` ${Math.round(s.total_rt_ok/rtAll*100)}%`:'';
-    document.getElementById('rs-rt-fail').textContent=s.total_rt_failed;
     document.getElementById('rs-s2a').textContent=s.total_s2a_ok;
     const s2aAll=s.total_s2a_ok+s.total_s2a_failed;
     document.getElementById('rs-s2a-rate').textContent=s2aAll>0?` ${Math.round(s.total_s2a_ok/s2aAll*100)}%`:'';
-    document.getElementById('rs-s2a-fail').textContent=s.total_s2a_failed;
+    const regTotal=s.total_reg_ok+s.total_reg_failed;
+    const regRate=regTotal>0?Math.round(s.total_reg_ok/regTotal*100):0;
+    document.getElementById('rs-reg-total').textContent=regTotal;
+    document.getElementById('rs-reg-ok').textContent=s.total_reg_ok;
+    document.getElementById('rs-reg-success-rate').textContent=`${regRate}%`;
     document.getElementById('rs-avg').textContent=s.avg_secs_per_account>0?s.avg_secs_per_account.toFixed(1)+'s/个':'-';
     document.getElementById('rs-target').textContent=s.total_target;
     const h=Math.floor(s.total_elapsed_secs/3600),m=Math.floor((s.total_elapsed_secs%3600)/60);
     document.getElementById('rs-elapsed').textContent=h>0?`${h}h${m}m`:`${m}m`;
   }catch{}
 }
-async function loadRunsFilter(){try{const d=await api('/api/schedules');const s=document.getElementById('runs-filter');const p=s.value;s.innerHTML='<option value="">全部</option>'+(d.schedules||[]).map(s=>`<option value="${s.name}">${s.name}</option>`).join('');s.value=p}catch{}}
+async function loadRunsFilter(){
+  try{
+    const d=await api('/api/schedules');
+    runScheduleModeMap={};
+    (d.schedules||[]).forEach(item=>{runScheduleModeMap[item.name]=!!item.free_mode});
+    const s=document.getElementById('runs-filter');
+    const p=s.value;
+    const baseOptions='<option value="">全部</option><option value="__manual__">手动任务</option>';
+    const scheduleOptions=(d.schedules||[]).map(item=>`<option value="sched:${encodeURIComponent(item.name)}">${item.name}</option>`).join('');
+    s.innerHTML=baseOptions+scheduleOptions;
+    const hasPrev=Array.from(s.options).some(opt=>opt.value===p);
+    s.value=hasPrev?p:'';
+  }catch{}
+}
 function fmtBjTime(iso){
   try{const d=new Date(iso);const utc=d.getTime()+d.getTimezoneOffset()*60000;const bj=new Date(utc+8*3600000);
     const mm=String(bj.getMonth()+1).padStart(2,'0'),dd=String(bj.getDate()).padStart(2,'0');
@@ -932,7 +969,16 @@ function fmtBjTime(iso){
 }
 async function loadRuns(page){
   if(page<1) page=1;currentRunPage=page;_openRunId=null;
-  const f=document.getElementById('runs-filter').value;const params=new URLSearchParams({page,per_page:15});if(f) params.set('schedule',f);
+  const f=document.getElementById('runs-filter').value;
+  const params=new URLSearchParams({page,per_page:15});
+  if(f==='__manual__'){
+    params.set('trigger','manual');
+  }else if(f.startsWith('sched:')){
+    params.set('schedule',decodeURIComponent(f.slice(6)));
+  }else if(f){
+    // 兼容历史 value 直接为计划名
+    params.set('schedule',f);
+  }
   try{const d=await api(`/api/runs?${params}`);const el=document.getElementById('run-list');const pg=document.getElementById('run-pagination');
   if(!d.runs||!d.runs.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无记录</p>';pg.classList.add('hidden');return}
   el.innerHTML=d.runs.map(r=>{
@@ -947,6 +993,7 @@ async function loadRuns(page){
     const rtPct=rtTotal>0?Math.round(r.rt_ok/rtTotal*100):0;
     const s2aTotal=r.total_s2a_ok+r.total_s2a_failed;
     const s2aPct=s2aTotal>0?Math.round(r.total_s2a_ok/s2aTotal*100):0;
+    const regSummary=`注册${regTotal}次 成功${r.registered_ok} 成功率${regPct}%`;
     const errHtml=r.error?`<div class="text-[.7rem] text-red-400 mt-1.5 truncate" title="${r.error}">${r.error}</div>`:'';
     return `<div class="row-item cursor-pointer" id="run-row-${r.id}" onclick="showRunDetail('${r.id}')" style="padding:10px 14px">
       <div class="flex items-center justify-between mb-2">
@@ -980,7 +1027,8 @@ async function loadRuns(page){
           <div class="progress-bar flex-1"><div class="progress-fill" style="width:${s2aPct}%;background:#14b8a6"></div></div>
           <span class="text-[.7rem] font-mono min-w-[56px] text-right"><span class="text-teal-400">${r.total_s2a_ok}</span><span class="text-dim">/${s2aTotal}</span></span>
         </div>
-      </div>${errHtml}
+      </div>
+      <div class="text-[.68rem] text-dim mt-1">${regSummary}</div>${errHtml}
     </div>`}).join('');
   const tp=Math.ceil(d.total/d.per_page);
   if(tp>1){pg.classList.remove('hidden');document.getElementById('runs-prev').disabled=page<=1;document.getElementById('runs-next').disabled=page>=tp;document.getElementById('runs-page-info').textContent=`第 ${page}/${tp} 页 (共 ${d.total} 条)`;document.getElementById('runs-total-pages').value=tp;document.getElementById('runs-last').disabled=page>=tp}else{pg.classList.add('hidden')}
@@ -1003,6 +1051,12 @@ async function showRunDetail(runId){
   try{const d=await api(`/api/runs/${runId}`);const r=d.run;
   if(_openRunId!==runId) return;
   const detailAvg=(r.elapsed_secs&&r.target_count>0)?(r.elapsed_secs/r.target_count).toFixed(1)+'s':'-';
+  const detailRegTotal=r.registered_ok+r.registered_failed;
+  const detailRegRate=detailRegTotal>0?Math.round(r.registered_ok/detailRegTotal*100):0;
+  const detailRtTotal=r.rt_ok+r.rt_failed;
+  const detailRtRate=detailRtTotal>0?Math.round(r.rt_ok/detailRtTotal*100):0;
+  const detailS2aTotal=r.total_s2a_ok+r.total_s2a_failed;
+  const detailS2aRate=detailS2aTotal>0?Math.round(r.total_s2a_ok/detailS2aTotal*100):0;
   let html=`<div class="flex items-center justify-between mb-4">
     <div class="section-title mb-0">运行详情</div>
     <button onclick="hideRunDetail()" class="btn btn-ghost text-xs py-1">关闭</button>
@@ -1020,14 +1074,17 @@ async function showRunDetail(runId){
     <span>触发 <span class="c-heading">${r.trigger_type}</span></span>
     <span>状态 <span class="c-heading">${r.status}</span></span>
     <span>目标 <span class="c-heading">${r.target_count}</span></span>
-    <span>注册失败 <span class="text-red-400">${r.registered_failed}</span></span>
-    <span>RT失败 <span class="text-red-400">${r.rt_failed}</span></span>
-    <span>S2A失败 <span class="text-red-400">${r.total_s2a_failed}</span></span>
+    <span>注册总次数 <span class="c-heading">${detailRegTotal}</span></span>
+    <span>注册成功 <span class="text-teal-400">${r.registered_ok}</span></span>
+    <span>注册成功率 <span class="text-amber-400">${detailRegRate}%</span></span>
+    <span>RT成功率 <span class="text-amber-400">${detailRtRate}%</span></span>
+    <span>S2A成功率 <span class="text-amber-400">${detailS2aRate}%</span></span>
   </div>`;
   if(r.error) html+=`<div class="card-inner p-3 mb-4 text-xs text-red-400" style="border-color:rgba(248,113,113,.15)">${r.error}</div>`;
   if(d.distributions&&d.distributions.length){
-    const teamRows=d.distributions.filter(ds=>!String(ds.team_name||'').endsWith('-free'));
-    const freeRows=d.distributions.filter(ds=>String(ds.team_name||'').endsWith('-free'));
+    const splitRows=splitRunDistributionRows(r,d.distributions);
+    const teamRows=splitRows.teamRows;
+    const freeRows=splitRows.freeRows;
     const sumRows=rows=>rows.reduce((acc,ds)=>{
       acc.ok+=Number(ds.s2a_ok||0);
       acc.fail+=Number(ds.s2a_failed||0);
@@ -1038,16 +1095,23 @@ async function showRunDetail(runId){
     const freeAgg=sumRows(freeRows);
     const teamTot=teamAgg.ok+teamAgg.fail;
     const freeTot=freeAgg.ok+freeAgg.fail;
+    const modeHint=splitRows.inferredBySchedule
+      ? `<div class="text-dim md:col-span-2">统计口径: 当前记录未写入 -free 标记，按计划模式（Free）聚合展示</div>`
+      : '';
     html+=`<div class="card-inner p-3 mb-4 text-xs grid grid-cols-1 md:grid-cols-2 gap-2">
       <div>Team分组推送: <span class="text-teal-400 font-mono">${teamAgg.ok}</span> 成功 / <span class="text-red-400 font-mono">${teamAgg.fail}</span> 失败 <span class="text-dim">（入队 ${teamAgg.assigned}）</span></div>
       <div>Free分组推送: <span class="text-teal-400 font-mono">${freeAgg.ok}</span> 成功 / <span class="text-red-400 font-mono">${freeAgg.fail}</span> 失败 <span class="text-dim">（入队 ${freeAgg.assigned}）</span></div>
       <div class="text-dim">Team成功率: <span class="c-heading font-mono">${teamTot>0?Math.round(teamAgg.ok/teamTot*100):0}%</span></div>
       <div class="text-dim">Free成功率: <span class="c-heading font-mono">${freeTot>0?Math.round(freeAgg.ok/freeTot*100):0}%</span></div>
+      ${modeHint}
     </div>`;
     html+=`<div class="section-title">分发详情</div><div class="space-y-2">`;
     d.distributions.forEach(ds=>{const tot=ds.s2a_ok+ds.s2a_failed;const pct=tot>0?Math.round(ds.s2a_ok/tot*100):0;
+      const isFreeTagged=String(ds.team_name||'').endsWith('-free');
+      const rowMode=splitRows.mode==='free'||isFreeTagged?'Free':'Team';
+      const rowModeCls=rowMode==='Free'?'text-amber-400':'text-dim';
       html+=`<div class="card-inner p-3 flex items-center justify-between">
-        <div class="flex items-center gap-3"><span class="text-sm font-medium c-heading">${ds.team_name}</span><span class="text-xs text-dim font-mono">${ds.percent}%</span><span class="text-xs text-dim">x${ds.assigned_count}</span></div>
+        <div class="flex items-center gap-3"><span class="text-sm font-medium c-heading">${normalizeDistTeamName(ds.team_name)}</span><span class="text-xs ${rowModeCls} font-mono">${rowMode}</span><span class="text-xs text-dim font-mono">${ds.percent}%</span><span class="text-xs text-dim">x${ds.assigned_count}</span></div>
         <div class="flex items-center gap-3 text-xs font-mono">
           <span class="text-teal-400">${ds.s2a_ok}</span><span class="text-red-400">${ds.s2a_failed}</span>
           <div class="progress-bar w-20"><div class="progress-fill" style="width:${pct}%"></div></div>

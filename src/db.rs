@@ -29,6 +29,12 @@ pub struct RunHistoryDb {
     write_tx: mpsc::Sender<WriteCommand>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum RunTriggerFilter {
+    Manual,
+    Scheduled,
+}
+
 enum WriteCommand {
     InsertRun(NewRun),
     InsertDistributions {
@@ -610,45 +616,127 @@ impl RunHistoryDb {
         page: usize,
         per_page: usize,
         schedule: Option<&str>,
+        trigger: Option<RunTriggerFilter>,
     ) -> Result<(Vec<RunRecord>, usize)> {
         let conn = self.conn.lock().unwrap();
 
-        let (count_sql, list_sql) = if schedule.is_some() {
-            (
-                "SELECT COUNT(*) FROM runs WHERE schedule_name = ?1",
-                "SELECT id, schedule_name, trigger_type, status, target_count,
-                        registered_ok, registered_failed, rt_ok, rt_failed,
-                        total_s2a_ok, total_s2a_failed, elapsed_secs, error,
-                        started_at, finished_at
-                 FROM runs WHERE schedule_name = ?1
-                 ORDER BY started_at DESC LIMIT ?2 OFFSET ?3",
-            )
-        } else {
-            (
-                "SELECT COUNT(*) FROM runs",
-                "SELECT id, schedule_name, trigger_type, status, target_count,
-                        registered_ok, registered_failed, rt_ok, rt_failed,
-                        total_s2a_ok, total_s2a_failed, elapsed_secs, error,
-                        started_at, finished_at
-                 FROM runs ORDER BY started_at DESC LIMIT ?1 OFFSET ?2",
-            )
-        };
-
-        let total: usize = if let Some(sched) = schedule {
-            conn.query_row(count_sql, params![sched], |row| row.get::<_, i64>(0))? as usize
-        } else {
-            conn.query_row(count_sql, [], |row| row.get::<_, i64>(0))? as usize
-        };
-
         let offset = (page.saturating_sub(1)) * per_page;
-
-        let mut stmt = conn.prepare(list_sql)?;
-        let rows = if let Some(sched) = schedule {
-            stmt.query_map(params![sched, per_page as i64, offset as i64], map_run_row)?
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            stmt.query_map(params![per_page as i64, offset as i64], map_run_row)?
-                .collect::<Result<Vec<_>, _>>()?
+        let (total, rows) = match (schedule, trigger) {
+            (Some(sched), Some(RunTriggerFilter::Manual)) => {
+                let total = conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE schedule_name = ?1 AND (trigger_type = 'manual_task' OR trigger_type = 'manual')",
+                    params![sched],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+                let mut stmt = conn.prepare(
+                    "SELECT id, schedule_name, trigger_type, status, target_count,
+                            registered_ok, registered_failed, rt_ok, rt_failed,
+                            total_s2a_ok, total_s2a_failed, elapsed_secs, error,
+                            started_at, finished_at
+                     FROM runs
+                     WHERE schedule_name = ?1 AND (trigger_type = 'manual_task' OR trigger_type = 'manual')
+                     ORDER BY started_at DESC LIMIT ?2 OFFSET ?3",
+                )?;
+                let rows = stmt
+                    .query_map(params![sched, per_page as i64, offset as i64], map_run_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                (total, rows)
+            }
+            (Some(sched), Some(RunTriggerFilter::Scheduled)) => {
+                let total = conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE schedule_name = ?1 AND trigger_type = 'scheduled'",
+                    params![sched],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+                let mut stmt = conn.prepare(
+                    "SELECT id, schedule_name, trigger_type, status, target_count,
+                            registered_ok, registered_failed, rt_ok, rt_failed,
+                            total_s2a_ok, total_s2a_failed, elapsed_secs, error,
+                            started_at, finished_at
+                     FROM runs
+                     WHERE schedule_name = ?1 AND trigger_type = 'scheduled'
+                     ORDER BY started_at DESC LIMIT ?2 OFFSET ?3",
+                )?;
+                let rows = stmt
+                    .query_map(params![sched, per_page as i64, offset as i64], map_run_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                (total, rows)
+            }
+            (Some(sched), None) => {
+                let total = conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE schedule_name = ?1",
+                    params![sched],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+                let mut stmt = conn.prepare(
+                    "SELECT id, schedule_name, trigger_type, status, target_count,
+                            registered_ok, registered_failed, rt_ok, rt_failed,
+                            total_s2a_ok, total_s2a_failed, elapsed_secs, error,
+                            started_at, finished_at
+                     FROM runs WHERE schedule_name = ?1
+                     ORDER BY started_at DESC LIMIT ?2 OFFSET ?3",
+                )?;
+                let rows = stmt
+                    .query_map(params![sched, per_page as i64, offset as i64], map_run_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                (total, rows)
+            }
+            (None, Some(RunTriggerFilter::Manual)) => {
+                let total = conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE (trigger_type = 'manual_task' OR trigger_type = 'manual')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+                let mut stmt = conn.prepare(
+                    "SELECT id, schedule_name, trigger_type, status, target_count,
+                            registered_ok, registered_failed, rt_ok, rt_failed,
+                            total_s2a_ok, total_s2a_failed, elapsed_secs, error,
+                            started_at, finished_at
+                     FROM runs
+                     WHERE (trigger_type = 'manual_task' OR trigger_type = 'manual')
+                     ORDER BY started_at DESC LIMIT ?1 OFFSET ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![per_page as i64, offset as i64], map_run_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                (total, rows)
+            }
+            (None, Some(RunTriggerFilter::Scheduled)) => {
+                let total = conn.query_row(
+                    "SELECT COUNT(*) FROM runs WHERE trigger_type = 'scheduled'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+                let mut stmt = conn.prepare(
+                    "SELECT id, schedule_name, trigger_type, status, target_count,
+                            registered_ok, registered_failed, rt_ok, rt_failed,
+                            total_s2a_ok, total_s2a_failed, elapsed_secs, error,
+                            started_at, finished_at
+                     FROM runs
+                     WHERE trigger_type = 'scheduled'
+                     ORDER BY started_at DESC LIMIT ?1 OFFSET ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![per_page as i64, offset as i64], map_run_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                (total, rows)
+            }
+            (None, None) => {
+                let total = conn.query_row("SELECT COUNT(*) FROM runs", [], |row| {
+                    row.get::<_, i64>(0)
+                })? as usize;
+                let mut stmt = conn.prepare(
+                    "SELECT id, schedule_name, trigger_type, status, target_count,
+                            registered_ok, registered_failed, rt_ok, rt_failed,
+                            total_s2a_ok, total_s2a_failed, elapsed_secs, error,
+                            started_at, finished_at
+                     FROM runs ORDER BY started_at DESC LIMIT ?1 OFFSET ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![per_page as i64, offset as i64], map_run_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                (total, rows)
+            }
         };
 
         Ok((rows, total))

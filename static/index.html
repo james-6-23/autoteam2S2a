@@ -388,7 +388,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">名称 *</label><input id="sched-name" class="field-input" placeholder="daily-fill"></div>
       <div><label class="field-label">开始时间 *</label><input id="sched-start" class="field-input" type="time" value="10:00"></div>
       <div><label class="field-label">结束时间 *</label><input id="sched-end" class="field-input" type="time" value="14:00"></div>
-      <div><label class="field-label">每批数量 *</label><input id="sched-target" type="number" min="1" value="50" class="field-input"></div>
+      <div><label class="field-label">每批RT目标 *</label><input id="sched-target" type="number" min="1" value="50" class="field-input"></div>
       <div><label class="field-label">批次间隔(分)</label><input id="sched-interval" type="number" min="1" value="30" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
@@ -437,7 +437,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">名称</label><input id="es-name" class="field-input"></div>
       <div><label class="field-label">开始时间</label><input id="es-start" class="field-input" type="time"></div>
       <div><label class="field-label">结束时间</label><input id="es-end" class="field-input" type="time"></div>
-      <div><label class="field-label">每批数量</label><input id="es-target" type="number" min="1" class="field-input"></div>
+      <div><label class="field-label">每批RT目标</label><input id="es-target" type="number" min="1" class="field-input"></div>
       <div><label class="field-label">批次间隔(分)</label><input id="es-interval" type="number" min="1" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
@@ -492,9 +492,9 @@ tailwind.config={theme:{extend:{
     </div>
     <div class="flex items-center gap-4 text-[.7rem] text-dim">
       <span>总目标 <span class="font-mono c-heading" id="rs-target">-</span></span>
-      <span>注册失败 <span class="font-mono text-red-400" id="rs-reg-fail">-</span></span>
-      <span>RT 失败 <span class="font-mono text-red-400" id="rs-rt-fail">-</span></span>
-      <span>S2A 失败 <span class="font-mono text-red-400" id="rs-s2a-fail">-</span></span>
+      <span>注册总次数 <span class="font-mono c-heading" id="rs-reg-total">-</span></span>
+      <span>注册成功 <span class="font-mono text-teal-400" id="rs-reg-ok">-</span></span>
+      <span>注册成功率 <span class="font-mono text-amber-400" id="rs-reg-success-rate">-</span></span>
       <span>总耗时 <span class="font-mono c-heading" id="rs-elapsed">-</span></span>
     </div>
   </div>

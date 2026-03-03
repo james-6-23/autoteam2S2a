@@ -339,6 +339,8 @@ async fn run(
         register_workers: reg_workers,
         rt_workers,
         rt_retry_max,
+        // CLI 保持原语义：补注册最多 5 轮
+        target_fill_max_rounds: 5,
         push_s2a,
         use_chatgpt_mail,
         free_mode: !cfg.payment_enabled(),

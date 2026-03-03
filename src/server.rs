@@ -1569,6 +1569,8 @@ async fn execute_task(
         register_workers,
         rt_workers,
         rt_retry_max: rt_retries,
+        // 兼容手动任务历史行为：补注册最多 5 轮；定时计划走 schedule 自身 rt_retries
+        target_fill_max_rounds: 5,
         push_s2a,
         use_chatgpt_mail,
         free_mode,
@@ -1679,6 +1681,7 @@ struct RunsQuery {
     page: Option<usize>,
     per_page: Option<usize>,
     schedule: Option<String>,
+    trigger: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2142,12 +2145,17 @@ async fn list_runs_handler(
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
     let schedule = query.schedule.as_deref();
+    let trigger_filter = match query.trigger.as_deref() {
+        Some("manual") => Some(crate::db::RunTriggerFilter::Manual),
+        Some("scheduled") => Some(crate::db::RunTriggerFilter::Scheduled),
+        _ => None,
+    };
 
     let schedule = schedule.map(|s| s.to_string());
     let (runs, total) = run_db_blocking({
         let db = state.run_history_db.clone();
         move || {
-            db.list_runs(page, per_page, schedule.as_deref())
+            db.list_runs(page, per_page, schedule.as_deref(), trigger_filter)
                 .map_err(|e| e.to_string())
         }
     })

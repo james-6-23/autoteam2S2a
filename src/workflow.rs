@@ -67,6 +67,8 @@ pub struct WorkflowOptions {
     pub register_workers: usize,
     pub rt_workers: usize,
     pub rt_retry_max: usize,
+    /// 兜底轮次：超过该轮次后，按当前 RT 成功数收敛
+    pub target_fill_max_rounds: usize,
     pub push_s2a: bool,
     pub use_chatgpt_mail: bool,
     pub free_mode: bool,
@@ -107,7 +109,7 @@ impl WorkflowRunner {
         let target = options.target_count;
         let reg_concurrency = options.register_workers.max(1);
         let rt_concurrency = options.rt_workers.max(1);
-        const MAX_ROUNDS: usize = 5;
+        let max_rounds = options.target_fill_max_rounds.max(1);
 
         let mut all_rt_success: Vec<AccountWithRt> = Vec::new();
         let mut all_rt_failed: Vec<RegisteredAccount> = Vec::new();
@@ -115,13 +117,16 @@ impl WorkflowRunner {
         let mut total_reg_failed = 0usize;
         let mut total_task_index = 0usize;
 
-        for round in 0..MAX_ROUNDS {
+        for round in 0..max_rounds {
             if cancel_flag.load(Ordering::Relaxed) {
                 broadcast_log("已收到中断信号，跳过后续注册轮次...");
                 break;
             }
 
-            let current_ok = all_rt_success.len();
+            let current_ok = all_rt_success
+                .iter()
+                .filter(|acc| Self::is_target_mode_account(acc, options.free_mode))
+                .count();
             if current_ok >= target {
                 break;
             }
@@ -150,13 +155,14 @@ impl WorkflowRunner {
             } else {
                 let plan_label = if options.free_mode { "free" } else { "team" };
                 broadcast_log(&format!(
-                    "阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标 {target})"
+                    "阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标{plan_label} RT成功 {target})"
                 ));
             }
             let round_no = round + 1;
             if matches!(options.register_log_mode, RegisterLogMode::Summary) {
+                let plan_label = if options.free_mode { "free" } else { "team" };
                 broadcast_log(&format!(
-                    "[REG] round={round_no} start target={target} need={deficit} reg_conc={reg_concurrency} rt_conc={rt_concurrency}"
+                    "[REG] round={round_no}/{max_rounds} mode={plan_label} target_rt={target} need={deficit} reg_conc={reg_concurrency} rt_conc={rt_concurrency}"
                 ));
             }
 
@@ -385,8 +391,13 @@ impl WorkflowRunner {
             total_registered += reg_ok_in_round;
             total_reg_failed += reg_failed_in_round;
             total_task_index += deficit;
+            let round_rt_mode_ok = round_rt_ok
+                .iter()
+                .filter(|acc| Self::is_target_mode_account(acc, options.free_mode))
+                .count();
             all_rt_success.extend(round_rt_ok);
             all_rt_failed.extend(round_rt_failed);
+            let cumulative_mode_ok = current_ok + round_rt_mode_ok;
 
             if matches!(options.register_log_mode, RegisterLogMode::Summary) {
                 broadcast_log(&format!(
@@ -394,41 +405,52 @@ impl WorkflowRunner {
                     round + 1,
                     reg_ok_in_round,
                     reg_failed_in_round,
-                    all_rt_success.len() - current_ok,
-                    all_rt_success.len(),
+                    round_rt_mode_ok,
+                    cumulative_mode_ok,
                     target
                 ));
             } else {
+                let plan_label = if options.free_mode { "free" } else { "team" };
                 broadcast_log(&format!(
-                    "本轮结束: RT成功 {}, 累计成功 {}/{}",
-                    all_rt_success.len() - current_ok,
-                    all_rt_success.len(),
+                    "本轮结束: {plan_label} RT成功 {}, 累计成功 {}/{}",
+                    round_rt_mode_ok, cumulative_mode_ok,
                     target
                 ));
             }
 
-            if all_rt_success.len() >= target {
+            if cumulative_mode_ok >= target {
                 break;
             }
         }
 
-        // 防御性截断
-        all_rt_success.truncate(target);
+        let plan_label = if options.free_mode { "free" } else { "team" };
+        let total_rt_success_before_filter = all_rt_success.len();
+        let mut target_rt_success: Vec<AccountWithRt> = all_rt_success
+            .into_iter()
+            .filter(|acc| Self::is_target_mode_account(acc, options.free_mode))
+            .collect();
+        target_rt_success.truncate(target);
+        if target_rt_success.len() < target && !cancel_flag.load(Ordering::Relaxed) {
+            broadcast_log(&format!(
+                "[REG-END] 达到重试上限 {}，{} 模式 RT 成功 {}/{}，按当前数量继续后续流程",
+                max_rounds,
+                plan_label,
+                target_rt_success.len(),
+                target
+            ));
+        }
+        let dropped_non_target = total_rt_success_before_filter.saturating_sub(target_rt_success.len());
+        if dropped_non_target > 0 {
+            broadcast_log(&format!(
+                "[REG] 已忽略 {} 个非{}模式 RT 结果，仅按 {} 模式计入目标",
+                dropped_non_target, plan_label, plan_label
+            ));
+        }
 
         // 输出文件
-        let plan_label = all_rt_success
-            .first()
-            .map(|a| {
-                if a.plan_type.contains("team") {
-                    "team"
-                } else {
-                    "free"
-                }
-            })
-            .unwrap_or("free");
         let mut output_files = Vec::new();
         if let Some(path) =
-            save_json_records(&format!("accounts-{plan_label}-with-rt"), &all_rt_success)?
+            save_json_records(&format!("accounts-{plan_label}-with-rt"), &target_rt_success)?
         {
             output_files.push(path.display().to_string());
         }
@@ -439,7 +461,7 @@ impl WorkflowRunner {
         }
 
         Ok(RegisterRtResult {
-            rt_success: all_rt_success,
+            rt_success: target_rt_success,
             rt_failed: all_rt_failed,
             total_registered,
             total_reg_failed,
@@ -779,6 +801,14 @@ impl WorkflowRunner {
             }
         }
         (rt_success, rt_failed)
+    }
+
+    fn is_target_mode_account(acc: &AccountWithRt, free_mode: bool) -> bool {
+        if free_mode {
+            acc.plan_type.eq_ignore_ascii_case("free")
+        } else {
+            !acc.plan_type.eq_ignore_ascii_case("free")
+        }
     }
 
     async fn wait_for_cancel(cancel_flag: Arc<AtomicBool>) {

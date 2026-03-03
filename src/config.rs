@@ -256,7 +256,7 @@ pub struct ScheduleConfig {
     pub start_time: String,
     /// 时间窗口结束 (HH:MM，本地时间)
     pub end_time: String,
-    /// 每批注册数量
+    /// 每批 RT 成功目标数量（按模式统计：team 或 free）
     pub target_count: usize,
     /// 批次间隔（分钟）
     #[serde(default = "default_batch_interval")]

@@ -73,6 +73,10 @@ pub async fn run_distribution(
     db.enqueue_insert_distributions(run_id.clone(), dist_entries)?;
 
     let register_runtime = cfg.register_runtime();
+    let retry_guard = schedule
+        .rt_retries
+        .unwrap_or(cfg.defaults.rt_retries.unwrap_or(4))
+        .max(1);
     let options = WorkflowOptions {
         target_count: schedule.target_count,
         register_workers: schedule
@@ -83,10 +87,8 @@ pub async fn run_distribution(
             .rt_workers
             .unwrap_or(cfg.defaults.rt_workers.unwrap_or(10))
             .max(1),
-        rt_retry_max: schedule
-            .rt_retries
-            .unwrap_or(cfg.defaults.rt_retries.unwrap_or(4))
-            .max(1),
+        rt_retry_max: retry_guard,
+        target_fill_max_rounds: retry_guard,
         push_s2a: schedule.push_s2a,
         use_chatgpt_mail: schedule.use_chatgpt_mail,
         free_mode: schedule.free_mode,
@@ -99,9 +101,10 @@ pub async fn run_distribution(
     };
 
     // 2. 注册 + RT
+    let mode_label = if options.free_mode { "free" } else { "team" };
     broadcast_log(&format!(
-        "[分发] 开始注册 + RT，目标: {} 个账号",
-        schedule.target_count
+        "[分发] 开始注册 + RT，目标: {} 模式 RT 成功 {} 个（兜底轮次={}）",
+        mode_label, schedule.target_count, retry_guard
     ));
     let reg_result = match runner
         .run_register_and_rt(cfg, &options, cancel_flag.clone(), None)
