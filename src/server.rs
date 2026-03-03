@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use axum::extract::{Path, State};
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::cors::CorsLayer;
 
-use crate::config::{AppConfig, S2aConfig};
+use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig};
 use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::WorkflowReport;
@@ -28,6 +28,12 @@ use crate::workflow::{WorkflowOptions, WorkflowRunner};
 // ─── Embedded frontend ──────────────────────────────────────────────────────
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
+const TASK_FINISHED_KEEP: usize = 300;
+const TASK_PRUNE_THRESHOLD: usize = 600;
+const MAX_TARGET_COUNT: usize = 5000;
+const MAX_REGISTER_WORKERS: usize = 128;
+const MAX_RT_WORKERS: usize = 128;
+const MAX_RT_RETRIES: usize = 20;
 
 // ─── Data types ──────────────────────────────────────────────────────────────
 
@@ -85,6 +91,7 @@ impl TaskManager {
 
     pub async fn submit(&self, team: String, target: usize) -> Result<String, String> {
         let mut tasks = self.tasks.lock().await;
+        Self::prune_finished_tasks(&mut tasks);
         let running = tasks
             .values()
             .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::Running))
@@ -118,35 +125,52 @@ impl TaskManager {
     }
 
     pub async fn set_completed(&self, task_id: &str, report: WorkflowReport) {
-        if let Some(t) = self.tasks.lock().await.get_mut(task_id) {
+        let mut tasks = self.tasks.lock().await;
+        if let Some(t) = tasks.get_mut(task_id) {
             t.status = TaskStatus::Completed;
             t.report = Some(report);
         }
+        Self::prune_finished_tasks(&mut tasks);
     }
 
     pub async fn set_failed(&self, task_id: &str, error: String) {
-        if let Some(t) = self.tasks.lock().await.get_mut(task_id) {
+        let mut tasks = self.tasks.lock().await;
+        if let Some(t) = tasks.get_mut(task_id) {
             t.status = TaskStatus::Failed;
             t.error = Some(error);
         }
+        Self::prune_finished_tasks(&mut tasks);
     }
 
     pub async fn set_cancelled(&self, task_id: &str) {
-        if let Some(t) = self.tasks.lock().await.get_mut(task_id) {
+        let mut tasks = self.tasks.lock().await;
+        if let Some(t) = tasks.get_mut(task_id) {
             if matches!(t.status, TaskStatus::Pending | TaskStatus::Running) {
                 t.cancel_flag.store(true, Ordering::SeqCst);
                 t.status = TaskStatus::Cancelled;
             }
         }
+        Self::prune_finished_tasks(&mut tasks);
     }
 
     pub async fn get(&self, task_id: &str) -> Option<TaskEntry> {
         self.tasks.lock().await.get(task_id).cloned()
     }
 
-    pub async fn list(&self) -> Vec<TaskEntry> {
-        let tasks = self.tasks.lock().await;
-        let mut list: Vec<TaskEntry> = tasks.values().cloned().collect();
+    async fn list_summaries(&self) -> Vec<TaskSummaryResp> {
+        let mut list: Vec<TaskSummaryResp> = {
+            let tasks = self.tasks.lock().await;
+            tasks
+                .values()
+                .map(|t| TaskSummaryResp {
+                    task_id: t.task_id.clone(),
+                    status: t.status.to_string(),
+                    team: t.team.clone(),
+                    target: t.target,
+                    created_at: t.created_at.clone(),
+                })
+                .collect()
+        };
         list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         list
     }
@@ -165,6 +189,51 @@ impl TaskManager {
             .await
             .get(task_id)
             .map(|t| t.progress.clone())
+    }
+
+    pub async fn get_progress_snapshot(
+        &self,
+        task_id: &str,
+    ) -> Option<(
+        String,
+        TaskStatus,
+        usize,
+        Arc<crate::workflow::TaskProgress>,
+    )> {
+        self.tasks.lock().await.get(task_id).map(|t| {
+            (
+                t.task_id.clone(),
+                t.status.clone(),
+                t.target,
+                t.progress.clone(),
+            )
+        })
+    }
+
+    fn prune_finished_tasks(tasks: &mut HashMap<String, TaskEntry>) {
+        if tasks.len() <= TASK_PRUNE_THRESHOLD {
+            return;
+        }
+
+        let mut finished: Vec<(String, String)> = tasks
+            .iter()
+            .filter(|(_, task)| {
+                matches!(
+                    task.status,
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+                )
+            })
+            .map(|(task_id, task)| (task_id.clone(), task.created_at.clone()))
+            .collect();
+
+        if finished.len() <= TASK_FINISHED_KEEP {
+            return;
+        }
+
+        finished.sort_by(|a, b| b.1.cmp(&a.1));
+        for (task_id, _) in finished.into_iter().skip(TASK_FINISHED_KEEP) {
+            tasks.remove(&task_id);
+        }
     }
 }
 
@@ -275,6 +344,8 @@ struct RegisterResp {
     request_timeout_sec: u64,
     chatgpt_mail_api_key: String,
     mail_max_concurrency: usize,
+    register_log_mode: RegisterLogMode,
+    register_perf_mode: RegisterPerfMode,
 }
 
 #[derive(Serialize)]
@@ -327,6 +398,8 @@ struct UpdateRegisterRequest {
     request_timeout_sec: Option<u64>,
     chatgpt_mail_api_key: Option<String>,
     mail_max_concurrency: Option<usize>,
+    register_log_mode: Option<RegisterLogMode>,
+    register_perf_mode: Option<RegisterPerfMode>,
 }
 
 #[derive(Deserialize)]
@@ -351,6 +424,38 @@ fn error_json(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>
             error: msg.to_string(),
         }),
     )
+}
+
+fn shared_http_client_10s() -> &'static rquest::Client {
+    static CLIENT: OnceLock<rquest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        rquest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| rquest::Client::new())
+    })
+}
+
+fn shared_http_client_8s() -> &'static rquest::Client {
+    static CLIENT: OnceLock<rquest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        rquest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .connect_timeout(std::time::Duration::from_secs(4))
+            .build()
+            .unwrap_or_else(|_| rquest::Client::new())
+    })
+}
+
+async fn run_db_blocking<T, F>(job: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(job)
+        .await
+        .map_err(|e| format!("数据库后台任务失败: {e}"))?
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -395,6 +500,8 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
             request_timeout_sec: reg.request_timeout_sec.unwrap_or(20),
             chatgpt_mail_api_key: reg.chatgpt_mail_api_key.clone().unwrap_or_default(),
             mail_max_concurrency: reg.mail_max_concurrency.unwrap_or(50),
+            register_log_mode: reg.register_log_mode.unwrap_or_default(),
+            register_perf_mode: reg.register_perf_mode.unwrap_or_default(),
         },
         proxy_pool: cfg.proxy_pool.clone(),
         email_domains: cfg.email_domains.clone(),
@@ -556,11 +663,7 @@ async fn test_gptmail_handler(
         ));
     }
 
-    let client = rquest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap_or_else(|_| rquest::Client::new());
+    let client = shared_http_client_10s();
 
     let resp = client
         .get("https://mail.chatgpt.org.uk/api/stats")
@@ -587,7 +690,10 @@ async fn test_gptmail_handler(
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        return Err(error_json(StatusCode::BAD_GATEWAY, &format!("API 错误: {err}")));
+        return Err(error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("API 错误: {err}"),
+        ));
     }
 
     Ok(Json(json))
@@ -649,11 +755,7 @@ async fn s2a_stats_handler(
     );
 
     // 并发获取所有统计（包括 free 分组）
-    let client = rquest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .connect_timeout(std::time::Duration::from_secs(4))
-        .build()
-        .unwrap_or_else(|_| rquest::Client::new());
+    let client = shared_http_client_8s();
 
     let (active_res, rl_res, free_active_res, free_rl_res) = tokio::join!(
         fetch_s2a_total(&client, &active_url, &team.admin_key),
@@ -747,10 +849,7 @@ async fn fetch_s2a_groups_handler(
     let base = S2aHttpService::normalized_api_base(&req.api_base);
     let url = format!("{base}/admin/groups?page=1&page_size=100&status=&timezone=Asia%2FShanghai");
 
-    let client = rquest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| rquest::Client::new());
+    let client = shared_http_client_10s();
 
     let key = req.admin_key.trim();
     let bearer = if key.to_ascii_lowercase().starts_with("bearer ") {
@@ -864,6 +963,12 @@ async fn update_register_handler(
     }
     if let Some(v) = req.mail_max_concurrency {
         cfg.register.mail_max_concurrency = Some(v);
+    }
+    if let Some(v) = req.register_log_mode {
+        cfg.register.register_log_mode = Some(v);
+    }
+    if let Some(v) = req.register_perf_mode {
+        cfg.register.register_perf_mode = Some(v);
     }
     auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
@@ -992,34 +1097,42 @@ async fn update_d1_cleanup_handler(
 
 /// 自动持久化配置到文件（静默，不阻塞请求）
 fn auto_save(config: &AppConfig, path: &std::path::Path) {
-    match toml::to_string_pretty(config) {
+    let config_snapshot = config.clone();
+    let path_buf = path.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || match toml::to_string_pretty(&config_snapshot) {
         Ok(toml_str) => {
-            if let Err(e) = std::fs::write(path, &toml_str) {
+            if let Err(e) = std::fs::write(&path_buf, &toml_str) {
                 println!("[自动保存] 写入失败: {e}");
             }
         }
         Err(e) => println!("[自动保存] 序列化失败: {e}"),
-    }
+    });
 }
 
 async fn save_config_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let cfg = state.config.read().await;
-    let toml_str = toml::to_string_pretty(&*cfg).map_err(|e| {
+    let cfg_snapshot = state.config.read().await.clone();
+    let save_path = state.config_path.clone();
+    let display_path = save_path.clone();
+
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let toml_str =
+            toml::to_string_pretty(&cfg_snapshot).map_err(|e| format!("序列化失败: {e}"))?;
+        std::fs::write(&save_path, &toml_str).map_err(|e| format!("写入文件失败: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("序列化失败: {e}"),
+            &format!("保存任务执行失败: {e}"),
         )
-    })?;
-    std::fs::write(&state.config_path, &toml_str).map_err(|e| {
-        error_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("写入文件失败: {e}"),
-        )
-    })?;
+    })?
+    .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &e))?;
+
     Ok(Json(MsgResponse {
-        message: format!("配置已保存到 {}", state.config_path.display()),
+        message: format!("配置已保存到 {}", display_path.display()),
     }))
 }
 
@@ -1048,21 +1161,22 @@ async fn create_task_handler(
     };
 
     let target = req.target.or(cfg.defaults.target_count).unwrap_or(1).max(1);
+    let target = target.min(MAX_TARGET_COUNT);
     let register_workers = req
         .register_workers
         .or(cfg.defaults.register_workers)
         .unwrap_or(15)
-        .max(1);
+        .clamp(1, MAX_REGISTER_WORKERS);
     let rt_workers = req
         .rt_workers
         .or(cfg.defaults.rt_workers)
         .unwrap_or(10)
-        .max(1);
+        .clamp(1, MAX_RT_WORKERS);
     let rt_retries = req
         .rt_retries
         .or(cfg.defaults.rt_retries)
         .unwrap_or(4)
-        .max(1);
+        .clamp(1, MAX_RT_RETRIES);
     let push_s2a = req.push_s2a.unwrap_or(true);
     let use_chatgpt_mail = req.use_chatgpt_mail.unwrap_or(false);
     let free_mode = req.free_mode.unwrap_or(false);
@@ -1110,19 +1224,8 @@ async fn create_task_handler(
 }
 
 async fn list_tasks_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let tasks = state.task_manager.list().await;
-    Json(TaskListResponse {
-        tasks: tasks
-            .into_iter()
-            .map(|t| TaskSummaryResp {
-                task_id: t.task_id,
-                status: t.status.to_string(),
-                team: t.team,
-                target: t.target,
-                created_at: t.created_at,
-            })
-            .collect(),
-    })
+    let tasks = state.task_manager.list_summaries().await;
+    Json(TaskListResponse { tasks })
 }
 
 async fn get_task_handler(
@@ -1164,24 +1267,23 @@ async fn task_progress_handler(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let task = state
+    let (task_id, status, target, progress) = state
         .task_manager
-        .get(&task_id)
+        .get_progress_snapshot(&task_id)
         .await
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("任务不存在: {task_id}")))?;
 
-    let p = &task.progress;
     Ok(Json(TaskProgressResponse {
-        task_id: task.task_id,
-        status: task.status.to_string(),
-        stage: p.get_stage(),
-        reg_ok: p.reg_ok.load(Ordering::Relaxed),
-        reg_failed: p.reg_failed.load(Ordering::Relaxed),
-        rt_ok: p.rt_ok.load(Ordering::Relaxed),
-        rt_failed: p.rt_failed.load(Ordering::Relaxed),
-        s2a_ok: p.s2a_ok.load(Ordering::Relaxed),
-        s2a_failed: p.s2a_failed.load(Ordering::Relaxed),
-        target: task.target,
+        task_id,
+        status: status.to_string(),
+        stage: progress.get_stage(),
+        reg_ok: progress.reg_ok.load(Ordering::Relaxed),
+        reg_failed: progress.reg_failed.load(Ordering::Relaxed),
+        rt_ok: progress.rt_ok.load(Ordering::Relaxed),
+        rt_failed: progress.rt_failed.load(Ordering::Relaxed),
+        s2a_ok: progress.s2a_ok.load(Ordering::Relaxed),
+        s2a_failed: progress.s2a_failed.load(Ordering::Relaxed),
+        target,
     }))
 }
 
@@ -1245,13 +1347,14 @@ async fn execute_task(
 
     // 写入运行记录
     let run_id = task_id.clone();
-    if let Err(e) = run_history_db.insert_run(&crate::db::NewRun {
+    let new_run = crate::db::NewRun {
         id: run_id.clone(),
         schedule_name: None,
         trigger_type: "manual_task".to_string(),
         target_count: target,
         started_at: crate::util::beijing_now().to_rfc3339(),
-    }) {
+    };
+    if let Err(e) = run_history_db.enqueue_insert_run(new_run) {
         println!("[任务] 写入运行记录失败: {e}");
     }
 
@@ -1261,13 +1364,14 @@ async fn execute_task(
             task_manager
                 .set_failed(&task_id, "内部错误: 找不到任务".to_string())
                 .await;
-            let _ = run_history_db.fail_run(&run_id, "内部错误: 找不到任务");
+            let _ =
+                run_history_db.enqueue_fail_run(run_id.clone(), "内部错误: 找不到任务".to_string());
             return;
         }
     };
 
     if cancel_flag.load(Ordering::Relaxed) {
-        let _ = run_history_db.fail_run(&run_id, "任务在启动前被取消");
+        let _ = run_history_db.enqueue_fail_run(run_id.clone(), "任务在启动前被取消".to_string());
         return;
     }
 
@@ -1276,7 +1380,7 @@ async fn execute_task(
         Err(e) => {
             let msg = format!("代理初始化失败: {e}");
             task_manager.set_failed(&task_id, msg.clone()).await;
-            let _ = run_history_db.fail_run(&run_id, &msg);
+            let _ = run_history_db.enqueue_fail_run(run_id.clone(), msg);
             return;
         }
     };
@@ -1292,9 +1396,15 @@ async fn execute_task(
         let gpt_domains = cfg.chatgpt_mail_domains.clone();
         let mail_concurrency = register_runtime.mail_max_concurrency;
         let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(), gpt_domains.clone(), mail_concurrency,
+            api_key.clone(),
+            gpt_domains.clone(),
+            mail_concurrency,
         ));
-        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(api_key, gpt_domains, mail_concurrency));
+        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
+            api_key,
+            gpt_domains,
+            mail_concurrency,
+        ));
         (
             Arc::new(LiveRegisterService::new(
                 register_runtime.clone(),
@@ -1311,8 +1421,14 @@ async fn execute_task(
             request_timeout_sec: register_runtime.mail_request_timeout_sec,
         };
         let mail_concurrency = register_runtime.mail_max_concurrency;
-        let reg_email = Arc::new(email_service::EmailService::new_http(email_cfg.clone(), mail_concurrency));
-        let rt_email = Arc::new(email_service::EmailService::new_http(email_cfg, mail_concurrency));
+        let reg_email = Arc::new(email_service::EmailService::new_http(
+            email_cfg.clone(),
+            mail_concurrency,
+        ));
+        let rt_email = Arc::new(email_service::EmailService::new_http(
+            email_cfg,
+            mail_concurrency,
+        ));
         (
             Arc::new(LiveRegisterService::new(
                 register_runtime.clone(),
@@ -1333,6 +1449,8 @@ async fn execute_task(
         push_s2a,
         use_chatgpt_mail,
         free_mode,
+        register_log_mode: register_runtime.register_log_mode,
+        register_perf_mode: register_runtime.register_perf_mode,
     };
 
     let progress = task_manager.get_progress(&task_id).await;
@@ -1343,24 +1461,22 @@ async fn execute_task(
         .await
     {
         Ok(report) => {
-            let _ = run_history_db.complete_run(
-                &run_id,
-                &crate::db::RunCompletion {
-                    registered_ok: report.registered_ok,
-                    registered_failed: report.registered_failed,
-                    rt_ok: report.rt_ok,
-                    rt_failed: report.rt_failed,
-                    total_s2a_ok: report.s2a_ok,
-                    total_s2a_failed: report.s2a_failed,
-                    elapsed_secs: started.elapsed().as_secs_f64(),
-                    finished_at: crate::util::beijing_now().to_rfc3339(),
-                },
-            );
+            let completion = crate::db::RunCompletion {
+                registered_ok: report.registered_ok,
+                registered_failed: report.registered_failed,
+                rt_ok: report.rt_ok,
+                rt_failed: report.rt_failed,
+                total_s2a_ok: report.s2a_ok,
+                total_s2a_failed: report.s2a_failed,
+                elapsed_secs: started.elapsed().as_secs_f64(),
+                finished_at: crate::util::beijing_now().to_rfc3339(),
+            };
+            let _ = run_history_db.enqueue_complete_run(run_id.clone(), completion);
             task_manager.set_completed(&task_id, report).await;
         }
         Err(e) => {
             let msg = format!("{e:#}");
-            let _ = run_history_db.fail_run(&run_id, &msg);
+            let _ = run_history_db.enqueue_fail_run(run_id.clone(), msg.clone());
             task_manager.set_failed(&task_id, msg).await;
         }
     }
@@ -1401,6 +1517,10 @@ struct CreateScheduleRequest {
     use_chatgpt_mail: bool,
     #[serde(default)]
     free_mode: bool,
+    #[serde(default)]
+    register_log_mode: Option<RegisterLogMode>,
+    #[serde(default)]
+    register_perf_mode: Option<RegisterPerfMode>,
     distribution: Vec<crate::config::DistributionEntry>,
 }
 
@@ -1426,6 +1546,8 @@ struct UpdateScheduleRequest {
     push_s2a: Option<bool>,
     use_chatgpt_mail: Option<bool>,
     free_mode: Option<bool>,
+    register_log_mode: Option<Option<RegisterLogMode>>,
+    register_perf_mode: Option<Option<RegisterPerfMode>>,
     distribution: Option<Vec<crate::config::DistributionEntry>>,
 }
 
@@ -1461,18 +1583,19 @@ struct RunListResponse {
 // ─── Schedule handlers ──────────────────────────────────────────────────────
 
 async fn list_schedules_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let cfg = state.config.read().await;
-    let mut schedules = Vec::new();
-    for s in &cfg.schedule {
-        let running = state.scheduler_state.is_active(&s.name).await;
-        let run_info = if running {
-            state.scheduler_state.run_info(&s.name).await
-        } else {
-            None
-        };
+    let schedule_configs = {
+        let cfg = state.config.read().await;
+        cfg.schedule.clone()
+    };
+    let run_snapshot = state.scheduler_state.snapshot().await;
+
+    let mut schedules = Vec::with_capacity(schedule_configs.len());
+    for config in schedule_configs {
+        let run_info = run_snapshot.get(&config.name).cloned();
+        let running = run_info.is_some();
         schedules.push(ScheduleWithStatus {
             running,
-            config: s.clone(),
+            config,
             run_info,
         });
     }
@@ -1516,19 +1639,31 @@ async fn create_schedule_handler(
         return Err(error_json(StatusCode::BAD_REQUEST, &e));
     }
 
+    let register_workers = req
+        .register_workers
+        .map(|workers| workers.clamp(1, MAX_REGISTER_WORKERS));
+    let rt_workers = req
+        .rt_workers
+        .map(|workers| workers.clamp(1, MAX_RT_WORKERS));
+    let rt_retries = req
+        .rt_retries
+        .map(|retries| retries.clamp(1, MAX_RT_RETRIES));
+
     cfg.schedule.push(crate::config::ScheduleConfig {
         name: req.name.clone(),
         start_time: req.start_time,
         end_time: req.end_time,
-        target_count: req.target_count,
+        target_count: req.target_count.clamp(1, MAX_TARGET_COUNT),
         batch_interval_mins: req.batch_interval_mins,
         enabled: req.enabled,
-        register_workers: req.register_workers,
-        rt_workers: req.rt_workers,
-        rt_retries: req.rt_retries,
+        register_workers,
+        rt_workers,
+        rt_retries,
         push_s2a: req.push_s2a,
         use_chatgpt_mail: req.use_chatgpt_mail,
         free_mode: req.free_mode,
+        register_log_mode: req.register_log_mode,
+        register_perf_mode: req.register_perf_mode,
         distribution: req.distribution,
     });
     auto_save(&cfg, &state.config_path);
@@ -1547,6 +1682,7 @@ async fn update_schedule_handler(
     Json(req): Json<UpdateScheduleRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let mut cfg = state.config.write().await;
+    let mut schedule_rename: Option<(String, String)> = None;
     // verify schedule exists
     cfg.schedule
         .iter()
@@ -1564,11 +1700,8 @@ async fn update_schedule_handler(
                 &format!("定时计划已存在: {trimmed}"),
             ));
         }
-        // 同步更新历史 run 记录中的 schedule_name
         if trimmed != name {
-            if let Err(e) = state.run_history_db.rename_schedule(&name, &trimmed) {
-                tracing::warn!("[调度] 同步重命名历史记录失败: {e}");
-            }
+            schedule_rename = Some((name.clone(), trimmed.clone()));
         }
         // re-borrow after the check
         cfg.schedule
@@ -1606,16 +1739,16 @@ async fn update_schedule_handler(
         sched.enabled = enabled;
     }
     if let Some(target_count) = req.target_count {
-        sched.target_count = target_count;
+        sched.target_count = target_count.clamp(1, MAX_TARGET_COUNT);
     }
     if let Some(rw) = req.register_workers {
-        sched.register_workers = Some(rw);
+        sched.register_workers = Some(rw.clamp(1, MAX_REGISTER_WORKERS));
     }
     if let Some(rw) = req.rt_workers {
-        sched.rt_workers = Some(rw);
+        sched.rt_workers = Some(rw.clamp(1, MAX_RT_WORKERS));
     }
     if let Some(rr) = req.rt_retries {
-        sched.rt_retries = Some(rr);
+        sched.rt_retries = Some(rr.clamp(1, MAX_RT_RETRIES));
     }
     if let Some(ps) = req.push_s2a {
         sched.push_s2a = ps;
@@ -1625,6 +1758,12 @@ async fn update_schedule_handler(
     }
     if let Some(fm) = req.free_mode {
         sched.free_mode = fm;
+    }
+    if let Some(log_mode) = req.register_log_mode {
+        sched.register_log_mode = log_mode;
+    }
+    if let Some(perf_mode) = req.register_perf_mode {
+        sched.register_perf_mode = perf_mode;
     }
     if let Some(dist) = req.distribution {
         let teams = cfg.effective_s2a_configs();
@@ -1641,7 +1780,20 @@ async fn update_schedule_handler(
     }
     auto_save(&cfg, &state.config_path);
 
-    let display_name = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+    let display_name = req
+        .name
+        .as_deref()
+        .map(|n| n.trim().to_string())
+        .unwrap_or_else(|| name.clone());
+    drop(cfg);
+    if let Some((old_name, new_name)) = schedule_rename {
+        if let Err(e) = state
+            .run_history_db
+            .enqueue_rename_schedule(old_name, new_name)
+        {
+            tracing::warn!("[调度] 同步重命名历史记录失败: {e}");
+        }
+    }
     Ok(Json(MsgResponse {
         message: format!("定时计划 {display_name} 已更新"),
     }))
@@ -1678,17 +1830,17 @@ async fn toggle_schedule_handler(
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("定时计划不存在: {name}")))?;
 
     sched.enabled = !sched.enabled;
-    let status = if sched.enabled {
-        "已启用"
-    } else {
-        "已禁用"
-    };
+    let enabled = sched.enabled;
+    let cfg_snapshot = cfg.clone();
+    drop(cfg);
+
+    let status = if enabled { "已启用" } else { "已禁用" };
 
     // 禁用时，如果正在运行则停止
-    if !sched.enabled {
+    if !enabled {
         state.scheduler_state.stop(&name).await;
     }
-    auto_save(&cfg, &state.config_path);
+    auto_save(&cfg_snapshot, &state.config_path);
 
     Ok(Json(MsgResponse {
         message: format!("定时计划 {name} {status}"),
@@ -1742,20 +1894,23 @@ async fn trigger_schedule_handler(
             ));
 
             let config_snapshot = state_clone.config.read().await.clone();
-            let runner =
-                match build_workflow_runner(&config_snapshot, state_clone.proxy_file.as_deref(), schedule.use_chatgpt_mail)
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        crate::log_broadcast::broadcast_log(&format!(
-                            "[手动触发] 构建 runner 失败 ({}): {e}",
-                            schedule.name
-                        ));
-                        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                        continue;
-                    }
-                };
+            let runner = match build_workflow_runner(
+                &config_snapshot,
+                state_clone.proxy_file.as_deref(),
+                schedule.use_chatgpt_mail,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[手动触发] 构建 runner 失败 ({}): {e}",
+                        schedule.name
+                    ));
+                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                    continue;
+                }
+            };
 
             match crate::distribution::run_distribution(
                 &runner,
@@ -1843,7 +1998,12 @@ async fn stop_schedule_handler(
 async fn run_stats_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let stats = state.run_history_db.run_stats().map_err(|e| {
+    let stats = run_db_blocking({
+        let db = state.run_history_db.clone();
+        move || db.run_stats().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("查询统计失败: {e}"),
@@ -1860,15 +2020,21 @@ async fn list_runs_handler(
     let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
     let schedule = query.schedule.as_deref();
 
-    let (runs, total) = state
-        .run_history_db
-        .list_runs(page, per_page, schedule)
-        .map_err(|e| {
-            error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("查询运行记录失败: {e}"),
-            )
-        })?;
+    let schedule = schedule.map(|s| s.to_string());
+    let (runs, total) = run_db_blocking({
+        let db = state.run_history_db.clone();
+        move || {
+            db.list_runs(page, per_page, schedule.as_deref())
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .map_err(|e| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("查询运行记录失败: {e}"),
+        )
+    })?;
 
     Ok(Json(RunListResponse {
         runs,
@@ -1882,16 +2048,19 @@ async fn get_run_handler(
     State(state): State<AppState>,
     Path(run_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let detail = state
-        .run_history_db
-        .get_run(&run_id)
-        .map_err(|e| {
-            error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("查询运行记录失败: {e}"),
-            )
-        })?
-        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("运行记录不存在: {run_id}")))?;
+    let detail = run_db_blocking({
+        let db = state.run_history_db.clone();
+        let run_id = run_id.clone();
+        move || db.get_run(&run_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("查询运行记录失败: {e}"),
+        )
+    })?
+    .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("运行记录不存在: {run_id}")))?;
 
     Ok(Json(detail))
 }
@@ -1924,14 +2093,20 @@ pub async fn build_workflow_runner(
         let gpt_domains = cfg.chatgpt_mail_domains.clone();
         let mail_concurrency = register_runtime.mail_max_concurrency;
         let reg_email = Arc::new(crate::email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(), gpt_domains.clone(), mail_concurrency,
+            api_key.clone(),
+            gpt_domains.clone(),
+            mail_concurrency,
         ));
         let rt_email = Arc::new(crate::email_service::EmailService::new_chatgpt_org_uk(
-            api_key, gpt_domains, mail_concurrency,
+            api_key,
+            gpt_domains,
+            mail_concurrency,
         ));
         (
-            Arc::new(LiveRegisterService::new(register_runtime.clone(), reg_email))
-                as Arc<dyn crate::services::RegisterService>,
+            Arc::new(LiveRegisterService::new(
+                register_runtime.clone(),
+                reg_email,
+            )) as Arc<dyn crate::services::RegisterService>,
             Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
                 as Arc<dyn crate::services::CodexService>,
         )
@@ -1944,12 +2119,18 @@ pub async fn build_workflow_runner(
         };
         let mail_concurrency = register_runtime.mail_max_concurrency;
         let reg_email = Arc::new(crate::email_service::EmailService::new_http(
-            email_cfg.clone(), mail_concurrency,
+            email_cfg.clone(),
+            mail_concurrency,
         ));
-        let rt_email = Arc::new(crate::email_service::EmailService::new_http(email_cfg, mail_concurrency));
+        let rt_email = Arc::new(crate::email_service::EmailService::new_http(
+            email_cfg,
+            mail_concurrency,
+        ));
         (
-            Arc::new(LiveRegisterService::new(register_runtime.clone(), reg_email))
-                as Arc<dyn crate::services::RegisterService>,
+            Arc::new(LiveRegisterService::new(
+                register_runtime.clone(),
+                reg_email,
+            )) as Arc<dyn crate::services::RegisterService>,
             Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
                 as Arc<dyn crate::services::CodexService>,
         )

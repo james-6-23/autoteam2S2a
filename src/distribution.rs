@@ -53,7 +53,7 @@ pub async fn run_distribution(
     let run_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
     // 1. 在 SQLite 创建 run 记录
-    db.insert_run(&NewRun {
+    db.enqueue_insert_run(NewRun {
         id: run_id.clone(),
         schedule_name: Some(schedule.name.clone()),
         trigger_type: trigger_type.to_string(),
@@ -70,8 +70,9 @@ pub async fn run_distribution(
             percent: d.percent,
         })
         .collect();
-    db.insert_distributions(&run_id, &dist_entries)?;
+    db.enqueue_insert_distributions(run_id.clone(), dist_entries)?;
 
+    let register_runtime = cfg.register_runtime();
     let options = WorkflowOptions {
         target_count: schedule.target_count,
         register_workers: schedule
@@ -89,6 +90,12 @@ pub async fn run_distribution(
         push_s2a: schedule.push_s2a,
         use_chatgpt_mail: schedule.use_chatgpt_mail,
         free_mode: schedule.free_mode,
+        register_log_mode: schedule
+            .register_log_mode
+            .unwrap_or(register_runtime.register_log_mode),
+        register_perf_mode: schedule
+            .register_perf_mode
+            .unwrap_or(register_runtime.register_perf_mode),
     };
 
     // 2. 注册 + RT
@@ -102,13 +109,13 @@ pub async fn run_distribution(
     {
         Ok(r) => r,
         Err(e) => {
-            let _ = db.fail_run(&run_id, &format!("{e:#}"));
+            let _ = db.enqueue_fail_run(run_id.clone(), format!("{e:#}"));
             return Err(e);
         }
     };
 
     if cancel_flag.load(Ordering::Relaxed) {
-        let _ = db.fail_run(&run_id, "用户取消");
+        let _ = db.enqueue_fail_run(run_id.clone(), "用户取消".to_string());
         anyhow::bail!("运行已取消");
     }
 
@@ -117,17 +124,16 @@ pub async fn run_distribution(
     let mut output_files = reg_result.output_files;
 
     // 3. 分离 free 账号（free_mode 时跳过分离，全部按百分比分配到 free 分组）
-    let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) = if options
-        .free_mode
-    {
-        // Free 模式: 所有账号都走百分比分配流程，推送到 free_group_ids
-        (reg_result.rt_success, Vec::new())
-    } else {
-        reg_result
-            .rt_success
-            .into_iter()
-            .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"))
-    };
+    let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
+        if options.free_mode {
+            // Free 模式: 所有账号都走百分比分配流程，推送到 free_group_ids
+            (reg_result.rt_success, Vec::new())
+        } else {
+            reg_result
+                .rt_success
+                .into_iter()
+                .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"))
+        };
 
     // 4. 按百分比分割
     let dist_pairs: Vec<(String, u8)> = schedule
@@ -143,43 +149,44 @@ pub async fn run_distribution(
     let mut total_s2a_failed = 0usize;
     let mut team_results: Vec<TeamDistResult> = Vec::new();
 
-    for (team_name, accounts) in &splits {
+    for (team_name, accounts) in splits {
         if cancel_flag.load(Ordering::Relaxed) {
             break;
         }
+        let assigned_count = accounts.len();
 
         let percent = schedule
             .distribution
             .iter()
-            .find(|d| d.team == *team_name)
+            .find(|d| d.team == team_name)
             .map(|d| d.percent)
             .unwrap_or(0);
 
-        let team_cfg = match teams.iter().find(|t| t.name == *team_name) {
+        let team_cfg = match teams.iter().find(|t| t.name == team_name) {
             Some(t) => t,
             None => {
                 broadcast_log(&format!("[分发] 未找到号池配置: {team_name}，跳过"));
                 team_results.push(TeamDistResult {
                     team_name: team_name.clone(),
                     percent,
-                    assigned_count: accounts.len(),
+                    assigned_count,
                     s2a_ok: 0,
-                    s2a_failed: accounts.len(),
+                    s2a_failed: assigned_count,
                 });
-                total_s2a_failed += accounts.len();
+                total_s2a_failed += assigned_count;
                 continue;
             }
         };
 
         broadcast_log(&format!(
             "[分发] 推送 {} 个{}账号到 {} ({}%)",
-            accounts.len(),
+            assigned_count,
             if options.free_mode { "free " } else { "" },
             team_name,
             percent
         ));
 
-        let (ok, failed) = if options.push_s2a && !accounts.is_empty() {
+        let (ok, failed) = if options.push_s2a && assigned_count > 0 {
             if options.free_mode {
                 // Free 模式: 推送到 free_group_ids
                 if team_cfg.free_group_ids.is_empty() {
@@ -187,9 +194,7 @@ pub async fn run_distribution(
                         "[分发] {} 未配置 free 分组，保存到文件",
                         team_name
                     ));
-                    if let Some(path) =
-                        save_json_records("accounts-free-skipped", &accounts.clone())?
-                    {
+                    if let Some(path) = save_json_records("accounts-free-skipped", &accounts)? {
                         output_files.push(path.display().to_string());
                     }
                     (0, 0)
@@ -200,10 +205,10 @@ pub async fn run_distribution(
                         concurrency: team_cfg.free_concurrency.unwrap_or(team_cfg.concurrency),
                         ..team_cfg.clone()
                     };
-                    runner.push_to_s2a(&free_cfg, accounts.clone(), None).await
+                    runner.push_to_s2a(&free_cfg, accounts, None).await
                 }
             } else {
-                runner.push_to_s2a(team_cfg, accounts.clone(), None).await
+                runner.push_to_s2a(team_cfg, accounts, None).await
             }
         } else {
             (0, 0)
@@ -213,12 +218,18 @@ pub async fn run_distribution(
         total_s2a_failed += failed;
 
         // 6. 更新 SQLite 中该号池的统计
-        let _ = db.update_distribution(&run_id, team_name, accounts.len(), ok, failed);
+        let _ = db.enqueue_update_distribution(
+            run_id.clone(),
+            team_name.clone(),
+            assigned_count,
+            ok,
+            failed,
+        );
 
         team_results.push(TeamDistResult {
-            team_name: team_name.clone(),
+            team_name,
             percent,
-            assigned_count: accounts.len(),
+            assigned_count,
             s2a_ok: ok,
             s2a_failed: failed,
         });
@@ -279,7 +290,13 @@ pub async fn run_distribution(
 
                 // 更新 SQLite 中该号池 free 分发的统计
                 let free_team_name = format!("{}-free", team_cfg.name);
-                let _ = db.update_distribution(&run_id, &free_team_name, count, fok, ffail);
+                let _ = db.enqueue_update_distribution(
+                    run_id.clone(),
+                    free_team_name.clone(),
+                    count,
+                    fok,
+                    ffail,
+                );
 
                 team_results.push(TeamDistResult {
                     team_name: free_team_name,
@@ -295,9 +312,9 @@ pub async fn run_distribution(
     let elapsed = workflow_started.elapsed().as_secs_f32();
 
     // 7. 更新 run 总状态
-    let _ = db.complete_run(
-        &run_id,
-        &RunCompletion {
+    let _ = db.enqueue_complete_run(
+        run_id.clone(),
+        RunCompletion {
             registered_ok: reg_result.total_registered,
             registered_failed: reg_result.total_reg_failed,
             rt_ok,

@@ -44,6 +44,23 @@ pub struct RuntimeDefaults {
     pub rt_retries: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RegisterLogMode {
+    #[default]
+    Verbose,
+    Summary,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+pub enum RegisterPerfMode {
+    #[default]
+    #[serde(rename = "baseline", alias = "current")]
+    Baseline,
+    #[serde(rename = "adaptive", alias = "optimized")]
+    Adaptive,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RegisterConfig {
     pub mail_api_base: Option<String>,
@@ -68,6 +85,10 @@ pub struct RegisterConfig {
     pub plan_poll_max_delay_ms: Option<u64>,
     /// 单次账号状态检查超时（秒）
     pub plan_status_timeout_sec: Option<u64>,
+    /// 注册日志输出模式：verbose=原始逐账号日志，summary=汇总降噪日志
+    pub register_log_mode: Option<RegisterLogMode>,
+    /// 注册性能模式：baseline=基线兼容，adaptive=自适应优化
+    pub register_perf_mode: Option<RegisterPerfMode>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -128,6 +149,8 @@ pub struct RegisterRuntimeConfig {
     pub plan_poll_initial_delay_ms: u64,
     pub plan_poll_max_delay_ms: u64,
     pub plan_status_timeout_sec: u64,
+    pub register_log_mode: RegisterLogMode,
+    pub register_perf_mode: RegisterPerfMode,
     pub payment: crate::stripe::PaymentRuntimeConfig,
 }
 
@@ -239,6 +262,12 @@ pub struct ScheduleConfig {
     pub use_chatgpt_mail: bool,
     #[serde(default)]
     pub free_mode: bool,
+    /// 计划级注册日志模式（None 表示继承全局 register.register_log_mode）
+    #[serde(default)]
+    pub register_log_mode: Option<RegisterLogMode>,
+    /// 计划级注册性能模式（None 表示继承全局 register.register_perf_mode）
+    #[serde(default)]
+    pub register_perf_mode: Option<RegisterPerfMode>,
     pub distribution: Vec<DistributionEntry>,
 }
 
@@ -395,6 +424,8 @@ impl AppConfig {
             plan_poll_initial_delay_ms,
             plan_poll_max_delay_ms,
             plan_status_timeout_sec,
+            register_log_mode: self.register.register_log_mode.unwrap_or_default(),
+            register_perf_mode: self.register.register_perf_mode.unwrap_or_default(),
             payment: self.payment_runtime(),
         }
     }

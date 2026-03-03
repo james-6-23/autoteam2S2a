@@ -211,23 +211,10 @@ pub async fn health_check(
 
     println!("检测完成: {} 通过, {} 失败\n", healthy.len(), failed.len());
 
-    // 更新失败计数 + 自动移除（放到阻塞线程，避免阻塞 Tokio worker）
+    // 更新失败计数 + 自动移除（异步文件 I/O）
     if !failed.is_empty() || !healthy.is_empty() {
-        let healthy_for_tracking = healthy.clone();
-        let failed_for_tracking = failed.clone();
-        let proxy_path = proxy_file.map(Path::to_path_buf);
-        match tokio::task::spawn_blocking(move || {
-            update_failure_tracking(
-                &healthy_for_tracking,
-                &failed_for_tracking,
-                proxy_path.as_deref(),
-            )
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => println!("  ⚠ 更新代理失败跟踪异常: {e}"),
-            Err(e) => println!("  ⚠ 失败跟踪任务异常: {e}"),
+        if let Err(e) = update_failure_tracking(&healthy, &failed, proxy_file).await {
+            println!("  ⚠ 更新代理失败跟踪异常: {e}");
         }
     }
 
@@ -353,37 +340,47 @@ const FAILURE_FILE: &str = "proxy_failures.json";
 const MAX_FAILURES: u32 = 3;
 
 /// 加载失败计数记录
-fn load_failure_counts() -> HashMap<String, u32> {
-    let path = Path::new(FAILURE_FILE);
-    if !path.is_file() {
-        return HashMap::new();
-    }
-    match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => HashMap::new(),
-    }
+async fn load_failure_counts() -> HashMap<String, u32> {
+    tokio::task::spawn_blocking(|| {
+        let path = Path::new(FAILURE_FILE);
+        if !path.is_file() {
+            return HashMap::new();
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        }
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// 保存失败计数记录
-fn save_failure_counts(counts: &HashMap<String, u32>) -> Result<()> {
-    let json = serde_json::to_string_pretty(counts)?;
-    let tmp_path = format!("{FAILURE_FILE}.tmp");
-    std::fs::write(&tmp_path, json)?;
+async fn save_failure_counts(counts: &HashMap<String, u32>) -> Result<()> {
+    let payload = counts.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let json = serde_json::to_string_pretty(&payload)?;
+        let tmp_path = format!("{FAILURE_FILE}.tmp");
+        std::fs::write(&tmp_path, json)?;
 
-    if std::fs::metadata(FAILURE_FILE).is_ok() {
-        let _ = std::fs::remove_file(FAILURE_FILE);
-    }
-    std::fs::rename(&tmp_path, FAILURE_FILE)?;
+        if std::fs::metadata(FAILURE_FILE).is_ok() {
+            let _ = std::fs::remove_file(FAILURE_FILE);
+        }
+        std::fs::rename(&tmp_path, FAILURE_FILE)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("保存失败计数任务异常: {e}"))??;
     Ok(())
 }
 
 /// 更新失败跟踪：成功清零、失败累加、超阈值自动移除
-fn update_failure_tracking(
+async fn update_failure_tracking(
     healthy: &[String],
     failed: &[String],
     proxy_file: Option<&Path>,
 ) -> Result<()> {
-    let mut counts = load_failure_counts();
+    let mut counts = load_failure_counts().await;
 
     // 成功的代理清零失败计数
     for proxy in healthy {
@@ -413,9 +410,9 @@ fn update_failure_tracking(
 
     // 从 proxy.txt 移除失效代理
     if !to_remove.is_empty() {
-        let file_path = resolve_proxy_file_path(proxy_file);
+        let file_path = resolve_proxy_file_path(proxy_file).await;
         if let Some(path) = file_path
-            && remove_proxies_from_file(&path, &to_remove).is_ok()
+            && remove_proxies_from_file(&path, &to_remove).await.is_ok()
         {
             println!(
                 "  已从 {} 移除 {} 个失效代理",
@@ -430,38 +427,50 @@ fn update_failure_tracking(
     }
 
     // 保存更新后的失败计数
-    save_failure_counts(&counts)?;
+    save_failure_counts(&counts).await?;
     Ok(())
 }
 
 /// 解析实际的 proxy.txt 文件路径
-fn resolve_proxy_file_path(cli_path: Option<&Path>) -> Option<PathBuf> {
-    if let Some(p) = cli_path {
-        return Some(p.to_path_buf());
-    }
-    let default_path = Path::new("proxy.txt");
-    if default_path.is_file() {
-        return Some(default_path.to_path_buf());
-    }
-    None
+async fn resolve_proxy_file_path(cli_path: Option<&Path>) -> Option<PathBuf> {
+    let cli = cli_path.map(Path::to_path_buf);
+    tokio::task::spawn_blocking(move || {
+        if let Some(p) = cli {
+            return Some(p);
+        }
+        let default_path = Path::new("proxy.txt");
+        if default_path.is_file() {
+            return Some(default_path.to_path_buf());
+        }
+        None
+    })
+    .await
+    .unwrap_or(None)
 }
 
 /// 从 proxy.txt 文件中移除指定的代理
-fn remove_proxies_from_file(path: &Path, to_remove: &HashSet<String>) -> Result<()> {
-    let content = std::fs::read_to_string(path)?;
-    let new_lines: Vec<&str> = content
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            // 保留空行和注释
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                return true;
-            }
-            // 检查是否在移除列表中（标准化后比较）
-            let normalized = normalize_proxy(trimmed);
-            !to_remove.contains(&normalized)
-        })
-        .collect();
-    std::fs::write(path, new_lines.join("\n") + "\n")?;
+async fn remove_proxies_from_file(path: &Path, to_remove: &HashSet<String>) -> Result<()> {
+    let path_buf = path.to_path_buf();
+    let remove_set = to_remove.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let content = std::fs::read_to_string(&path_buf)?;
+        let new_lines: Vec<&str> = content
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                // 保留空行和注释
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    return true;
+                }
+                // 检查是否在移除列表中（标准化后比较）
+                let normalized = normalize_proxy(trimmed);
+                !remove_set.contains(&normalized)
+            })
+            .collect();
+        std::fs::write(&path_buf, new_lines.join("\n") + "\n")?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("移除失效代理任务异常: {e}"))??;
     Ok(())
 }

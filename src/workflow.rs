@@ -6,7 +6,7 @@ use anyhow::Result;
 use futures::{StreamExt, stream};
 use tokio::sync::mpsc;
 
-use crate::config::{AppConfig, S2aConfig};
+use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig};
 use crate::log_broadcast::broadcast_log;
 use crate::models::{AccountWithRt, RegisteredAccount, WorkflowReport};
 use crate::proxy_pool::ProxyPool;
@@ -70,6 +70,8 @@ pub struct WorkflowOptions {
     pub push_s2a: bool,
     pub use_chatgpt_mail: bool,
     pub free_mode: bool,
+    pub register_log_mode: RegisterLogMode,
+    pub register_perf_mode: RegisterPerfMode,
 }
 
 pub struct WorkflowRunner {
@@ -124,6 +126,21 @@ impl WorkflowRunner {
                 break;
             }
             let deficit = target - current_ok;
+            let (reg_jitter_min_ms, reg_jitter_max_ms, reg_queue_cap) =
+                match options.register_perf_mode {
+                    RegisterPerfMode::Baseline => {
+                        let jitter_max = (1200u64 / reg_concurrency as u64).clamp(80, 400);
+                        let jitter_min = (jitter_max / 4).max(15);
+                        let queue_cap = deficit.max(reg_concurrency * 4);
+                        (jitter_min, jitter_max, queue_cap)
+                    }
+                    RegisterPerfMode::Adaptive => {
+                        let jitter_max = (600u64 / reg_concurrency as u64).clamp(40, 180);
+                        let jitter_min = (jitter_max / 6).max(8);
+                        let queue_cap = deficit.max(reg_concurrency * 2).min(reg_concurrency * 8);
+                        (jitter_min, jitter_max, queue_cap)
+                    }
+                };
 
             if round > 0 {
                 broadcast_log(&format!(
@@ -136,33 +153,54 @@ impl WorkflowRunner {
                     "阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标 {target})"
                 ));
             }
+            let round_no = round + 1;
+            if matches!(options.register_log_mode, RegisterLogMode::Summary) {
+                broadcast_log(&format!(
+                    "[REG] round={round_no} start target={target} need={deficit} reg_conc={reg_concurrency} rt_conc={rt_concurrency}"
+                ));
+            }
 
             // 根据邮箱系统选择生成 seeds
             let seeds = if options.use_chatgpt_mail {
-                let email_service = &self.register_service;
-                let mut out = Vec::with_capacity(deficit);
-                for _ in 0..deficit {
-                    let proxy = self.proxy_pool.next();
-                    let mut seed = generate_account_seed(&cfg.email_domains);
-                    match email_service.generate_email(proxy.as_deref()).await {
-                        Ok(Some(email)) => seed.account = email,
-                        Ok(None) => {}
-                        Err(e) => {
-                            broadcast_log(&format!(
-                                "[chatgpt.org.uk] 生成邮箱失败: {e}，使用域名列表邮箱"
-                            ));
+                let email_service = Arc::clone(&self.register_service);
+                let proxy_pool = Arc::clone(&self.proxy_pool);
+                let email_domains = Arc::new(cfg.email_domains.clone());
+                let seed_mail_concurrency = cfg
+                    .register
+                    .mail_max_concurrency
+                    .unwrap_or(50)
+                    .max(1)
+                    .min(deficit.max(1));
+                stream::iter(0..deficit)
+                    .map(move |_| {
+                        let email_service = Arc::clone(&email_service);
+                        let proxy_pool = Arc::clone(&proxy_pool);
+                        let email_domains = Arc::clone(&email_domains);
+                        async move {
+                            let proxy = proxy_pool.next();
+                            let mut seed = generate_account_seed(email_domains.as_ref());
+                            match email_service.generate_email(proxy.as_deref()).await {
+                                Ok(Some(email)) => seed.account = email,
+                                Ok(None) => {}
+                                Err(e) => {
+                                    broadcast_log(&format!(
+                                        "[chatgpt.org.uk] 生成邮箱失败: {e}，使用域名列表邮箱"
+                                    ));
+                                }
+                            }
+                            seed
                         }
-                    }
-                    out.push(seed);
-                }
-                out
+                    })
+                    .buffered(seed_mail_concurrency)
+                    .collect::<Vec<_>>()
+                    .await
             } else {
                 (0..deficit)
                     .map(|_| generate_account_seed(&cfg.email_domains))
                     .collect::<Vec<_>>()
             };
 
-            let (reg_tx, rt_rx) = mpsc::channel(deficit.max(reg_concurrency * 4));
+            let (reg_tx, rt_rx) = mpsc::channel(reg_queue_cap);
 
             // 注册生产者
             let register_handle = {
@@ -173,9 +211,45 @@ impl WorkflowRunner {
                 let cancel = cancel_flag.clone();
                 let prog = progress.cloned();
                 let free_mode = options.free_mode;
+                let log_mode = options.register_log_mode;
+                let round_no = round + 1;
                 tokio::spawn(async move {
-                    let mut reg_failed_count = 0usize;
-                    let results = stream::iter(seeds.into_iter().enumerate())
+                    let round_total = seeds.len();
+                    let done_counter = Arc::new(AtomicUsize::new(0));
+                    let ok_counter = Arc::new(AtomicUsize::new(0));
+                    let fail_counter = Arc::new(AtomicUsize::new(0));
+                    let summary_stop = Arc::new(AtomicBool::new(false));
+                    let summary_handle = if matches!(log_mode, RegisterLogMode::Summary) {
+                        let done_counter = Arc::clone(&done_counter);
+                        let ok_counter = Arc::clone(&ok_counter);
+                        let fail_counter = Arc::clone(&fail_counter);
+                        let summary_stop = Arc::clone(&summary_stop);
+                        Some(tokio::spawn(async move {
+                            let started = Instant::now();
+                            let mut ticker = tokio::time::interval(Duration::from_secs(2));
+                            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                            loop {
+                                ticker.tick().await;
+                                let done = done_counter.load(Ordering::Relaxed);
+                                let ok = ok_counter.load(Ordering::Relaxed);
+                                let fail = fail_counter.load(Ordering::Relaxed);
+                                let inflight = round_total.saturating_sub(done);
+                                let elapsed = started.elapsed().as_secs_f64().max(0.001);
+                                let rate = done as f64 / elapsed;
+                                if done > 0 {
+                                    broadcast_log(&format!(
+                                        "[REG-SUM] round={round_no} done={done}/{round_total} ok={ok} fail={fail} inflight={inflight} rate={rate:.1}/s"
+                                    ));
+                                }
+                                if summary_stop.load(Ordering::Relaxed) || done >= round_total {
+                                    break;
+                                }
+                            }
+                        }))
+                    } else {
+                        None
+                    };
+                    let mut result_stream = stream::iter(seeds.into_iter().enumerate())
                         .map(|(idx, seed)| {
                             let register_service = Arc::clone(&register_service);
                             let proxy = proxy_pool.next();
@@ -184,27 +258,36 @@ impl WorkflowRunner {
                             let task_no = base_idx + idx + 1;
                             let cancel = cancel.clone();
                             let prog = prog.clone();
+                            let done_counter = Arc::clone(&done_counter);
+                            let ok_counter = Arc::clone(&ok_counter);
+                            let fail_counter = Arc::clone(&fail_counter);
                             async move {
                                 if cancel.load(Ordering::Relaxed) {
+                                    fail_counter.fetch_add(1, Ordering::Relaxed);
+                                    done_counter.fetch_add(1, Ordering::Relaxed);
                                     return (false, task_no, seed.account);
                                 }
-                                let jitter_ms = random_delay_ms(300, 1200);
+                                let jitter_ms = random_delay_ms(reg_jitter_min_ms, reg_jitter_max_ms);
                                 tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
                                 if cancel.load(Ordering::Relaxed) {
+                                    fail_counter.fetch_add(1, Ordering::Relaxed);
+                                    done_counter.fetch_add(1, Ordering::Relaxed);
                                     return (false, task_no, seed.account);
                                 }
-                                log_worker(
-                                    worker_id,
-                                    "任务",
-                                    &format!("#{task_no} (进度: {task_no}/{target})"),
-                                );
-                                log_worker(
-                                    worker_id,
-                                    "账号",
-                                    &format!("{} | {}", seed.account, seed.password),
-                                );
-                                if let Some(p) = proxy.as_deref() {
-                                    log_worker(worker_id, "代理", &mask_proxy(p));
+                                if matches!(log_mode, RegisterLogMode::Verbose) {
+                                    log_worker(
+                                        worker_id,
+                                        "任务",
+                                        &format!("#{task_no} (进度: {task_no}/{target})"),
+                                    );
+                                    log_worker(
+                                        worker_id,
+                                        "账号",
+                                        &format!("{} | {}", seed.account, seed.password),
+                                    );
+                                    if let Some(p) = proxy.as_deref() {
+                                        log_worker(worker_id, "代理", &mask_proxy(p));
+                                    }
                                 }
                                 let input = RegisterInput {
                                     seed: seed.clone(),
@@ -220,12 +303,16 @@ impl WorkflowRunner {
                                             if let Some(ref p) = prog {
                                                 p.reg_ok.fetch_add(1, Ordering::Relaxed);
                                             }
+                                            ok_counter.fetch_add(1, Ordering::Relaxed);
+                                            done_counter.fetch_add(1, Ordering::Relaxed);
                                             (true, task_no, seed.account)
                                         }
                                         Err(send_err) => {
                                             if let Some(ref p) = prog {
                                                 p.reg_failed.fetch_add(1, Ordering::Relaxed);
                                             }
+                                            fail_counter.fetch_add(1, Ordering::Relaxed);
+                                            done_counter.fetch_add(1, Ordering::Relaxed);
                                             log_worker(
                                                 worker_id,
                                                 "ERR",
@@ -241,6 +328,8 @@ impl WorkflowRunner {
                                         if let Some(ref p) = prog {
                                             p.reg_failed.fetch_add(1, Ordering::Relaxed);
                                         }
+                                        fail_counter.fetch_add(1, Ordering::Relaxed);
+                                        done_counter.fetch_add(1, Ordering::Relaxed);
                                         log_worker(
                                             worker_id,
                                             "ERR",
@@ -254,16 +343,16 @@ impl WorkflowRunner {
                                 }
                             }
                         })
-                        .buffer_unordered(reg_concurrency)
-                        .collect::<Vec<_>>()
-                        .await;
+                        .buffer_unordered(reg_concurrency);
 
-                    for (ok, _, _) in &results {
-                        if !*ok {
-                            reg_failed_count += 1;
-                        }
+                    while result_stream.next().await.is_some() {}
+                    drop(result_stream);
+                    summary_stop.store(true, Ordering::Relaxed);
+                    if let Some(handle) = summary_handle {
+                        let _ = handle.await;
                     }
-                    let reg_ok_count = results.len() - reg_failed_count;
+                    let reg_ok_count = ok_counter.load(Ordering::Relaxed);
+                    let reg_failed_count = fail_counter.load(Ordering::Relaxed);
                     drop(reg_tx);
                     (reg_ok_count, reg_failed_count)
                 })
@@ -299,12 +388,24 @@ impl WorkflowRunner {
             all_rt_success.extend(round_rt_ok);
             all_rt_failed.extend(round_rt_failed);
 
-            broadcast_log(&format!(
-                "本轮结束: RT成功 {}, 累计成功 {}/{}",
-                all_rt_success.len() - current_ok,
-                all_rt_success.len(),
-                target
-            ));
+            if matches!(options.register_log_mode, RegisterLogMode::Summary) {
+                broadcast_log(&format!(
+                    "[REG-END] round={} reg_ok={} reg_fail={} rt_ok={} cumulative_ok={}/{}",
+                    round + 1,
+                    reg_ok_in_round,
+                    reg_failed_in_round,
+                    all_rt_success.len() - current_ok,
+                    all_rt_success.len(),
+                    target
+                ));
+            } else {
+                broadcast_log(&format!(
+                    "本轮结束: RT成功 {}, 累计成功 {}/{}",
+                    all_rt_success.len() - current_ok,
+                    all_rt_success.len(),
+                    target
+                ));
+            }
 
             if all_rt_success.len() >= target {
                 break;
@@ -585,11 +686,7 @@ impl WorkflowRunner {
             join_set.spawn(async move {
                 let _permit = permit; // 持有信号量直到任务完成
                 let started = Instant::now();
-                log_worker(
-                    worker_id,
-                    "RT",
-                    &format!("开始获取 refresh_token {}", acc.account),
-                );
+                // 高并发下开始日志会非常密集，跳过逐账号起始日志以降低广播压力
 
                 let mut last_err = None;
                 let retries = retry_max.max(1);
@@ -612,7 +709,7 @@ impl WorkflowRunner {
                             log_worker_green(
                                 worker_id,
                                 "OK",
-                                &format!("RT: {rt} (耗时 {:.1}s)", elapsed_sec),
+                                &format!("RT获取成功 (耗时 {:.1}s)", elapsed_sec),
                             );
                             return Ok(AccountWithRt {
                                 account: acc.account,

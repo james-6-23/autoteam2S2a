@@ -168,6 +168,125 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
   background:var(--ghost);border:1px solid var(--border);transition:all .2s;color:var(--text-dim)}
 .theme-toggle:hover{background:var(--ghost-hover);color:var(--text);border-color:var(--border-hover)}
 .theme-toggle svg{width:16px;height:16px}
+
+/* Mobile responsive */
+html,body{overflow-x:hidden}
+nav{-webkit-overflow-scrolling:touch}
+
+@media (max-width:768px){
+  header{
+    padding:10px 12px !important;
+    gap:8px;
+  }
+  header>div{
+    min-width:0;
+  }
+  header>div:first-child{
+    gap:8px !important;
+  }
+  header>div:last-child{
+    gap:8px !important;
+  }
+  header>div:last-child>span:nth-child(2),
+  header>div:last-child>span:nth-child(4){
+    display:none;
+  }
+
+  nav{
+    position:fixed;
+    left:0;
+    right:0;
+    bottom:0;
+    z-index:70;
+    display:grid;
+    grid-template-columns:repeat(7,minmax(0,1fr));
+    gap:4px;
+    padding:6px 8px calc(8px + env(safe-area-inset-bottom)) !important;
+    margin:0;
+    border-top:1px solid var(--nav-border);
+    border-bottom:none !important;
+    background:var(--header-bg);
+    backdrop-filter:blur(12px);
+    overflow:visible;
+  }
+  nav .tab-btn{
+    padding:7px 4px !important;
+    font-size:.72rem !important;
+    line-height:1.2;
+    text-align:center;
+    border-radius:8px;
+  }
+
+  main{
+    padding:12px !important;
+    padding-bottom:calc(88px + env(safe-area-inset-bottom)) !important;
+  }
+  .card.p-5{padding:12px !important}
+  .card.p-4{padding:10px !important}
+  .row-item{padding:10px 12px}
+  .field-input{font-size:.85rem}
+  .stat-num{font-size:1.35rem}
+
+  #task-list .row-item,
+  #schedule-list .row-item>div:first-child,
+  #run-list .row-item>div:first-child{
+    flex-wrap:wrap;
+    gap:8px;
+  }
+  #task-list .row-item>div:last-child,
+  #schedule-list .row-item>div:first-child>div:last-child{
+    width:100%;
+    display:flex;
+    justify-content:flex-end;
+    flex-wrap:wrap;
+    gap:6px;
+  }
+  #schedule-list .row-item>div:nth-child(2){
+    gap:10px;
+    line-height:1.45;
+  }
+
+  #panel-logs .card>div:first-child{
+    flex-wrap:wrap;
+    gap:8px;
+  }
+  #panel-logs .card>div:first-child>div:last-child{
+    width:100%;
+    justify-content:flex-end;
+  }
+  #log-container{
+    height:52vh !important;
+    min-height:220px !important;
+  }
+
+  #run-stats-card .grid,
+  #task-progress-panel .grid{
+    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  }
+
+  .toast{
+    left:12px;
+    right:12px;
+    top:12px;
+    padding:8px 12px;
+    font-size:.75rem;
+  }
+}
+
+@media (max-width:480px){
+  #version-badge{display:none}
+  #beijing-clock{font-size:.62rem}
+  .section-title{font-size:.72rem}
+  .field-label{font-size:.68rem}
+  .field-input{padding:7px 10px}
+  nav .tab-btn{
+    padding:6px 2px !important;
+    font-size:.66rem !important;
+  }
+  .tab-btn.tab-active::after{
+    width:14px;
+  }
+}
 </style>
 </head>
 
@@ -328,6 +447,20 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <div><label class="field-label">OTP 重试</label><input id="cfg-otp-retries" type="number" class="field-input"></div>
       <div><label class="field-label">请求超时(秒)</label><input id="cfg-req-timeout" type="number" class="field-input"></div>
       <div><label class="field-label">邮件并发数</label><input id="cfg-mail-concurrency" type="number" class="field-input" placeholder="50"></div>
+      <div>
+        <label class="field-label">注册日志模式</label>
+        <select id="cfg-reg-log-mode" class="field-input">
+          <option value="verbose">详细（原格式）</option>
+          <option value="summary">汇总（降噪）</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label">注册性能模式</label>
+        <select id="cfg-reg-perf-mode" class="field-input">
+          <option value="baseline">baseline（基线兼容）</option>
+          <option value="adaptive">adaptive（自适应优化）</option>
+        </select>
+      </div>
     </div>
     <div class="mt-3">
       <div class="flex items-center justify-between mb-2">
@@ -486,6 +619,22 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <div><label class="field-label">RT 重试</label><input id="sched-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
       <div><label class="field-label">模式</label><select id="sched-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
+      <div>
+        <label class="field-label">日志输出</label>
+        <select id="sched-reg-log-mode" class="field-input">
+          <option value="inherit">继承全局</option>
+          <option value="verbose">详细（原格式）</option>
+          <option value="summary">汇总（降噪）</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label">性能模式</label>
+        <select id="sched-reg-perf-mode" class="field-input">
+          <option value="inherit">继承全局</option>
+          <option value="baseline">baseline（基线兼容）</option>
+          <option value="adaptive">adaptive（自适应优化）</option>
+        </select>
+      </div>
       <div class="flex items-center gap-4 pt-5">
         <label class="flex items-center gap-2 text-xs text-dim-1"><input id="sched-push-s2a" type="checkbox" checked> S2A</label>
         <label class="flex items-center gap-2 text-xs text-dim-1"><input id="sched-enabled" type="checkbox" checked> 启用</label>
@@ -519,6 +668,22 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
       <div><label class="field-label">RT 重试</label><input id="es-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
       <div><label class="field-label">模式</label><select id="es-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
+      <div>
+        <label class="field-label">日志输出</label>
+        <select id="es-reg-log-mode" class="field-input">
+          <option value="inherit">继承全局</option>
+          <option value="verbose">详细（原格式）</option>
+          <option value="summary">汇总（降噪）</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label">性能模式</label>
+        <select id="es-reg-perf-mode" class="field-input">
+          <option value="inherit">继承全局</option>
+          <option value="baseline">baseline（基线兼容）</option>
+          <option value="adaptive">adaptive（自适应优化）</option>
+        </select>
+      </div>
       <div class="flex items-center gap-4 pt-5">
         <label class="flex items-center gap-2 text-xs text-dim-1"><input id="es-push-s2a" type="checkbox" checked> S2A</label>
         <label class="flex items-center gap-2 text-xs text-dim-1"><input id="es-enabled" type="checkbox" checked> 启用</label>
@@ -591,7 +756,7 @@ input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4
         <button onclick="clearLogs()" class="btn btn-ghost text-xs py-1 px-2">清空</button>
       </div>
     </div>
-    <pre id="log-container" style="background:#0a0a0c;border:1px solid var(--border);border-radius:8px;height:calc(100vh - 210px);min-height:400px;overflow-y:auto;padding:12px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;color:#c8c8d0;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+    <pre id="log-container" style="background:#0a0a0c;border:1px solid var(--border);border-radius:8px;height:calc(80vh - 168px);min-height:320px;overflow-y:auto;padding:12px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;color:#c8c8d0;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
   </div>
 </div>
 
@@ -795,6 +960,8 @@ function renderConfigForm(){
   document.getElementById('cfg-otp-retries').value=r.otp_max_retries;
   document.getElementById('cfg-req-timeout').value=r.request_timeout_sec;
   document.getElementById('cfg-mail-concurrency').value=r.mail_max_concurrency||50;
+  document.getElementById('cfg-reg-log-mode').value=r.register_log_mode||'verbose';
+  document.getElementById('cfg-reg-perf-mode').value=r.register_perf_mode||'baseline';
   document.getElementById('cfg-gptmail-key').value=r.chatgpt_mail_api_key||'';
   renderEmailDomains();renderGptMailDomains();renderD1Cleanup();
 }
@@ -964,7 +1131,7 @@ async function submitEditTeam(){
 
 // Config save
 async function saveDefaults(){try{await api('/api/config/defaults',{method:'PUT',body:{target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}}
-async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value),mail_max_concurrency:parseInt(document.getElementById('cfg-mail-concurrency').value)||50}});toast('注册配置已保存','success');loadConfig()}catch{}}
+async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value),mail_max_concurrency:parseInt(document.getElementById('cfg-mail-concurrency').value)||50,register_log_mode:document.getElementById('cfg-reg-log-mode').value||'verbose',register_perf_mode:document.getElementById('cfg-reg-perf-mode').value||'baseline'}});toast('注册配置已保存','success');loadConfig()}catch{}}
 async function saveGptMail(){const key=document.getElementById('cfg-gptmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{chatgpt_mail_api_key:key}});toast('GPTMail API Key 已保存','success');loadConfig()}catch{}}
 function renderGptMailDomains(){
   if(!configData)return;const doms=configData.chatgpt_mail_domains||[];
@@ -1143,6 +1310,28 @@ function startTaskPoll(){stopTaskPoll();taskPollTimer=setInterval(refreshTasks,3
 function stopTaskPoll(){if(taskPollTimer){clearInterval(taskPollTimer);taskPollTimer=null}}
 
 // Schedules
+function normalizeRegisterPerfMode(mode){
+  if(mode==='current') return 'baseline';
+  if(mode==='optimized') return 'adaptive';
+  return mode||'baseline';
+}
+function currentRegisterPerfMode(){
+  return normalizeRegisterPerfMode((configData&&configData.register&&configData.register.register_perf_mode)||'baseline');
+}
+function scheduleLogModeLabel(mode){
+  return mode==='summary'?'汇总（降噪）':'详细（原格式）';
+}
+function schedulePerfModeLabel(mode){
+  return normalizeRegisterPerfMode(mode)==='adaptive'?'adaptive（自适应）':'baseline（基线）';
+}
+function scheduleLogModeText(mode){
+  if(!mode) return `继承全局（${scheduleLogModeLabel(currentRegisterLogMode())}）`;
+  return scheduleLogModeLabel(mode);
+}
+function schedulePerfModeText(mode){
+  if(!mode) return `继承全局（${schedulePerfModeLabel(currentRegisterPerfMode())}）`;
+  return schedulePerfModeLabel(mode);
+}
 async function loadSchedules(){
   try{const d=await api('/api/schedules');const el=document.getElementById('schedule-list');
   if(!d.schedules||!d.schedules.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无定时计划</p>';return}
@@ -1150,6 +1339,8 @@ async function loadSchedules(){
     const bc=s.running?'badge-run':s.enabled?'badge-ok':'badge-off';
     const bt=s.running?'运行中':s.enabled?'已启用':'已禁用';
     const dt=s.distribution.map(d=>`${d.team}:${d.percent}%`).join(' / ');
+    const logModeTxt=scheduleLogModeText(s.register_log_mode);
+    const perfModeTxt=schedulePerfModeText(s.register_perf_mode);
     const startBtn=s.running
       ?`<button onclick="stopSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">停止</button>`
       :`<button onclick="triggerSchedule('${s.name}')" class="btn btn-ghost text-xs py-1 px-2">启动</button>`;
@@ -1186,11 +1377,19 @@ async function loadSchedules(){
         <span>RT <span class="font-mono text-dim-2">${s.rt_workers||'默认'}</span></span>
         <span>邮箱 <span class="text-dim-2">${s.use_chatgpt_mail?'chatgpt':'kyx'}</span></span>
         <span>模式 <span class="text-dim-2">${s.free_mode?'free':'team'}</span></span>
+        <span>日志 <span class="text-dim-2">${logModeTxt}</span></span>
+        <span>性能 <span class="text-dim-2">${perfModeTxt}</span></span>
         <span>分发 <span class="text-dim-2 font-mono">${dt||'无'}</span></span>
       </div>${runHtml}
     </div>`}).join('')}catch{}
 }
-function showAddScheduleForm(){document.getElementById('add-schedule-form').classList.remove('hidden');const r=document.getElementById('sched-dist-rows');if(!r.children.length) addDistRow()}
+function showAddScheduleForm(){
+  document.getElementById('add-schedule-form').classList.remove('hidden');
+  document.getElementById('sched-reg-log-mode').value='inherit';
+  document.getElementById('sched-reg-perf-mode').value='inherit';
+  const r=document.getElementById('sched-dist-rows');
+  if(!r.children.length) addDistRow();
+}
 function hideAddScheduleForm(){document.getElementById('add-schedule-form').classList.add('hidden')}
 let distRowCount=0;
 function addDistRow(){
@@ -1214,6 +1413,10 @@ async function submitAddSchedule(){
     if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
   }
   const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,use_chatgpt_mail:document.getElementById('sched-mail').value==='true',free_mode:isFree};
+  const addLogMode=document.getElementById('sched-reg-log-mode').value;
+  const addPerfMode=normalizeRegisterPerfMode(document.getElementById('sched-reg-perf-mode').value);
+  body.register_log_mode=addLogMode==='inherit'?null:addLogMode;
+  body.register_perf_mode=addPerfMode==='inherit'?null:addPerfMode;
   const rw=document.getElementById('sched-reg-workers').value,rtw=document.getElementById('sched-rt-workers').value,rtr=document.getElementById('sched-rt-retries').value;
   if(rw) body.register_workers=parseInt(rw);if(rtw) body.rt_workers=parseInt(rtw);if(rtr) body.rt_retries=parseInt(rtr);
   try{await api('/api/schedules',{method:'POST',body});toast(`${name} 已创建`,'success');hideAddScheduleForm();document.getElementById('sched-name').value='';loadSchedules()}catch{}
@@ -1240,6 +1443,8 @@ async function editSchedule(name){
   document.getElementById('es-rt-retries').value=s.rt_retries||'';
   document.getElementById('es-mail').value=s.use_chatgpt_mail?'true':'false';
   document.getElementById('es-mode').value=s.free_mode?'free':'team';
+  document.getElementById('es-reg-log-mode').value=s.register_log_mode||'inherit';
+  document.getElementById('es-reg-perf-mode').value=normalizeRegisterPerfMode(s.register_perf_mode||'inherit');
   document.getElementById('es-push-s2a').checked=s.push_s2a;
   document.getElementById('es-enabled').checked=s.enabled;
   // dist rows
@@ -1271,6 +1476,10 @@ async function submitEditSchedule(){
     free_mode:document.getElementById('es-mode').value==='free',
     enabled:document.getElementById('es-enabled').checked
   };
+  const editLogMode=document.getElementById('es-reg-log-mode').value;
+  const editPerfMode=normalizeRegisterPerfMode(document.getElementById('es-reg-perf-mode').value);
+  body.register_log_mode=editLogMode==='inherit'?null:editLogMode;
+  body.register_perf_mode=editPerfMode==='inherit'?null:editPerfMode;
   const rw=document.getElementById('es-reg-workers').value,rtw=document.getElementById('es-rt-workers').value,rtr=document.getElementById('es-rt-retries').value;
   if(rw) body.register_workers=parseInt(rw);if(rtw) body.rt_workers=parseInt(rtw);if(rtr) body.rt_retries=parseInt(rtr);
   const distribution=[];
@@ -1444,12 +1653,26 @@ function hideRunDetail(instant){
 let logEs=null;let logAutoScroll=true;let logLineCount=0;
 const LOG_MAX_LINES=800;
 let logLines=[];let logPending=[];let logRafId=null;
+function currentRegisterLogMode(){
+  return (configData&&configData.register&&configData.register.register_log_mode)||'verbose';
+}
+function shouldKeepSummaryLog(line){
+  if(!line) return false;
+  if(line.includes('[ERR]')) return true;
+  if(line.includes('[REG]')||line.includes('[REG-SUM]')||line.includes('[REG-END]')) return true;
+  if(line.includes('阶段1+2')||line.includes('补注册')||line.includes('本轮结束')) return true;
+  if(line.includes('已收到中断信号')) return true;
+  return false;
+}
 function flushLogs(){
   logRafId=null;
   if(!logPending.length) return;
   const batch=logPending.splice(0);
-  logLines.push(...batch);
-  logLineCount+=batch.length;
+  const mode=currentRegisterLogMode();
+  const rows=mode==='summary'?batch.filter(shouldKeepSummaryLog):batch;
+  if(!rows.length) return;
+  logLines.push(...rows);
+  logLineCount+=rows.length;
   // trim oldest
   if(logLines.length>LOG_MAX_LINES){logLines=logLines.slice(-LOG_MAX_LINES)}
   const container=document.getElementById('log-container');

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use crate::config::{CodexRuntimeConfig, RegisterRuntimeConfig, S2aConfig};
+use crate::config::{CodexRuntimeConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig};
 use crate::email_service::{EmailService, WaitCodeOptions};
 use crate::fingerprint::{
     build_fingerprint_material, is_retryable_challenge_error, looks_like_challenge_page,
@@ -158,49 +158,102 @@ impl LiveRegisterService {
         } else {
             None
         };
-        // 先记录当前邮件基线，再触发发码，避免“秒到验证码”被当成基线跳过
-        let baseline_email_id = self
-            .email_service
-            .get_latest_email_id(&input.seed.account, mail_proxy)
-            .await
-            .unwrap_or(0);
 
-        // 先启动后台轮询再发送验证码，利用发送耗时提前开始轮询
+        let optimized_poll = matches!(self.cfg.register_perf_mode, RegisterPerfMode::Adaptive);
+        let primary_timeout_secs = if optimized_poll { 32 } else { 35 };
+        let retry_timeout_secs = if optimized_poll { 24 } else { 20 };
+        let primary_options = if optimized_poll {
+            WaitCodeOptions {
+                after_email_id: 0,
+                prefetch_latest_email_id: true,
+                max_retries: (self.cfg.otp_max_retries + 6).max(8),
+                interval_ms: (self.cfg.otp_interval_ms / 3).clamp(250, 500),
+                max_interval_ms: self.cfg.otp_interval_ms.max(1100).min(1800),
+                interval_backoff_step_ms: 120,
+                size: 3,
+                subject_must_contain_code_word: false,
+                strict_fetch: false,
+            }
+        } else {
+            WaitCodeOptions {
+                after_email_id: 0,
+                prefetch_latest_email_id: true,
+                max_retries: self.cfg.otp_max_retries,
+                interval_ms: self.cfg.otp_interval_ms,
+                max_interval_ms: self.cfg.otp_interval_ms,
+                interval_backoff_step_ms: 0,
+                size: 5,
+                subject_must_contain_code_word: false,
+                strict_fetch: true,
+            }
+        };
+        let retry_options = if optimized_poll {
+            WaitCodeOptions {
+                after_email_id: 0,
+                prefetch_latest_email_id: false,
+                max_retries: 18,
+                interval_ms: 900,
+                max_interval_ms: 1800,
+                interval_backoff_step_ms: 180,
+                size: 6,
+                subject_must_contain_code_word: false,
+                strict_fetch: false,
+            }
+        } else {
+            WaitCodeOptions {
+                after_email_id: 0,
+                prefetch_latest_email_id: false,
+                max_retries: 15,
+                interval_ms: 800,
+                max_interval_ms: 800,
+                interval_backoff_step_ms: 0,
+                size: 5,
+                subject_must_contain_code_word: false,
+                strict_fetch: false, // 网络异常不中断
+            }
+        };
+
+        // 先启动后台轮询再发送验证码，利用发送耗时提前开始轮询。
         let mut otp_handle = self
             .email_service
             .start_background_poll(
                 &input.seed.account,
                 mail_proxy,
-                WaitCodeOptions {
-                    after_email_id: baseline_email_id,
-                    max_retries: self.cfg.otp_max_retries,
-                    interval_ms: self.cfg.otp_interval_ms,
-                    size: 5,
-                    subject_must_contain_code_word: false,
-                    strict_fetch: true,
-                },
+                primary_options,
             )
             .await?;
 
         log_worker(input.worker_id, "注册", "发送验证码...");
         self.send_verification_email(client).await?;
 
-        log_worker(input.worker_id, "注册", "等待验证码 (35s超时)...");
+        let wait_hint = if optimized_poll {
+            format!("等待验证码 (自适应轮询, {}s超时)...", primary_timeout_secs)
+        } else {
+            format!("等待验证码 ({}s超时)...", primary_timeout_secs)
+        };
+        log_worker(input.worker_id, "注册", &wait_hint);
 
         // === 分级超时策略 ===
-        // 第1轮：35s 超时等待后台轮询结果
-        let otp_code = match tokio::time::timeout(Duration::from_secs(35), otp_handle.wait()).await
-        {
+        // 第1轮：主超时等待后台轮询结果
+        let otp_code =
+            match tokio::time::timeout(Duration::from_secs(primary_timeout_secs), otp_handle.wait())
+                .await
+            {
             Ok(Ok(Ok(code))) => code,
             Ok(Ok(Err(e))) => bail!("验证码轮询失败: {e}"),
             Ok(Err(_)) => bail!("后台验证码轮询任务意外终止"),
             Err(_) => {
                 otp_handle.cancel();
                 // 第1轮超时，重新轮询邮箱
+                let retry_hint = if optimized_poll {
+                    format!("验证码主轮询超时，进入补偿轮询 ({}s)...", retry_timeout_secs)
+                } else {
+                    format!("验证码 {}s 超时，重新轮询邮箱 ({}s重试)...", primary_timeout_secs, retry_timeout_secs)
+                };
                 log_worker(
                     input.worker_id,
                     "注册",
-                    "验证码 35s 超时，重新轮询邮箱 (20s重试)...",
+                    &retry_hint,
                 );
 
                 let mail_proxy_retry = if self.cfg.use_proxy_for_mail {
@@ -213,22 +266,15 @@ impl LiveRegisterService {
                     .start_background_poll(
                         &input.seed.account,
                         mail_proxy_retry,
-                        WaitCodeOptions {
-                            after_email_id: baseline_email_id,
-                            max_retries: 15,
-                            interval_ms: 800,
-                            size: 5,
-                            subject_must_contain_code_word: false,
-                            strict_fetch: false, // 网络异常不中断
-                        },
+                        retry_options,
                     )
                     .await?;
 
-                match tokio::time::timeout(Duration::from_secs(20), retry_handle.wait()).await {
+                match tokio::time::timeout(Duration::from_secs(retry_timeout_secs), retry_handle.wait()).await {
                     Ok(Ok(Ok(code))) => code,
                     _ => {
                         retry_handle.cancel();
-                        log_worker(input.worker_id, "ERR", "验证码 20s 重试仍超时，跳过此账号");
+                        log_worker(input.worker_id, "ERR", "验证码补偿轮询仍超时，跳过此账号");
                         bail!("otp_timeout_skip");
                     }
                 }
@@ -1113,8 +1159,11 @@ impl LiveCodexService {
                         mail_proxy,
                         WaitCodeOptions {
                             after_email_id: latest_email_id,
+                            prefetch_latest_email_id: false,
                             max_retries: self.cfg.otp_max_retries,
                             interval_ms: self.cfg.otp_interval_ms,
+                            max_interval_ms: self.cfg.otp_interval_ms,
+                            interval_backoff_step_ms: 0,
                             size: 3,
                             subject_must_contain_code_word: true,
                             strict_fetch: false,

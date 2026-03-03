@@ -49,8 +49,12 @@ pub struct EmailServiceConfig {
 #[derive(Debug, Clone)]
 pub struct WaitCodeOptions {
     pub after_email_id: i64,
+    /// 启动后台轮询前先拉取一次最新邮件 ID 作为基线，减少一次无效首轮抓取
+    pub prefetch_latest_email_id: bool,
     pub max_retries: usize,
     pub interval_ms: u64,
+    pub max_interval_ms: u64,
+    pub interval_backoff_step_ms: u64,
     pub size: usize,
     pub subject_must_contain_code_word: bool,
     pub strict_fetch: bool,
@@ -348,9 +352,7 @@ impl EmailProvider for ChatgptOrgUkProvider {
             // 从配置的域名列表中随机选一个
             use rand::Rng;
             let idx = rand::rng().random_range(0..self.domains.len());
-            let domain = self.domains[idx]
-                .trim_start_matches('@')
-                .to_string();
+            let domain = self.domains[idx].trim_start_matches('@').to_string();
             client
                 .post(&url)
                 .header("X-API-Key", &self.api_key)
@@ -394,8 +396,15 @@ impl EmailService {
         Self::with_concurrency(Arc::new(HttpEmailProvider::new(cfg)), max_concurrency)
     }
 
-    pub fn new_chatgpt_org_uk(api_key: String, domains: Vec<String>, max_concurrency: usize) -> Self {
-        Self::with_concurrency(Arc::new(ChatgptOrgUkProvider::new(api_key, domains)), max_concurrency)
+    pub fn new_chatgpt_org_uk(
+        api_key: String,
+        domains: Vec<String>,
+        max_concurrency: usize,
+    ) -> Self {
+        Self::with_concurrency(
+            Arc::new(ChatgptOrgUkProvider::new(api_key, domains)),
+            max_concurrency,
+        )
     }
 
     /// 通过 provider 自动生成邮箱（仅 chatgpt.org.uk 等支持）
@@ -419,13 +428,27 @@ impl EmailService {
 
     /// 启动后台邮箱轮询，立即返回一个 handle。
     /// 调用方在需要验证码时对 handle `.wait()` 即可获取结果。
-    /// `options.after_email_id` 由调用方传入，避免内部重复基线化。
     pub async fn start_background_poll(
         &self,
         target_email: &str,
         proxy: Option<&str>,
         options: WaitCodeOptions,
     ) -> Result<EmailCodeHandle> {
+        let mut poll_options = options;
+        let wait_before_first_poll = poll_options.prefetch_latest_email_id;
+        if wait_before_first_poll {
+            let _permit = self
+                .mail_semaphore
+                .acquire()
+                .await
+                .map_err(|_| anyhow::anyhow!("邮件 API 信号量已关闭"))?;
+            let latest = self.provider.fetch_emails(target_email, 1, proxy).await?;
+            if let Some(mail) = latest.first() {
+                poll_options.after_email_id = poll_options.after_email_id.max(mail.email_id);
+            }
+            poll_options.prefetch_latest_email_id = false;
+        }
+
         let provider = Arc::clone(&self.provider);
         let semaphore = Arc::clone(&self.mail_semaphore);
         let email = target_email.to_string();
@@ -440,7 +463,8 @@ impl EmailService {
                 semaphore,
                 &email,
                 proxy_owned.as_deref(),
-                &options,
+                &poll_options,
+                wait_before_first_poll,
                 &mut cancel_rx,
             )
             .await;
@@ -460,9 +484,24 @@ impl EmailService {
         target_email: &str,
         proxy: Option<&str>,
         options: &WaitCodeOptions,
+        wait_before_first_poll: bool,
         cancel_rx: &mut oneshot::Receiver<()>,
     ) -> Result<String> {
         let regex = code_regex();
+        let mut current_interval = options.interval_ms.max(200);
+        let max_interval = options.max_interval_ms.max(current_interval);
+        let interval_backoff_step = options.interval_backoff_step_ms;
+        if wait_before_first_poll {
+            tokio::select! {
+                _ = &mut *cancel_rx => return Err(anyhow!("邮箱轮询已取消")),
+                _ = sleep(Duration::from_millis(current_interval)) => {}
+            }
+            if interval_backoff_step > 0 {
+                current_interval = current_interval
+                    .saturating_add(interval_backoff_step)
+                    .min(max_interval);
+            }
+        }
         let rounds = options.max_retries.max(1);
         for _ in 0..rounds {
             let permit = tokio::select! {
@@ -489,7 +528,12 @@ impl EmailService {
             }
             tokio::select! {
                 _ = &mut *cancel_rx => return Err(anyhow!("邮箱轮询已取消")),
-                _ = sleep(Duration::from_millis(options.interval_ms.max(200))) => {}
+                _ = sleep(Duration::from_millis(current_interval)) => {}
+            }
+            if interval_backoff_step > 0 {
+                current_interval = current_interval
+                    .saturating_add(interval_backoff_step)
+                    .min(max_interval);
             }
         }
         bail!("验证码获取超时")
@@ -528,6 +572,9 @@ impl EmailService {
         options: WaitCodeOptions,
     ) -> Result<String> {
         let regex = code_regex();
+        let mut current_interval = options.interval_ms.max(200);
+        let max_interval = options.max_interval_ms.max(current_interval);
+        let interval_backoff_step = options.interval_backoff_step_ms;
         let rounds = options.max_retries.max(1);
         for _ in 0..rounds {
             let result = {
@@ -548,7 +595,12 @@ impl EmailService {
                     }
                 }
             }
-            sleep(Duration::from_millis(options.interval_ms.max(200))).await;
+            sleep(Duration::from_millis(current_interval)).await;
+            if interval_backoff_step > 0 {
+                current_interval = current_interval
+                    .saturating_add(interval_backoff_step)
+                    .min(max_interval);
+            }
         }
         bail!("验证码获取超时");
     }

@@ -249,12 +249,25 @@ async fn run(
     } else if use_chatgpt_mail {
         let api_key = register_runtime.chatgpt_mail_api_key.clone();
         let gpt_domains = cfg.chatgpt_mail_domains.clone();
-        println!("邮箱系统: chatgpt.org.uk (自动生成邮箱, 域名: {})", if gpt_domains.is_empty() { "随机".to_string() } else { format!("{}", gpt_domains.len()) });
+        println!(
+            "邮箱系统: chatgpt.org.uk (自动生成邮箱, 域名: {})",
+            if gpt_domains.is_empty() {
+                "随机".to_string()
+            } else {
+                format!("{}", gpt_domains.len())
+            }
+        );
         let mail_concurrency = register_runtime.mail_max_concurrency;
         let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(), gpt_domains.clone(), mail_concurrency,
+            api_key.clone(),
+            gpt_domains.clone(),
+            mail_concurrency,
         ));
-        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(api_key, gpt_domains, mail_concurrency));
+        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
+            api_key,
+            gpt_domains,
+            mail_concurrency,
+        ));
         (
             Arc::new(LiveRegisterService::new(
                 register_runtime.clone(),
@@ -272,8 +285,14 @@ async fn run(
         };
         println!("邮箱系统: kyx-cloud (自定义域名)");
         let mail_concurrency = register_runtime.mail_max_concurrency;
-        let reg_email = Arc::new(email_service::EmailService::new_http(email_cfg.clone(), mail_concurrency));
-        let rt_email = Arc::new(email_service::EmailService::new_http(email_cfg, mail_concurrency));
+        let reg_email = Arc::new(email_service::EmailService::new_http(
+            email_cfg.clone(),
+            mail_concurrency,
+        ));
+        let rt_email = Arc::new(email_service::EmailService::new_http(
+            email_cfg,
+            mail_concurrency,
+        ));
         (
             Arc::new(LiveRegisterService::new(
                 register_runtime.clone(),
@@ -323,6 +342,8 @@ async fn run(
         push_s2a,
         use_chatgpt_mail,
         free_mode: !cfg.payment_enabled(),
+        register_log_mode: register_runtime.register_log_mode,
+        register_perf_mode: register_runtime.register_perf_mode,
     };
     let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, proxy_pool);
     let report = runner

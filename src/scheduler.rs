@@ -82,24 +82,29 @@ impl SchedulerState {
         self.active.lock().await.contains_key(name)
     }
 
-    /// 获取运行中计划的批次信息
-    pub async fn run_info(&self, name: &str) -> Option<ScheduleRunInfo> {
+    /// 获取所有运行中计划的批次信息快照（单次加锁）
+    pub async fn snapshot(&self) -> HashMap<String, ScheduleRunInfo> {
         let active = self.active.lock().await;
-        active.get(name).map(|e| {
-            let ts = e.next_batch_ts.load(Ordering::Relaxed);
-            let next = if ts > 0 {
-                chrono::DateTime::from_timestamp(ts as i64, 0).map(|dt| {
-                    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
-                    dt.with_timezone(&tz).format("%H:%M:%S").to_string()
-                })
-            } else {
-                None
-            };
-            ScheduleRunInfo {
-                batch_num: e.batch_num.load(Ordering::Relaxed),
-                next_batch_at: next,
-            }
-        })
+        active
+            .iter()
+            .map(|(name, entry)| (name.clone(), Self::build_run_info(entry)))
+            .collect()
+    }
+
+    fn build_run_info(entry: &ActiveEntry) -> ScheduleRunInfo {
+        let ts = entry.next_batch_ts.load(Ordering::Relaxed);
+        let next = if ts > 0 {
+            chrono::DateTime::from_timestamp(ts as i64, 0).map(|dt| {
+                let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+                dt.with_timezone(&tz).format("%H:%M:%S").to_string()
+            })
+        } else {
+            None
+        };
+        ScheduleRunInfo {
+            batch_num: entry.batch_num.load(Ordering::Relaxed),
+            next_batch_at: next,
+        }
     }
 }
 
@@ -207,7 +212,13 @@ async fn run_batch_loop(
     ));
 
     // 恢复逻辑：检查上次执行完成时间，避免重启后立即重复执行
-    if let Ok(Some(last_ts)) = db.last_finished_at(&schedule.name) {
+    let last_finished = tokio::task::spawn_blocking({
+        let db = db.clone();
+        let schedule_name = schedule.name.clone();
+        move || db.last_finished_at(&schedule_name)
+    })
+    .await;
+    if let Ok(Ok(Some(last_ts))) = last_finished {
         if let Ok(last_dt) = chrono::DateTime::parse_from_rfc3339(&last_ts) {
             let now = chrono::Utc::now();
             let since = now.signed_duration_since(last_dt);
@@ -223,8 +234,7 @@ async fn run_batch_loop(
                     wait_secs
                 ));
 
-                let next_ts_val =
-                    chrono::Utc::now().timestamp() as u64 + wait_secs;
+                let next_ts_val = chrono::Utc::now().timestamp() as u64 + wait_secs;
                 next_batch_ts.store(next_ts_val, Ordering::Relaxed);
 
                 let check_interval = tokio::time::Duration::from_secs(5);
@@ -279,19 +289,24 @@ async fn run_batch_loop(
         let cfg = state.config.read().await.clone();
 
         // 构建 runner
-        let runner =
-            match crate::server::build_workflow_runner(&cfg, state.proxy_file.as_deref(), schedule.use_chatgpt_mail).await {
-                Ok(r) => r,
-                Err(e) => {
-                    broadcast_log(&format!(
-                        "[调度器] 构建 runner 失败 ({}): {e}",
-                        schedule.name
-                    ));
-                    // 短暂等待后重试
-                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                    continue;
-                }
-            };
+        let runner = match crate::server::build_workflow_runner(
+            &cfg,
+            state.proxy_file.as_deref(),
+            schedule.use_chatgpt_mail,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                broadcast_log(&format!(
+                    "[调度器] 构建 runner 失败 ({}): {e}",
+                    schedule.name
+                ));
+                // 短暂等待后重试
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                continue;
+            }
+        };
 
         // 执行一个批次
         match crate::distribution::run_distribution(
