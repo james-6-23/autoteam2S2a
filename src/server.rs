@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post, put};
@@ -28,6 +28,8 @@ use crate::workflow::{WorkflowOptions, WorkflowRunner};
 // ─── Embedded frontend ──────────────────────────────────────────────────────
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
+const APP_CSS: &str = include_str!("../static/assets/css/app.css");
+const APP_JS: &str = include_str!("../static/assets/js/app.js");
 const TASK_FINISHED_KEEP: usize = 300;
 const TASK_PRUNE_THRESHOLD: usize = 600;
 const MAX_TARGET_COUNT: usize = 5000;
@@ -462,6 +464,25 @@ where
 
 async fn index_handler() -> impl IntoResponse {
     Html(INDEX_HTML)
+}
+
+async fn app_css_handler() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        APP_CSS,
+    )
+}
+
+async fn app_js_handler() -> impl IntoResponse {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+        ],
+        APP_JS,
+    )
 }
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -2216,6 +2237,8 @@ pub async fn start_server(
     let app = Router::new()
         // Frontend
         .route("/", get(index_handler))
+        .route("/assets/css/app.css", get(app_css_handler))
+        .route("/assets/js/app.js", get(app_js_handler))
         // Health
         .route("/health", get(health_handler))
         // Config management
