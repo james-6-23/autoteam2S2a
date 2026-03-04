@@ -722,9 +722,9 @@ impl RunHistoryDb {
                 (total, rows)
             }
             (None, None) => {
-                let total = conn.query_row("SELECT COUNT(*) FROM runs", [], |row| {
-                    row.get::<_, i64>(0)
-                })? as usize;
+                let total = conn
+                    .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get::<_, i64>(0))?
+                    as usize;
                 let mut stmt = conn.prepare(
                     "SELECT id, schedule_name, trigger_type, status, target_count,
                             registered_ok, registered_failed, rt_ok, rt_failed,

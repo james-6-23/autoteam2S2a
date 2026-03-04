@@ -1140,10 +1140,30 @@ function currentRegisterLogMode(){
 function shouldKeepSummaryLog(line){
   if(!line) return false;
   if(line.includes('[ERR]')) return true;
+  if(line.includes('[SIG-END]')) return true;
   if(line.includes('[REG]')||line.includes('[REG-SUM]')||line.includes('[REG-END]')) return true;
   if(line.includes('阶段1+2')||line.includes('补注册')||line.includes('本轮结束')) return true;
   if(line.includes('已收到中断信号')) return true;
   return false;
+}
+function escapeHtml(s){
+  return String(s)
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;')
+    .replaceAll("'","&#39;");
+}
+function detectLogLineLevel(line){
+  if(!line) return 'log-line-normal';
+  if(line.includes('[SIG-END][ERR]')||line.includes('[ERR]')||line.includes('失败')) return 'log-line-error';
+  if(line.includes('[SIG-END][OK]')||line.includes('[OK]')) return 'log-line-success';
+  return 'log-line-normal';
+}
+function renderLogLines(lines){
+  return lines
+    .map(line=>`<span class="log-line ${detectLogLineLevel(line)}">${escapeHtml(line)}</span>`)
+    .join('\n');
 }
 function flushLogs(){
   logRafId=null;
@@ -1157,7 +1177,7 @@ function flushLogs(){
   // trim oldest
   if(logLines.length>LOG_MAX_LINES){logLines=logLines.slice(-LOG_MAX_LINES)}
   const container=document.getElementById('log-container');
-  container.textContent=logLines.join('\n');
+  container.innerHTML=renderLogLines(logLines);
   document.getElementById('log-count').textContent=logLineCount+' 条';
   if(logAutoScroll) container.scrollTop=container.scrollHeight;
 }
@@ -1183,7 +1203,7 @@ function toggleLogScroll(){
   if(logAutoScroll){const c=document.getElementById('log-container');c.scrollTop=c.scrollHeight}
 }
 function clearLogs(){
-  document.getElementById('log-container').textContent='';
+  document.getElementById('log-container').innerHTML='';
   logLines=[];logPending=[];logLineCount=0;document.getElementById('log-count').textContent='0 条';
 }
 

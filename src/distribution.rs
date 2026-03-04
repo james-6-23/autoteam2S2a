@@ -113,12 +113,20 @@ pub async fn run_distribution(
         Ok(r) => r,
         Err(e) => {
             let _ = db.enqueue_fail_run(run_id.clone(), format!("{e:#}"));
+            broadcast_log(&format!(
+                "[SIG-END][ERR] schedule={} trigger={} mode={} target_rt={} stage=register_rt reason={e:#}",
+                schedule.name, trigger_type, mode_label, schedule.target_count
+            ));
             return Err(e);
         }
     };
 
     if cancel_flag.load(Ordering::Relaxed) {
         let _ = db.enqueue_fail_run(run_id.clone(), "用户取消".to_string());
+        broadcast_log(&format!(
+            "[SIG-END][ERR] schedule={} trigger={} mode={} target_rt={} stage=cancel reason=用户取消",
+            schedule.name, trigger_type, mode_label, schedule.target_count
+        ));
         anyhow::bail!("运行已取消");
     }
 
@@ -130,10 +138,10 @@ pub async fn run_distribution(
     let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
         if options.free_mode {
             // Free 模式: 所有账号都走百分比分配流程，推送到 free_group_ids
-            (reg_result.rt_success, Vec::new())
+            (reg_result.rt_success_for_s2a, Vec::new())
         } else {
             reg_result
-                .rt_success
+                .rt_success_for_s2a
                 .into_iter()
                 .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"))
         };
@@ -336,6 +344,21 @@ pub async fn run_distribution(
             broadcast_log(&format!("[分发] D1 清理失败: {e}"));
         }
     }
+
+    broadcast_log(&format!(
+        "[SIG-END][OK] schedule={} trigger={} mode={} target_rt={} reg_ok={} reg_fail={} rt_ok={} rt_fail={} s2a_ok={} s2a_fail={} elapsed={:.1}s",
+        schedule.name,
+        trigger_type,
+        mode_label,
+        schedule.target_count,
+        reg_result.total_registered,
+        reg_result.total_reg_failed,
+        rt_ok,
+        rt_failed,
+        total_s2a_ok,
+        total_s2a_failed,
+        elapsed
+    ));
 
     Ok(DistributionReport {
         run_id,

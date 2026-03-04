@@ -216,11 +216,7 @@ impl LiveRegisterService {
         // 先启动后台轮询再发送验证码，利用发送耗时提前开始轮询。
         let mut otp_handle = self
             .email_service
-            .start_background_poll(
-                &input.seed.account,
-                mail_proxy,
-                primary_options,
-            )
+            .start_background_poll(&input.seed.account, mail_proxy, primary_options)
             .await?;
 
         log_worker(input.worker_id, "注册", "发送验证码...");
@@ -235,10 +231,12 @@ impl LiveRegisterService {
 
         // === 分级超时策略 ===
         // 第1轮：主超时等待后台轮询结果
-        let otp_code =
-            match tokio::time::timeout(Duration::from_secs(primary_timeout_secs), otp_handle.wait())
-                .await
-            {
+        let otp_code = match tokio::time::timeout(
+            Duration::from_secs(primary_timeout_secs),
+            otp_handle.wait(),
+        )
+        .await
+        {
             Ok(Ok(Ok(code))) => code,
             Ok(Ok(Err(e))) => bail!("验证码轮询失败: {e}"),
             Ok(Err(_)) => bail!("后台验证码轮询任务意外终止"),
@@ -246,15 +244,17 @@ impl LiveRegisterService {
                 otp_handle.cancel();
                 // 第1轮超时，重新轮询邮箱
                 let retry_hint = if optimized_poll {
-                    format!("验证码主轮询超时，进入补偿轮询 ({}s)...", retry_timeout_secs)
+                    format!(
+                        "验证码主轮询超时，进入补偿轮询 ({}s)...",
+                        retry_timeout_secs
+                    )
                 } else {
-                    format!("验证码 {}s 超时，重新轮询邮箱 ({}s重试)...", primary_timeout_secs, retry_timeout_secs)
+                    format!(
+                        "验证码 {}s 超时，重新轮询邮箱 ({}s重试)...",
+                        primary_timeout_secs, retry_timeout_secs
+                    )
                 };
-                log_worker(
-                    input.worker_id,
-                    "注册",
-                    &retry_hint,
-                );
+                log_worker(input.worker_id, "注册", &retry_hint);
 
                 let mail_proxy_retry = if self.cfg.use_proxy_for_mail {
                     input.proxy.as_deref()
@@ -263,14 +263,15 @@ impl LiveRegisterService {
                 };
                 let mut retry_handle = self
                     .email_service
-                    .start_background_poll(
-                        &input.seed.account,
-                        mail_proxy_retry,
-                        retry_options,
-                    )
+                    .start_background_poll(&input.seed.account, mail_proxy_retry, retry_options)
                     .await?;
 
-                match tokio::time::timeout(Duration::from_secs(retry_timeout_secs), retry_handle.wait()).await {
+                match tokio::time::timeout(
+                    Duration::from_secs(retry_timeout_secs),
+                    retry_handle.wait(),
+                )
+                .await
+                {
                     Ok(Ok(Ok(code))) => code,
                     _ => {
                         retry_handle.cancel();

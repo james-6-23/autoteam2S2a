@@ -478,20 +478,15 @@ async fn index_handler() -> impl IntoResponse {
 }
 
 async fn app_css_handler() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        APP_CSS,
-    )
+    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS)
 }
 
 async fn app_js_handler() -> impl IntoResponse {
     (
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/javascript; charset=utf-8",
-            ),
-        ],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         APP_JS,
     )
 }
@@ -1601,6 +1596,12 @@ async fn execute_task(
         }
         Err(e) => {
             let msg = format!("{e:#}");
+            crate::log_broadcast::broadcast_log(&format!(
+                "[SIG-END][ERR] mode={} target_rt={} team={} reason={msg}",
+                if free_mode { "free" } else { "team" },
+                target,
+                team.name
+            ));
             let _ = run_history_db.enqueue_fail_run(run_id.clone(), msg.clone());
             task_manager.set_failed(&task_id, msg).await;
         }

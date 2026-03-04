@@ -55,6 +55,9 @@ impl TaskProgress {
 /// run_register_and_rt 的返回结果
 pub struct RegisterRtResult {
     pub rt_success: Vec<AccountWithRt>,
+    /// 供后续 S2A 分流使用的 RT 成功账号。
+    /// team 模式下会补充非目标模式账号，避免 free 分组漏推送。
+    pub rt_success_for_s2a: Vec<AccountWithRt>,
     pub rt_failed: Vec<RegisteredAccount>,
     pub total_registered: usize,
     pub total_reg_failed: usize,
@@ -273,7 +276,8 @@ impl WorkflowRunner {
                                     done_counter.fetch_add(1, Ordering::Relaxed);
                                     return (false, task_no, seed.account);
                                 }
-                                let jitter_ms = random_delay_ms(reg_jitter_min_ms, reg_jitter_max_ms);
+                                let jitter_ms =
+                                    random_delay_ms(reg_jitter_min_ms, reg_jitter_max_ms);
                                 tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
                                 if cancel.load(Ordering::Relaxed) {
                                     fail_counter.fetch_add(1, Ordering::Relaxed);
@@ -413,8 +417,7 @@ impl WorkflowRunner {
                 let plan_label = if options.free_mode { "free" } else { "team" };
                 broadcast_log(&format!(
                     "本轮结束: {plan_label} RT成功 {}, 累计成功 {}/{}",
-                    round_rt_mode_ok, cumulative_mode_ok,
-                    target
+                    round_rt_mode_ok, cumulative_mode_ok, target
                 ));
             }
 
@@ -424,12 +427,8 @@ impl WorkflowRunner {
         }
 
         let plan_label = if options.free_mode { "free" } else { "team" };
-        let total_rt_success_before_filter = all_rt_success.len();
-        let mut target_rt_success: Vec<AccountWithRt> = all_rt_success
-            .into_iter()
-            .filter(|acc| Self::is_target_mode_account(acc, options.free_mode))
-            .collect();
-        target_rt_success.truncate(target);
+        let (target_rt_success, rt_success_for_s2a, dropped_non_target) =
+            Self::build_rt_success_views(all_rt_success, options.free_mode, target);
         if target_rt_success.len() < target && !cancel_flag.load(Ordering::Relaxed) {
             broadcast_log(&format!(
                 "[REG-END] 达到重试上限 {}，{} 模式 RT 成功 {}/{}，按当前数量继续后续流程",
@@ -439,7 +438,6 @@ impl WorkflowRunner {
                 target
             ));
         }
-        let dropped_non_target = total_rt_success_before_filter.saturating_sub(target_rt_success.len());
         if dropped_non_target > 0 {
             broadcast_log(&format!(
                 "[REG] 已忽略 {} 个非{}模式 RT 结果，仅按 {} 模式计入目标",
@@ -449,9 +447,10 @@ impl WorkflowRunner {
 
         // 输出文件
         let mut output_files = Vec::new();
-        if let Some(path) =
-            save_json_records(&format!("accounts-{plan_label}-with-rt"), &target_rt_success)?
-        {
+        if let Some(path) = save_json_records(
+            &format!("accounts-{plan_label}-with-rt"),
+            &target_rt_success,
+        )? {
             output_files.push(path.display().to_string());
         }
         if let Some(path) =
@@ -462,6 +461,7 @@ impl WorkflowRunner {
 
         Ok(RegisterRtResult {
             rt_success: target_rt_success,
+            rt_success_for_s2a,
             rt_failed: all_rt_failed,
             total_registered,
             total_reg_failed,
@@ -570,13 +570,24 @@ impl WorkflowRunner {
         progress: Option<Arc<TaskProgress>>,
     ) -> Result<WorkflowReport> {
         let workflow_started = Instant::now();
+        let mode_label = if options.free_mode { "free" } else { "team" };
 
         if let Some(ref p) = progress {
             p.set_stage("注册 + RT");
         }
-        let reg_result = self
+        let reg_result = match self
             .run_register_and_rt(cfg, options, cancel_flag, progress.as_ref())
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                broadcast_log(&format!(
+                    "[SIG-END][ERR] mode={mode_label} stage=register_rt target_rt={} reason={e:#}",
+                    options.target_count
+                ));
+                return Err(e);
+            }
+        };
 
         let rt_ok = reg_result.rt_success.len();
         let rt_failed = reg_result.rt_failed.len();
@@ -591,7 +602,7 @@ impl WorkflowRunner {
             // 分离 free 账号
             let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
                 reg_result
-                    .rt_success
+                    .rt_success_for_s2a
                     .into_iter()
                     .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
 
@@ -652,6 +663,20 @@ impl WorkflowRunner {
             }
         }
 
+        let elapsed_secs = workflow_started.elapsed().as_secs_f32();
+        broadcast_log(&format!(
+            "[SIG-END][OK] mode={mode_label} target_rt={} reg_ok={} reg_fail={} rt_ok={} rt_fail={} s2a_ok={} s2a_fail={} free_ok={} free_fail={} elapsed={elapsed_secs:.1}s",
+            options.target_count,
+            reg_result.total_registered,
+            reg_result.total_reg_failed,
+            rt_ok,
+            rt_failed,
+            s2a_ok,
+            s2a_failed,
+            free_s2a_ok,
+            free_s2a_failed,
+        ));
+
         Ok(WorkflowReport {
             registered_ok: reg_result.total_registered,
             registered_failed: reg_result.total_reg_failed,
@@ -662,7 +687,7 @@ impl WorkflowRunner {
             free_s2a_ok,
             free_s2a_failed,
             output_files,
-            elapsed_secs: workflow_started.elapsed().as_secs_f32(),
+            elapsed_secs,
             target_count: options.target_count,
         })
     }
@@ -811,9 +836,93 @@ impl WorkflowRunner {
         }
     }
 
+    fn build_rt_success_views(
+        all_rt_success: Vec<AccountWithRt>,
+        free_mode: bool,
+        target: usize,
+    ) -> (Vec<AccountWithRt>, Vec<AccountWithRt>, usize) {
+        let (mut target_rt_success, non_target_rt_success): (
+            Vec<AccountWithRt>,
+            Vec<AccountWithRt>,
+        ) = all_rt_success
+            .into_iter()
+            .partition(|acc| Self::is_target_mode_account(acc, free_mode));
+        target_rt_success.truncate(target);
+        let dropped_non_target = non_target_rt_success.len();
+
+        let mut rt_success_for_s2a = target_rt_success.clone();
+        if !free_mode {
+            rt_success_for_s2a.extend(non_target_rt_success);
+        }
+
+        (target_rt_success, rt_success_for_s2a, dropped_non_target)
+    }
+
     async fn wait_for_cancel(cancel_flag: Arc<AtomicBool>) {
         while !cancel_flag.load(Ordering::Relaxed) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_rt(account: &str, plan_type: &str) -> AccountWithRt {
+        AccountWithRt {
+            account: account.to_string(),
+            password: "pw".to_string(),
+            token: format!("tok-{account}"),
+            account_id: format!("acc-{account}"),
+            plan_type: plan_type.to_string(),
+            refresh_token: format!("rt-{account}"),
+        }
+    }
+
+    #[test]
+    fn team_mode_keeps_non_team_results_for_free_distribution() {
+        let all_rt = vec![
+            make_rt("u1", "team"),
+            make_rt("u2", "free"),
+            make_rt("u3", "pro"),
+            make_rt("u4", "free"),
+            make_rt("u5", "team"),
+        ];
+
+        let (target_rt_success, rt_success_for_s2a, dropped_non_target) =
+            WorkflowRunner::build_rt_success_views(all_rt, false, 2);
+
+        assert_eq!(target_rt_success.len(), 2);
+        assert_eq!(target_rt_success[0].account, "u1");
+        assert_eq!(target_rt_success[1].account, "u3");
+        assert_eq!(dropped_non_target, 2);
+        assert_eq!(rt_success_for_s2a.len(), 4);
+        assert_eq!(
+            rt_success_for_s2a
+                .iter()
+                .filter(|acc| acc.plan_type.eq_ignore_ascii_case("free"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn free_mode_only_keeps_free_results_for_s2a() {
+        let all_rt = vec![
+            make_rt("u1", "team"),
+            make_rt("u2", "free"),
+            make_rt("u3", "pro"),
+            make_rt("u4", "free"),
+        ];
+
+        let (target_rt_success, rt_success_for_s2a, dropped_non_target) =
+            WorkflowRunner::build_rt_success_views(all_rt, true, 1);
+
+        assert_eq!(target_rt_success.len(), 1);
+        assert_eq!(target_rt_success[0].account, "u2");
+        assert_eq!(dropped_non_target, 2);
+        assert_eq!(rt_success_for_s2a.len(), 1);
+        assert!(rt_success_for_s2a[0].plan_type.eq_ignore_ascii_case("free"));
     }
 }

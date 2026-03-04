@@ -278,6 +278,19 @@ nav{-webkit-overflow-scrolling:touch}
   }
 }
 
+#log-container .log-line{
+  display:block;
+  color:#f3f4f6;
+}
+
+#log-container .log-line-success{
+  color:#4ade80;
+}
+
+#log-container .log-line-error{
+  color:#fca5a5;
+}
+
 @media (max-width:480px){
   #version-badge{display:none}
   #beijing-clock{font-size:.62rem}
