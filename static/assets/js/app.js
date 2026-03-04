@@ -1163,7 +1163,7 @@ function detectLogLineLevel(line){
 function renderLogLines(lines){
   return lines
     .map(line=>`<span class="log-line ${detectLogLineLevel(line)}">${escapeHtml(line)}</span>`)
-    .join('\n');
+    .join('');
 }
 function flushLogs(){
   logRafId=null;

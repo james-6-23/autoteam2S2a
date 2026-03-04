@@ -281,6 +281,9 @@ nav{-webkit-overflow-scrolling:touch}
 #log-container .log-line{
   display:block;
   color:#f3f4f6;
+  margin:0;
+  padding:0;
+  line-height:inherit;
 }
 
 #log-container .log-line-success{
