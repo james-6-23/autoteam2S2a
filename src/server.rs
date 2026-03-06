@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::cors::CorsLayer;
 
-use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig};
+use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2aExtraConfig};
 use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::WorkflowReport;
@@ -389,6 +389,8 @@ struct AddS2aRequest {
     free_group_ids: Option<Vec<i64>>,
     free_priority: Option<usize>,
     free_concurrency: Option<usize>,
+    #[serde(default)]
+    extra: S2aExtraConfig,
 }
 
 #[derive(Deserialize)]
@@ -585,6 +587,7 @@ async fn add_s2a_handler(
         free_group_ids: req.free_group_ids.unwrap_or_default(),
         free_priority: req.free_priority,
         free_concurrency: req.free_concurrency,
+        extra: req.extra,
     });
     auto_save(&cfg, &state.config_path);
     Ok((
@@ -605,6 +608,7 @@ struct UpdateS2aRequest {
     free_group_ids: Option<Vec<i64>>,
     free_priority: Option<Option<usize>>,
     free_concurrency: Option<Option<usize>>,
+    extra: Option<S2aExtraConfig>,
 }
 
 async fn update_s2a_handler(
@@ -642,6 +646,9 @@ async fn update_s2a_handler(
     }
     if let Some(v) = req.free_concurrency {
         team.free_concurrency = v;
+    }
+    if let Some(v) = req.extra {
+        team.extra = v;
     }
     auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse {

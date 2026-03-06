@@ -127,6 +127,27 @@ tailwind.config={theme:{extend:{
           </div>
           <div><label class="field-label">Free 优先级 <span class="text-dim">(可选)</span></label><input id="at-free-priority" type="number" class="field-input" placeholder="默认同 team"></div>
           <div><label class="field-label">Free 并发 <span class="text-dim">(可选)</span></label><input id="at-free-concurrency" type="number" min="1" step="25" class="field-input" placeholder="默认同 team"></div>
+          <div class="card-inner p-3 space-y-3">
+            <div class="field-label mb-0">OpenAI Extra</div>
+            <div class="switch-stack">
+              <label class="switch">
+                <input id="at-openai-passthrough" class="switch-input" type="checkbox" checked>
+                <span class="switch-slider"></span>
+                <span class="switch-text">自动透传</span>
+              </label>
+              <label class="switch">
+                <input id="at-openai-ws-v2-enabled" class="switch-input" type="checkbox" checked onchange="syncOpenaiWsModeState('at')">
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用 WS v2</span>
+              </label>
+            </div>
+            <div>
+              <label class="field-label">WS Mode</label>
+              <select id="at-openai-ws-v2-mode" class="field-input">
+                <option value="passthrough">透传（passthrough）</option>
+              </select>
+            </div>
+          </div>
         </div>
         <div class="flex gap-2 mt-4">
           <button onclick="submitAddTeam()" class="btn btn-teal">确认</button>
@@ -165,6 +186,27 @@ tailwind.config={theme:{extend:{
           </div>
           <div><label class="field-label">Free 优先级 <span class="text-dim">(可选)</span></label><input id="et-free-priority" type="number" class="field-input" placeholder="默认同 team"></div>
           <div><label class="field-label">Free 并发 <span class="text-dim">(可选)</span></label><input id="et-free-concurrency" type="number" min="1" step="25" class="field-input" placeholder="默认同 team"></div>
+          <div class="card-inner p-3 space-y-3">
+            <div class="field-label mb-0">OpenAI Extra</div>
+            <div class="switch-stack">
+              <label class="switch">
+                <input id="et-openai-passthrough" class="switch-input" type="checkbox">
+                <span class="switch-slider"></span>
+                <span class="switch-text">自动透传</span>
+              </label>
+              <label class="switch">
+                <input id="et-openai-ws-v2-enabled" class="switch-input" type="checkbox" onchange="syncOpenaiWsModeState('et')">
+                <span class="switch-slider"></span>
+                <span class="switch-text">启用 WS v2</span>
+              </label>
+            </div>
+            <div>
+              <label class="field-label">WS Mode</label>
+              <select id="et-openai-ws-v2-mode" class="field-input">
+                <option value="passthrough">透传（passthrough）</option>
+              </select>
+            </div>
+          </div>
         </div>
         <div class="flex gap-2 mt-4">
           <button onclick="submitEditTeam()" class="btn btn-amber">保存</button>
@@ -278,7 +320,11 @@ tailwind.config={theme:{extend:{
   <div class="card p-5">
     <div class="flex items-center justify-between mb-3">
       <div class="section-title mb-0">D1 邮件清理</div>
-      <label class="flex items-center gap-2 text-xs text-dim"><input id="cfg-d1-enabled" type="checkbox"> 启用</label>
+      <label class="switch">
+        <input id="cfg-d1-enabled" class="switch-input" type="checkbox">
+        <span class="switch-slider"></span>
+        <span class="switch-text">启用</span>
+      </label>
     </div>
     <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
       <div><label class="field-label">Account ID</label><input id="cfg-d1-account-id" class="field-input" placeholder="CF Account ID"></div>
@@ -411,9 +457,17 @@ tailwind.config={theme:{extend:{
           <option value="adaptive">adaptive（自适应优化）</option>
         </select>
       </div>
-      <div class="flex items-center gap-4 pt-5">
-        <label class="flex items-center gap-2 text-xs text-dim-1"><input id="sched-push-s2a" type="checkbox" checked> S2A</label>
-        <label class="flex items-center gap-2 text-xs text-dim-1"><input id="sched-enabled" type="checkbox" checked> 启用</label>
+      <div class="switch-group pt-5">
+        <label class="switch">
+          <input id="sched-push-s2a" class="switch-input" type="checkbox" checked>
+          <span class="switch-slider"></span>
+          <span class="switch-text">S2A</span>
+        </label>
+        <label class="switch">
+          <input id="sched-enabled" class="switch-input" type="checkbox" checked>
+          <span class="switch-slider"></span>
+          <span class="switch-text">启用</span>
+        </label>
       </div>
     </div>
     <div class="mt-4">
@@ -460,9 +514,17 @@ tailwind.config={theme:{extend:{
           <option value="adaptive">adaptive（自适应优化）</option>
         </select>
       </div>
-      <div class="flex items-center gap-4 pt-5">
-        <label class="flex items-center gap-2 text-xs text-dim-1"><input id="es-push-s2a" type="checkbox" checked> S2A</label>
-        <label class="flex items-center gap-2 text-xs text-dim-1"><input id="es-enabled" type="checkbox" checked> 启用</label>
+      <div class="switch-group pt-5">
+        <label class="switch">
+          <input id="es-push-s2a" class="switch-input" type="checkbox" checked>
+          <span class="switch-slider"></span>
+          <span class="switch-text">S2A</span>
+        </label>
+        <label class="switch">
+          <input id="es-enabled" class="switch-input" type="checkbox" checked>
+          <span class="switch-slider"></span>
+          <span class="switch-text">启用</span>
+        </label>
       </div>
     </div>
     <div class="mt-4">

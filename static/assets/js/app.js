@@ -315,6 +315,7 @@ function showAddTeamForm(){
   hideTeamGroupsModal();
   hideEditTeamForm();
   document.getElementById('add-team-modal').classList.remove('hidden');
+  fillS2aExtraForm('at');
 }
 function hideAddTeamForm(){
   document.getElementById('add-team-modal').classList.add('hidden');
@@ -323,6 +324,7 @@ function hideAddTeamForm(){
   document.getElementById('at-groups-status').textContent='';
   document.getElementById('at-groups-container').innerHTML='<span class="text-xs text-dim">请先填写 API 地址和 Admin Key</span>';
   document.getElementById('at-free-groups-container').innerHTML='<span class="text-xs text-dim">获取分组后可选</span>';
+  fillS2aExtraForm('at');
 }
 let atGroupsData=[];
 async function fetchGroups(){
@@ -369,12 +371,36 @@ function getSelectedGroupIds(){
 function getSelectedFreeGroupIds(){
   return Array.from(document.querySelectorAll('.at-free-group-cb:checked')).map(cb=>parseInt(cb.value));
 }
+function syncOpenaiWsModeState(prefix){
+  const enabled=document.getElementById(`${prefix}-openai-ws-v2-enabled`).checked;
+  const mode=document.getElementById(`${prefix}-openai-ws-v2-mode`);
+  mode.disabled=!enabled;
+}
+function fillS2aExtraForm(prefix,extra){
+  const e=extra||{};
+  const hasExtra=extra!==undefined&&extra!==null;
+  document.getElementById(`${prefix}-openai-passthrough`).checked=hasExtra?e.openai_passthrough===true:true;
+  document.getElementById(`${prefix}-openai-ws-v2-enabled`).checked=hasExtra?e.openai_oauth_responses_websockets_v2_enabled===true:true;
+  document.getElementById(`${prefix}-openai-ws-v2-mode`).value=e.openai_oauth_responses_websockets_v2_mode||'passthrough';
+  syncOpenaiWsModeState(prefix);
+}
+function buildS2aExtraPayload(prefix){
+  const extra={};
+  if(document.getElementById(`${prefix}-openai-passthrough`).checked){
+    extra.openai_passthrough=true;
+  }
+  if(document.getElementById(`${prefix}-openai-ws-v2-enabled`).checked){
+    extra.openai_oauth_responses_websockets_v2_enabled=true;
+    extra.openai_oauth_responses_websockets_v2_mode=document.getElementById(`${prefix}-openai-ws-v2-mode`).value||'passthrough';
+  }
+  return extra;
+}
 async function submitAddTeam(){
   const groups=getSelectedGroupIds();
   const freeGroups=getSelectedFreeGroupIds();
   const freePri=parseInt(document.getElementById('at-free-priority').value);
   const freeConc=parseInt(document.getElementById('at-free-concurrency').value);
-  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups,free_group_ids:freeGroups,free_priority:freePri||undefined,free_concurrency:freeConc||undefined}});toast('号池已添加','success');hideAddTeamForm();['at-name','at-api','at-key','at-free-priority','at-free-concurrency'].forEach(id=>document.getElementById(id).value='');atGroupsData=[];loadConfig()}catch{}
+  try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups,free_group_ids:freeGroups,free_priority:freePri||undefined,free_concurrency:freeConc||undefined,extra:buildS2aExtraPayload('at')}});toast('号池已添加','success');hideAddTeamForm();['at-name','at-api','at-key','at-free-priority','at-free-concurrency'].forEach(id=>document.getElementById(id).value='');atGroupsData=[];loadConfig()}catch{}
 }
 async function deleteTeam(name){if(!confirm(`删除号池 "${name}"?`))return;try{await api(`/api/config/s2a/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`${name} 已删除`,'success');loadConfig()}catch{}}
 let editTeamName=null;
@@ -398,6 +424,7 @@ function editTeam(name){
   document.getElementById('et-priority').value=t.priority||30;
   document.getElementById('et-free-priority').value=t.free_priority||'';
   document.getElementById('et-free-concurrency').value=t.free_concurrency||'';
+  fillS2aExtraForm('et',t.extra);
   // show current group IDs as text first, user can fetch to get checkboxes
   document.getElementById('et-groups-container').innerHTML=t.group_ids?.length?`<span class="text-xs text-dim">当前: [${t.group_ids.join(', ')}] — 点击获取分组可修改</span>`:'<span class="text-xs text-dim">点击获取分组</span>';
   document.getElementById('et-free-groups-container').innerHTML=t.free_group_ids?.length?`<span class="text-xs text-dim">当前: [${t.free_group_ids.join(', ')}] — 获取分组后可修改</span>`:'<span class="text-xs text-dim">获取分组后可选</span>';
@@ -459,6 +486,7 @@ async function submitEditTeam(){
   const fc=document.getElementById('et-free-concurrency').value;
   body.free_priority=fp?parseInt(fp):null;
   body.free_concurrency=fc?parseInt(fc):null;
+  body.extra=buildS2aExtraPayload('et');
   try{await api(`/api/config/s2a/${encodeURIComponent(editTeamName)}`,{method:'PUT',body});toast(`${editTeamName} 已更新`,'success');hideEditTeamForm();loadConfig()}catch{}
 }
 

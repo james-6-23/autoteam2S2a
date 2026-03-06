@@ -201,6 +201,28 @@ pub struct S2aConfig {
     /// 可选：free 账号入库并发数（未配置则沿用 team concurrency）
     #[serde(default)]
     pub free_concurrency: Option<usize>,
+    #[serde(default)]
+    pub extra: S2aExtraConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct S2aExtraConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_passthrough: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_oauth_responses_websockets_v2_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_oauth_responses_websockets_v2_enabled: Option<bool>,
+}
+
+impl Default for S2aExtraConfig {
+    fn default() -> Self {
+        Self {
+            openai_passthrough: Some(true),
+            openai_oauth_responses_websockets_v2_mode: Some("passthrough".to_string()),
+            openai_oauth_responses_websockets_v2_enabled: Some(true),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -377,6 +399,7 @@ impl AppConfig {
                 free_group_ids: Vec::new(),
                 free_priority: None,
                 free_concurrency: None,
+                extra: S2aExtraConfig::default(),
             }];
         }
         Vec::new()

@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use crate::config::{CodexRuntimeConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig};
+use crate::config::{
+    CodexRuntimeConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig, S2aExtraConfig,
+};
 use crate::email_service::{EmailService, WaitCodeOptions};
 use crate::fingerprint::{
     build_fingerprint_material, is_retryable_challenge_error, looks_like_challenge_page,
@@ -1917,6 +1919,7 @@ struct S2aAddPayload<'a> {
     concurrency: usize,
     priority: usize,
     group_ids: &'a [i64],
+    extra: S2aExtraConfig,
 }
 
 #[derive(Debug, Serialize)]
@@ -1979,6 +1982,7 @@ impl S2aService for S2aHttpService {
             concurrency: team.concurrency,
             priority: team.priority,
             group_ids: &team.group_ids,
+            extra: team.extra.clone(),
         };
 
         let base = Self::normalized_api_base(&team.api_base);
@@ -2170,4 +2174,72 @@ fn generate_code_verifier() -> String {
 fn generate_code_challenge(code_verifier: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, code_verifier.as_bytes());
     general_purpose::URL_SAFE_NO_PAD.encode(digest.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{S2aAddPayload, S2aCredentials};
+    use crate::config::S2aExtraConfig;
+
+    #[test]
+    fn s2a_add_payload_serializes_supported_extra_variants() {
+        let cases = [
+            (
+                S2aExtraConfig {
+                    openai_passthrough: None,
+                    openai_oauth_responses_websockets_v2_mode: None,
+                    openai_oauth_responses_websockets_v2_enabled: None,
+                },
+                json!({}),
+            ),
+            (
+                S2aExtraConfig {
+                    openai_passthrough: Some(true),
+                    openai_oauth_responses_websockets_v2_mode: None,
+                    openai_oauth_responses_websockets_v2_enabled: None,
+                },
+                json!({"openai_passthrough": true}),
+            ),
+            (
+                S2aExtraConfig {
+                    openai_passthrough: None,
+                    openai_oauth_responses_websockets_v2_mode: Some("passthrough".to_string()),
+                    openai_oauth_responses_websockets_v2_enabled: Some(true),
+                },
+                json!({
+                    "openai_oauth_responses_websockets_v2_mode": "passthrough",
+                    "openai_oauth_responses_websockets_v2_enabled": true
+                }),
+            ),
+            (
+                S2aExtraConfig::default(),
+                json!({
+                    "openai_passthrough": true,
+                    "openai_oauth_responses_websockets_v2_mode": "passthrough",
+                    "openai_oauth_responses_websockets_v2_enabled": true
+                }),
+            ),
+        ];
+
+        for (extra, expected_extra) in cases {
+            let payload = S2aAddPayload {
+                name: "team-demo@example.com".to_string(),
+                platform: "openai",
+                r#type: "oauth",
+                credentials: S2aCredentials {
+                    access_token: "access-token",
+                    refresh_token: "refresh-token",
+                },
+                concurrency: 200,
+                priority: 50,
+                group_ids: &[2],
+                extra,
+            };
+
+            let json = serde_json::to_value(&payload).expect("payload 应可序列化");
+            assert_eq!(json["extra"], expected_extra);
+        }
+    }
 }

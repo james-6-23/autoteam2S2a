@@ -63,7 +63,25 @@ select{appearance:none;-webkit-appearance:none;padding-right:32px !important;cur
   background-repeat:no-repeat !important;background-position:right 10px center !important;background-size:12px !important}
 select option{background:var(--option-bg);color:var(--text);padding:6px 12px}
 select option:checked,select option:hover{background:linear-gradient(0deg,#f59e0b,#f59e0b);color:#09090b}
-input[type=checkbox]{accent-color:#f59e0b;width:15px;height:15px;border-radius:4px !important;cursor:pointer}
+input[type=checkbox]:not(.switch-input){accent-color:#f59e0b;width:15px;height:15px;border-radius:4px !important;cursor:pointer}
+
+.switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;color:var(--text-dim2);font-size:.78rem;font-weight:500}
+.switch-input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.switch-slider{position:relative;display:inline-block;width:44px;height:26px;border-radius:999px;background:rgba(255,255,255,.14);
+  border:1px solid rgba(255,255,255,.08);box-shadow:inset 0 1px 2px rgba(0,0,0,.2);transition:background .2s,border-color .2s,box-shadow .2s;flex-shrink:0}
+.switch-slider::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:999px;background:#fff;
+  box-shadow:0 3px 12px rgba(0,0,0,.28);transition:transform .22s cubic-bezier(.4,0,.2,1),box-shadow .2s}
+.switch:hover .switch-slider{border-color:var(--border-hover)}
+.switch-input:focus-visible + .switch-slider{box-shadow:0 0 0 3px rgba(245,158,11,.18)}
+.switch-input:checked + .switch-slider{background:linear-gradient(135deg,#14b8a6,#22c55e);border-color:rgba(34,197,94,.38);
+  box-shadow:0 0 0 4px rgba(34,197,94,.12)}
+.switch-input:checked + .switch-slider::after{transform:translateX(18px)}
+.switch-group{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.switch-stack{display:flex;flex-direction:column;gap:10px}
+.switch-text{line-height:1.2}
+html.light .switch-slider{background:#d7dbe2;border-color:rgba(0,0,0,.1);box-shadow:inset 0 1px 2px rgba(255,255,255,.65)}
+html.light .switch-input:checked + .switch-slider{background:linear-gradient(135deg,#14b8a6,#22c55e);border-color:rgba(13,148,136,.35);
+  box-shadow:0 0 0 4px rgba(20,184,166,.12)}
 
 .tab-btn{position:relative;color:var(--text-dim);transition:color .2s}
 .tab-btn:hover{color:var(--text-dim2)}
