@@ -1987,7 +1987,7 @@ async fn trigger_schedule_handler(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let cfg = state.config.read().await;
-    let schedule = cfg
+    let initial_schedule = cfg
         .schedule
         .iter()
         .find(|s| s.name == name)
@@ -2003,31 +2003,45 @@ async fn trigger_schedule_handler(
 
     let state_clone = state.clone();
     let db = state.run_history_db.clone();
+    let schedule_name = name.clone();
 
     tokio::spawn(async move {
         // 手动触发的批次循环：只检查 cancel_flag，不检查时间窗口
         crate::log_broadcast::broadcast_log(&format!(
             "[手动触发] {} 批次循环开始 (每批 {} 个, 间隔 {} 分钟)",
-            schedule.name, schedule.target_count, schedule.batch_interval_mins
+            schedule_name, initial_schedule.target_count, initial_schedule.batch_interval_mins
         ));
 
         loop {
             if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 crate::log_broadcast::broadcast_log(&format!(
                     "[手动触发] {} 已停止",
-                    schedule.name
+                    schedule_name
                 ));
                 break;
             }
+
+            let config_snapshot = state_clone.config.read().await.clone();
+            let Some(schedule) = config_snapshot
+                .schedule
+                .iter()
+                .find(|s| s.name == schedule_name)
+                .cloned()
+            else {
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[手动触发] {} 已停止（计划已删除）",
+                    schedule_name
+                ));
+                break;
+            };
 
             let batch_num = batch_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             next_batch_ts.store(0, std::sync::atomic::Ordering::Relaxed);
             crate::log_broadcast::broadcast_log(&format!(
                 "[手动触发] {} 开始第 {} 批次",
-                schedule.name, batch_num
+                schedule_name, batch_num
             ));
 
-            let config_snapshot = state_clone.config.read().await.clone();
             let runner = match build_workflow_runner(
                 &config_snapshot,
                 state_clone.proxy_file.as_deref(),
@@ -2039,7 +2053,7 @@ async fn trigger_schedule_handler(
                 Err(e) => {
                     crate::log_broadcast::broadcast_log(&format!(
                         "[手动触发] 构建 runner 失败 ({}): {e}",
-                        schedule.name
+                        schedule_name
                     ));
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                     continue;
@@ -2059,13 +2073,13 @@ async fn trigger_schedule_handler(
                 Ok(report) => {
                     crate::log_broadcast::broadcast_log(&format!(
                         "[手动触发] {} 第 {} 批完成 | S2A: {} | 耗时: {:.1}s",
-                        schedule.name, batch_num, report.total_s2a_ok, report.elapsed_secs
+                        schedule_name, batch_num, report.total_s2a_ok, report.elapsed_secs
                     ));
                 }
                 Err(e) => {
                     crate::log_broadcast::broadcast_log(&format!(
                         "[手动触发] {} 第 {} 批失败: {e:#}",
-                        schedule.name, batch_num
+                        schedule_name, batch_num
                     ));
                     if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
@@ -2074,30 +2088,44 @@ async fn trigger_schedule_handler(
             }
 
             // 批次间等待
-            let total_wait = std::time::Duration::from_secs(schedule.batch_interval_mins * 60);
+            let wait_secs = schedule.batch_interval_mins.saturating_mul(60);
+            let total_wait = std::time::Duration::from_secs(wait_secs);
             let check_interval = tokio::time::Duration::from_secs(5);
             let mut elapsed = std::time::Duration::ZERO;
+            let mut should_continue = true;
 
-            let next_ts = chrono::Utc::now().timestamp() as u64 + schedule.batch_interval_mins * 60;
+            let next_ts = chrono::Utc::now().timestamp() as u64 + wait_secs;
             next_batch_ts.store(next_ts, std::sync::atomic::Ordering::Relaxed);
 
             while elapsed < total_wait {
                 if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    should_continue = false;
+                    break;
+                }
+                if crate::scheduler::load_schedule_config(&state_clone, &schedule_name)
+                    .await
+                    .is_none()
+                {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[手动触发] {} 已停止（等待期间计划已删除）",
+                        schedule_name
+                    ));
+                    should_continue = false;
                     break;
                 }
                 tokio::time::sleep(check_interval).await;
                 elapsed += std::time::Duration::from_secs(5);
             }
 
-            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) || !should_continue {
                 break;
             }
         }
 
-        state_clone.scheduler_state.remove(&schedule.name).await;
+        state_clone.scheduler_state.remove(&schedule_name).await;
         crate::log_broadcast::broadcast_log(&format!(
             "[手动触发] {} 批次循环结束（共 {} 批）",
-            schedule.name,
+            schedule_name,
             batch_counter.load(std::sync::atomic::Ordering::Relaxed)
         ));
     });
