@@ -2165,6 +2165,79 @@ async fn trigger_schedule_handler(
     ))
 }
 
+/// 运行一次：只执行一个批次，完成即返回，不进入循环
+async fn run_once_schedule_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let schedule = cfg
+        .schedule
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("定时计划不存在: {name}")))?
+        .clone();
+    let config_snapshot = cfg.clone();
+    drop(cfg);
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[运行一次] {} 开始执行单批次 (目标 {} 个)",
+        name, schedule.target_count
+    ));
+
+    let runner = build_workflow_runner(
+        &config_snapshot,
+        state.proxy_file.as_deref(),
+        schedule.use_chatgpt_mail,
+    )
+    .await
+    .map_err(|e| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("构建 runner 失败: {e}"),
+        )
+    })?;
+
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let result = crate::distribution::run_distribution(
+        &runner,
+        &config_snapshot,
+        &schedule,
+        &state.run_history_db,
+        "run-once",
+        cancel_flag,
+    )
+    .await;
+
+    match result {
+        Ok(report) => {
+            crate::log_broadcast::broadcast_log(&format!(
+                "[运行一次] {} 完成 | 注册: {}/{} | RT: {}/{} | S2A: {}/{} | 耗时: {:.1}s",
+                name,
+                report.registered_ok,
+                report.registered_ok + report.registered_failed,
+                report.rt_ok,
+                report.rt_ok + report.rt_failed,
+                report.total_s2a_ok,
+                report.total_s2a_ok + report.total_s2a_failed,
+                report.elapsed_secs
+            ));
+            Ok(Json(report))
+        }
+        Err(e) => {
+            crate::log_broadcast::broadcast_log(&format!(
+                "[运行一次] {} 执行失败: {e:#}",
+                name
+            ));
+            Err(error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("执行失败: {e}"),
+            ))
+        }
+    }
+}
+
 /// 停止一个正在运行的计划
 async fn stop_schedule_handler(
     State(state): State<AppState>,
@@ -2456,6 +2529,10 @@ pub async fn start_server(
         .route(
             "/api/schedules/{name}/trigger",
             post(trigger_schedule_handler),
+        )
+        .route(
+            "/api/schedules/{name}/run-once",
+            post(run_once_schedule_handler),
         )
         .route("/api/schedules/{name}/stop", post(stop_schedule_handler))
         // Run history

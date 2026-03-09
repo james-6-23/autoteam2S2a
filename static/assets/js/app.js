@@ -768,6 +768,7 @@ async function loadSchedules(){
     const dt=s.distribution.map(d=>`${d.team}:${d.percent}%`).join(' / ');
     const logModeTxt=scheduleLogModeText(s.register_log_mode);
     const perfModeTxt=schedulePerfModeText(s.register_perf_mode);
+    const runOnceBtn=s.running?'':`<button id="run-once-${s.name}" onclick="runOnceSchedule('${esc(s.name)}')" class="btn btn-ghost text-xs py-1 px-2">运行一次</button>`;
     const startBtn=s.running
       ?`<button onclick="stopSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">停止</button>`
       :`<button onclick="triggerSchedule('${s.name}')" class="btn btn-ghost text-xs py-1 px-2">启动</button>`;
@@ -791,6 +792,7 @@ async function loadSchedules(){
           <code class="text-xs font-mono text-dim px-2 py-0.5 rounded" style="background:var(--ghost)">${s.start_time} - ${s.end_time}</code>
         </div>
         <div class="flex items-center gap-1">
+          ${runOnceBtn}
           ${startBtn}
           <button onclick="editSchedule('${esc(s.name)}')" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
           <button onclick="toggleSchedule('${esc(s.name)}')" class="btn btn-ghost text-xs py-1 px-2">${s.enabled?'禁用':'启用'}</button>
@@ -849,6 +851,18 @@ async function submitAddSchedule(){
   try{await api('/api/schedules',{method:'POST',body});toast(`${name} 已创建`,'success');hideAddScheduleForm();document.getElementById('sched-name').value='';loadSchedules()}catch{}
 }
 async function toggleSchedule(n){try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/toggle`,{method:'POST'});toast(d.message,'success');loadSchedules()}catch{}}
+async function runOnceSchedule(n){
+  if(!confirm(`运行一次 "${n}"？将执行单个批次（注册+RT+S2A），完成后自动结束。`))return;
+  const btn=document.getElementById(`run-once-${n}`);
+  if(btn){btn.disabled=true;btn.textContent='执行中...';}
+  try{
+    const d=await api(`/api/schedules/${encodeURIComponent(n)}/run-once`,{method:'POST'});
+    toast(`运行一次完成 | RT: ${d.rt_ok} | S2A: ${d.total_s2a_ok} | 耗时: ${d.elapsed_secs.toFixed(1)}s`,'success');
+  }catch{}finally{
+    if(btn){btn.disabled=false;btn.textContent='运行一次';}
+    loadSchedules();
+  }
+}
 async function triggerSchedule(n){if(!confirm(`手动启动 "${n}" 的批次循环?`))return;try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/trigger`,{method:'POST'});toast(d.message,'success');startSchedulePoll();loadSchedules()}catch{}}
 async function stopSchedule(n){if(!confirm(`停止 "${n}"?`))return;try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/stop`,{method:'POST'});toast(d.message,'success');loadSchedules()}catch{}}
 async function deleteSchedule(n){if(!confirm(`删除 "${n}"?`))return;try{await api(`/api/schedules/${encodeURIComponent(n)}`,{method:'DELETE'});toast(`${n} 已删除`,'success');loadSchedules()}catch{}}
