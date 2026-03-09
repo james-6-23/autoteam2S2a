@@ -196,6 +196,13 @@ async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
                         .await;
                     });
                 }
+            } else if !in_window && is_active {
+                // 时间窗口已结束但计划仍在运行（兜底：覆盖手动触发等未自行退出的情况）
+                broadcast_log(&format!(
+                    "[调度器] 时间窗口已结束，强制停止计划: {} ({}-{})",
+                    schedule_cfg.name, schedule_cfg.start_time, schedule_cfg.end_time
+                ));
+                state.scheduler_state.stop(&schedule_cfg.name).await;
             }
         }
     }

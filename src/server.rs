@@ -2034,6 +2034,20 @@ async fn trigger_schedule_handler(
                 ));
                 break;
             };
+            if !schedule.enabled {
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[手动触发] {} 已停止（计划已禁用）",
+                    schedule_name
+                ));
+                break;
+            }
+            if !crate::scheduler::is_in_window(&schedule.start_time, &schedule.end_time) {
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[手动触发] {} 时间窗口结束，自动停止",
+                    schedule_name
+                ));
+                break;
+            }
 
             let batch_num = batch_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             next_batch_ts.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2102,12 +2116,25 @@ async fn trigger_schedule_handler(
                     should_continue = false;
                     break;
                 }
-                if crate::scheduler::load_schedule_config(&state_clone, &schedule_name)
-                    .await
-                    .is_none()
-                {
+                let Some(latest_schedule) = crate::scheduler::load_schedule_config(&state_clone, &schedule_name).await else {
                     crate::log_broadcast::broadcast_log(&format!(
                         "[手动触发] {} 已停止（等待期间计划已删除）",
+                        schedule_name
+                    ));
+                    should_continue = false;
+                    break;
+                };
+                if !latest_schedule.enabled {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[手动触发] {} 已停止（等待期间计划已禁用）",
+                        schedule_name
+                    ));
+                    should_continue = false;
+                    break;
+                }
+                if !crate::scheduler::is_in_window(&latest_schedule.start_time, &latest_schedule.end_time) {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[手动触发] {} 等待期间时间窗口结束",
                         schedule_name
                     ));
                     should_continue = false;
