@@ -768,7 +768,6 @@ async function loadSchedules(){
     const dt=s.distribution.map(d=>`${d.team}:${d.percent}%`).join(' / ');
     const logModeTxt=scheduleLogModeText(s.register_log_mode);
     const perfModeTxt=schedulePerfModeText(s.register_perf_mode);
-    const runOnceBtn=s.running?'':`<button id="run-once-${s.name}" onclick="runOnceSchedule('${esc(s.name)}')" class="btn btn-ghost text-xs py-1 px-2">运行一次</button>`;
     const startBtn=s.running
       ?`<button onclick="stopSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">停止</button>`
       :`<button onclick="triggerSchedule('${s.name}')" class="btn btn-ghost text-xs py-1 px-2">启动</button>`;
@@ -784,6 +783,7 @@ async function loadSchedules(){
       </div>`;
     }
     const esc=n=>n.replace(/'/g,"\\'");
+    const runOnceBtn=s.running?'':`<button id="run-once-${esc(s.name)}" onclick="runOnceSchedule('${esc(s.name)}')" class="btn btn-ghost text-xs py-1 px-2">运行一次</button>`;
     return `<div class="row-item" style="padding:10px 14px">
       <div class="flex items-center justify-between mb-1.5">
         <div class="flex items-center gap-2.5">
