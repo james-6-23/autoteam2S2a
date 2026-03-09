@@ -763,15 +763,16 @@ async function loadSchedules(){
   try{const d=await api('/api/schedules');const el=document.getElementById('schedule-list');
   if(!d.schedules||!d.schedules.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无定时计划</p>';return}
   el.innerHTML=d.schedules.map(s=>{
+    const isCooldown=!!s.cooldown;
     const isPending=!!s.pending;
-    const bc=s.running?'badge-run':isPending?'badge-warn':s.enabled?'badge-ok':'badge-off';
-    const bt=s.running?'运行中':isPending?'等待中':s.enabled?'已启用':'已禁用';
+    const bc=s.running?'badge-run':isCooldown?'badge-warn':isPending?'badge-warn':s.enabled?'badge-ok':'badge-off';
+    const bt=s.running?'运行中':isCooldown?'准备中':isPending?'等待中':s.enabled?'已启用':'已禁用';
     const dt=s.distribution.map(d=>`${d.team}:${d.percent}%`).join(' / ');
     const logModeTxt=scheduleLogModeText(s.register_log_mode);
     const perfModeTxt=schedulePerfModeText(s.register_perf_mode);
     const esc=n=>String(n).replace(/'/g,"\\'");
     const safeName=esc(s.name);
-    const startBtn=s.running
+    const startBtn=(s.running||isCooldown)
       ?`<button onclick="stopSchedule('${safeName}')" class="btn btn-danger text-xs py-1 px-2">停止</button>`
       :isPending
         ?`<button onclick="stopSchedule('${safeName}')" class="btn btn-danger text-xs py-1 px-2">取消等待</button>`
@@ -780,10 +781,18 @@ async function loadSchedules(){
     let runHtml='';
     if(s.running&&s.run_info){
       const ri=s.run_info;
-      const batchTxt=ri.batch_num>0?`第 ${ri.batch_num} 批`:'准备中';
+      const batchTxt=ri.batch_num>0?`第 ${ri.batch_num} 批`:'执行中';
       const nextTxt=ri.next_batch_at?`下批 ${ri.next_batch_at}`:'执行中...';
       runHtml=`<div class="flex items-center gap-3 mt-1.5 text-xs">
         <span class="text-amber-400 font-medium">${batchTxt}</span>
+        <span class="text-dim font-mono">${nextTxt}</span>
+      </div>`;
+    }else if(isCooldown&&s.run_info){
+      const ri=s.run_info;
+      const prepTxt=ri.batch_num>0?`第 ${ri.batch_num} 批后冷却中`:'准备中';
+      const nextTxt=ri.next_batch_at?`下批 ${ri.next_batch_at}`:'等待调度...';
+      runHtml=`<div class="flex items-center gap-3 mt-1.5 text-xs">
+        <span class="text-amber-400 font-medium">${prepTxt}</span>
         <span class="text-dim font-mono">${nextTxt}</span>
       </div>`;
     }else if(isPending&&s.pending_info){
@@ -794,7 +803,7 @@ async function loadSchedules(){
         <span class="text-dim font-mono">${sinceTxt}</span>
       </div>`;
     }
-    const runOnceBtn=(s.running||isPending)?'':`<button id="run-once-${safeName}" onclick="runOnceSchedule('${safeName}')" class="btn btn-ghost text-xs py-1 px-2">运行一次</button>`;
+    const runOnceBtn=(s.running||isPending||isCooldown)?'':`<button id="run-once-${safeName}" onclick="runOnceSchedule('${safeName}')" class="btn btn-ghost text-xs py-1 px-2">运行一次</button>`;
     return `<div class="row-item" style="padding:10px 14px">
       <div class="flex items-center justify-between mb-1.5">
         <div class="flex items-center gap-2.5">

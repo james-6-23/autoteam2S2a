@@ -1704,6 +1704,7 @@ struct ScheduleWithStatus {
     #[serde(flatten)]
     config: crate::config::ScheduleConfig,
     running: bool,
+    cooldown: bool,
     pending: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     run_info: Option<crate::scheduler::ScheduleRunInfo>,
@@ -1735,12 +1736,18 @@ async fn list_schedules_handler(State(state): State<AppState>) -> impl IntoRespo
 
     let mut schedules = Vec::with_capacity(schedule_configs.len());
     for config in schedule_configs {
-        let run_info = scheduler_snapshot.running.get(&config.name).cloned();
+        let run_info = scheduler_snapshot
+            .active
+            .get(&config.name)
+            .cloned()
+            .or_else(|| scheduler_snapshot.cooldown.get(&config.name).cloned());
         let pending_info = scheduler_snapshot.pending.get(&config.name).cloned();
-        let running = run_info.is_some();
+        let running = scheduler_snapshot.current_running.as_deref() == Some(config.name.as_str());
+        let cooldown = scheduler_snapshot.cooldown.contains_key(&config.name);
         let pending = pending_info.is_some();
         schedules.push(ScheduleWithStatus {
             running,
+            cooldown,
             pending,
             config,
             run_info,
@@ -2307,9 +2314,12 @@ async fn stop_schedule_handler(
         crate::scheduler::ScheduleStopOutcome::PendingCancelled => Ok(Json(MsgResponse {
             message: format!("定时计划 {name} 的等待已取消"),
         })),
+        crate::scheduler::ScheduleStopOutcome::CooldownCancelled => Ok(Json(MsgResponse {
+            message: format!("定时计划 {name} 的后续批次已取消"),
+        })),
         crate::scheduler::ScheduleStopOutcome::NotFound => Err(error_json(
             StatusCode::NOT_FOUND,
-            &format!("计划 {name} 未在运行或等待中"),
+            &format!("计划 {name} 未在运行、等待或准备中"),
         )),
     }
 }
