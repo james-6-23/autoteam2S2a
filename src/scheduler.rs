@@ -1,3 +1,4 @@
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -11,6 +12,8 @@ use crate::db::RunHistoryDb;
 use crate::log_broadcast::broadcast_log;
 use crate::server::AppState;
 
+const SCHEDULER_TICK_SECS: u64 = 5;
+
 // ─── Scheduler state ─────────────────────────────────────────────────────────
 
 struct ActiveEntry {
@@ -20,37 +23,80 @@ struct ActiveEntry {
     next_batch_ts: Arc<AtomicU64>,
 }
 
+struct PendingEntry {
+    pending_since_ts: u64,
+    blocked_by: Option<String>,
+}
+
 #[derive(Serialize, Clone)]
 pub struct ScheduleRunInfo {
     pub batch_num: u64,
     pub next_batch_at: Option<String>,
 }
 
-/// 跟踪当前活跃的定时计划（正在执行批次循环的计划）
+#[derive(Serialize, Clone)]
+pub struct SchedulePendingInfo {
+    pub pending_since: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct SchedulerSnapshot {
+    pub running: HashMap<String, ScheduleRunInfo>,
+    pub pending: HashMap<String, SchedulePendingInfo>,
+    pub current_running: Option<String>,
+}
+
+#[derive(Default)]
+struct SchedulerInner {
+    active: HashMap<String, ActiveEntry>,
+    pending: HashMap<String, PendingEntry>,
+    current_running: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ScheduleStartError {
+    AlreadyRunning,
+    Busy { running_name: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleStopOutcome {
+    RunningCancelled,
+    PendingCancelled,
+    NotFound,
+}
+
+/// 跟踪当前活跃的定时计划与等待中的计划。
 pub struct SchedulerState {
-    active: Mutex<HashMap<String, ActiveEntry>>,
+    inner: Mutex<SchedulerInner>,
 }
 
 impl SchedulerState {
     pub fn new() -> Self {
         Self {
-            active: Mutex::new(HashMap::new()),
+            inner: Mutex::new(SchedulerInner::default()),
         }
     }
 
-    /// 尝试启动一个计划。如果已在运行则返回 None。
+    /// 尝试启动一个计划。只允许一个计划占用全局运行槽位。
     pub async fn start(
         &self,
         name: &str,
-    ) -> Option<(Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>)> {
-        let mut active = self.active.lock().await;
-        if active.contains_key(name) {
-            return None;
+    ) -> Result<(Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>), ScheduleStartError> {
+        let mut inner = self.inner.lock().await;
+        if inner.active.contains_key(name) {
+            return Err(ScheduleStartError::AlreadyRunning);
         }
+        if let Some(running_name) = inner.current_running.clone() {
+            return Err(ScheduleStartError::Busy { running_name });
+        }
+
         let flag = Arc::new(AtomicBool::new(false));
         let batch_num = Arc::new(AtomicU64::new(0));
         let next_batch_ts = Arc::new(AtomicU64::new(0));
-        active.insert(
+        inner.active.insert(
             name.to_string(),
             ActiveEntry {
                 cancel_flag: flag.clone(),
@@ -58,54 +104,107 @@ impl SchedulerState {
                 next_batch_ts: next_batch_ts.clone(),
             },
         );
-        Some((flag, batch_num, next_batch_ts))
+        inner.pending.remove(name);
+        inner.current_running = Some(name.to_string());
+        Ok((flag, batch_num, next_batch_ts))
     }
 
-    /// 停止一个正在运行的计划
-    pub async fn stop(&self, name: &str) -> bool {
-        let active = self.active.lock().await;
-        if let Some(entry) = active.get(name) {
+    /// 标记一个计划处于等待中。等待开始时间只在首次进入时记录。
+    pub async fn mark_pending(&self, name: &str, blocked_by: Option<String>) -> bool {
+        let mut inner = self.inner.lock().await;
+        if inner.active.contains_key(name) {
+            return false;
+        }
+        let pending_since_ts = inner
+            .pending
+            .get(name)
+            .map(|entry| entry.pending_since_ts)
+            .unwrap_or_else(current_unix_ts);
+        inner.pending.insert(
+            name.to_string(),
+            PendingEntry {
+                pending_since_ts,
+                blocked_by,
+            },
+        );
+        true
+    }
+
+    /// 清理等待状态（计划禁用、出窗口或开始运行时调用）。
+    pub async fn clear_pending(&self, name: &str) -> bool {
+        self.inner.lock().await.pending.remove(name).is_some()
+    }
+
+    /// 停止一个正在运行或等待中的计划。
+    pub async fn stop(&self, name: &str) -> ScheduleStopOutcome {
+        let mut inner = self.inner.lock().await;
+        if let Some(entry) = inner.active.get(name) {
             entry.cancel_flag.store(true, Ordering::SeqCst);
-            true
-        } else {
-            false
+            return ScheduleStopOutcome::RunningCancelled;
+        }
+        if inner.pending.remove(name).is_some() {
+            return ScheduleStopOutcome::PendingCancelled;
+        }
+        ScheduleStopOutcome::NotFound
+    }
+
+    /// 从状态中移除（批次循环结束时调用）。
+    pub async fn remove(&self, name: &str) {
+        let mut inner = self.inner.lock().await;
+        inner.active.remove(name);
+        inner.pending.remove(name);
+        if inner.current_running.as_deref() == Some(name) {
+            inner.current_running = None;
         }
     }
 
-    /// 从活跃列表移除（批次循环结束时调用）
-    pub async fn remove(&self, name: &str) {
-        self.active.lock().await.remove(name);
-    }
-
-    /// 检查计划是否正在运行
-    pub async fn is_active(&self, name: &str) -> bool {
-        self.active.lock().await.contains_key(name)
-    }
-
-    /// 获取所有运行中计划的批次信息快照（单次加锁）
-    pub async fn snapshot(&self) -> HashMap<String, ScheduleRunInfo> {
-        let active = self.active.lock().await;
-        active
-            .iter()
-            .map(|(name, entry)| (name.clone(), Self::build_run_info(entry)))
-            .collect()
+    /// 获取运行中与等待中的计划快照。
+    pub async fn snapshot(&self) -> SchedulerSnapshot {
+        let inner = self.inner.lock().await;
+        SchedulerSnapshot {
+            running: inner
+                .active
+                .iter()
+                .map(|(name, entry)| (name.clone(), Self::build_run_info(entry)))
+                .collect(),
+            pending: inner
+                .pending
+                .iter()
+                .map(|(name, entry)| (name.clone(), Self::build_pending_info(entry)))
+                .collect(),
+            current_running: inner.current_running.clone(),
+        }
     }
 
     fn build_run_info(entry: &ActiveEntry) -> ScheduleRunInfo {
         let ts = entry.next_batch_ts.load(Ordering::Relaxed);
-        let next = if ts > 0 {
-            chrono::DateTime::from_timestamp(ts as i64, 0).map(|dt| {
-                let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
-                dt.with_timezone(&tz).format("%H:%M:%S").to_string()
-            })
-        } else {
-            None
-        };
         ScheduleRunInfo {
             batch_num: entry.batch_num.load(Ordering::Relaxed),
-            next_batch_at: next,
+            next_batch_at: format_beijing_time(ts),
         }
     }
+
+    fn build_pending_info(entry: &PendingEntry) -> SchedulePendingInfo {
+        SchedulePendingInfo {
+            pending_since: format_beijing_time(entry.pending_since_ts)
+                .unwrap_or_else(|| "--:--:--".to_string()),
+            blocked_by: entry.blocked_by.clone(),
+        }
+    }
+}
+
+fn current_unix_ts() -> u64 {
+    chrono::Utc::now().timestamp().max(0) as u64
+}
+
+fn format_beijing_time(ts: u64) -> Option<String> {
+    if ts == 0 {
+        return None;
+    }
+    chrono::DateTime::from_timestamp(ts as i64, 0).map(|dt| {
+        let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        dt.with_timezone(&tz).format("%H:%M:%S").to_string()
+    })
 }
 
 // ─── Time window check ──────────────────────────────────────────────────────
@@ -152,59 +251,157 @@ pub fn start_scheduler(state: AppState, db: Arc<RunHistoryDb>) {
     });
 }
 
+fn compare_schedule_priority(
+    left: &(usize, &ScheduleConfig),
+    right: &(usize, &ScheduleConfig),
+) -> CmpOrdering {
+    left.1
+        .priority
+        .cmp(&right.1.priority)
+        .then_with(|| right.0.cmp(&left.0))
+}
+
+fn pick_startable_schedule(schedules: &[ScheduleConfig]) -> Option<(usize, &ScheduleConfig)> {
+    schedules
+        .iter()
+        .enumerate()
+        .filter(|(_, schedule)| {
+            schedule.enabled && is_in_window(&schedule.start_time, &schedule.end_time)
+        })
+        .max_by(compare_schedule_priority)
+}
+
+fn spawn_scheduled_batch_loop(
+    state: &AppState,
+    db: &Arc<RunHistoryDb>,
+    schedule_name: String,
+    cancel_flag: Arc<AtomicBool>,
+    batch_num: Arc<AtomicU64>,
+    next_ts: Arc<AtomicU64>,
+) {
+    let state_clone = state.clone();
+    let db_clone = db.clone();
+    tokio::spawn(async move {
+        run_batch_loop(
+            state_clone,
+            db_clone,
+            schedule_name,
+            cancel_flag,
+            batch_num,
+            next_ts,
+        )
+        .await;
+    });
+}
+
 async fn scheduler_loop(state: AppState, db: Arc<RunHistoryDb>) {
-    broadcast_log("[调度器] 后台调度器已启动，每 30 秒检查时间窗口");
+    broadcast_log(&format!(
+        "[调度器] 后台调度器已启动，每 {} 秒检查时间窗口",
+        SCHEDULER_TICK_SECS
+    ));
 
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-
-        let cfg = state.config.read().await;
-        let schedules = cfg.schedule.clone();
-        drop(cfg);
+        let schedules = {
+            let cfg = state.config.read().await;
+            cfg.schedule.clone()
+        };
 
         for schedule_cfg in &schedules {
-            if !schedule_cfg.enabled {
-                continue;
-            }
-
-            let in_window = is_in_window(&schedule_cfg.start_time, &schedule_cfg.end_time);
-            let is_active = state.scheduler_state.is_active(&schedule_cfg.name).await;
-
-            if in_window && !is_active {
-                // 进入时间窗口且未运行 → 启动批次循环
-                if let Some((cancel_flag, batch_num, next_ts)) =
-                    state.scheduler_state.start(&schedule_cfg.name).await
-                {
-                    broadcast_log(&format!(
-                        "[调度器] 进入时间窗口，启动计划: {} ({}-{})",
-                        schedule_cfg.name, schedule_cfg.start_time, schedule_cfg.end_time
-                    ));
-
-                    let state_clone = state.clone();
-                    let db_clone = db.clone();
-                    let schedule_name = schedule_cfg.name.clone();
-
-                    tokio::spawn(async move {
-                        run_batch_loop(
-                            state_clone,
-                            db_clone,
-                            schedule_name,
-                            cancel_flag,
-                            batch_num,
-                            next_ts,
-                        )
-                        .await;
-                    });
-                }
-            } else if !in_window && is_active {
-                // 时间窗口已结束但计划仍在运行（兜底：覆盖手动触发等未自行退出的情况）
-                broadcast_log(&format!(
-                    "[调度器] 时间窗口已结束，强制停止计划: {} ({}-{})",
-                    schedule_cfg.name, schedule_cfg.start_time, schedule_cfg.end_time
-                ));
-                state.scheduler_state.stop(&schedule_cfg.name).await;
+            if !schedule_cfg.enabled
+                || !is_in_window(&schedule_cfg.start_time, &schedule_cfg.end_time)
+            {
+                state
+                    .scheduler_state
+                    .clear_pending(&schedule_cfg.name)
+                    .await;
             }
         }
+
+        let snapshot = state.scheduler_state.snapshot().await;
+        if let Some(running_name) = snapshot.current_running.clone() {
+            match schedules
+                .iter()
+                .find(|schedule| schedule.name == running_name)
+            {
+                Some(schedule_cfg)
+                    if schedule_cfg.enabled
+                        && is_in_window(&schedule_cfg.start_time, &schedule_cfg.end_time) => {}
+                Some(schedule_cfg) => {
+                    broadcast_log(&format!(
+                        "[调度器] 时间窗口已结束，停止计划: {} ({}-{})",
+                        schedule_cfg.name, schedule_cfg.start_time, schedule_cfg.end_time
+                    ));
+                    let _ = state.scheduler_state.stop(&running_name).await;
+                }
+                None => {
+                    broadcast_log(&format!("[调度器] 计划已删除，停止计划: {}", running_name));
+                    let _ = state.scheduler_state.stop(&running_name).await;
+                }
+            }
+        }
+
+        let snapshot = state.scheduler_state.snapshot().await;
+        if let Some(running_name) = snapshot.current_running.clone() {
+            for schedule_cfg in &schedules {
+                if !schedule_cfg.enabled
+                    || !is_in_window(&schedule_cfg.start_time, &schedule_cfg.end_time)
+                    || schedule_cfg.name == running_name
+                {
+                    continue;
+                }
+                state
+                    .scheduler_state
+                    .mark_pending(&schedule_cfg.name, Some(running_name.clone()))
+                    .await;
+            }
+        } else if let Some((selected_index, selected_schedule)) =
+            pick_startable_schedule(&schedules)
+        {
+            let blocker_name = match state.scheduler_state.start(&selected_schedule.name).await {
+                Ok((cancel_flag, batch_num, next_ts)) => {
+                    broadcast_log(&format!(
+                        "[调度器] 进入时间窗口，启动计划: {} ({}-{}, 优先级 {})",
+                        selected_schedule.name,
+                        selected_schedule.start_time,
+                        selected_schedule.end_time,
+                        selected_schedule.priority
+                    ));
+                    spawn_scheduled_batch_loop(
+                        &state,
+                        &db,
+                        selected_schedule.name.clone(),
+                        cancel_flag,
+                        batch_num,
+                        next_ts,
+                    );
+                    selected_schedule.name.clone()
+                }
+                Err(ScheduleStartError::Busy { running_name }) => running_name,
+                Err(ScheduleStartError::AlreadyRunning) => selected_schedule.name.clone(),
+            };
+
+            for (index, schedule_cfg) in schedules.iter().enumerate() {
+                if index == selected_index
+                    || !schedule_cfg.enabled
+                    || !is_in_window(&schedule_cfg.start_time, &schedule_cfg.end_time)
+                {
+                    continue;
+                }
+                state
+                    .scheduler_state
+                    .mark_pending(&schedule_cfg.name, Some(blocker_name.clone()))
+                    .await;
+            }
+        } else {
+            for schedule_cfg in &schedules {
+                state
+                    .scheduler_state
+                    .clear_pending(&schedule_cfg.name)
+                    .await;
+            }
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(SCHEDULER_TICK_SECS)).await;
     }
 }
 
@@ -456,4 +653,70 @@ async fn run_batch_loop(
         schedule_name,
         batch_counter.load(Ordering::Relaxed)
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_schedule(name: &str, priority: u32) -> ScheduleConfig {
+        ScheduleConfig {
+            name: name.to_string(),
+            start_time: "00:00".to_string(),
+            end_time: "23:59".to_string(),
+            target_count: 10,
+            batch_interval_mins: 30,
+            priority,
+            enabled: true,
+            register_workers: None,
+            rt_workers: None,
+            rt_retries: None,
+            push_s2a: true,
+            use_chatgpt_mail: false,
+            free_mode: false,
+            register_log_mode: None,
+            register_perf_mode: None,
+            distribution: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pick_startable_schedule_prefers_higher_priority() {
+        let schedules = vec![make_schedule("low", 10), make_schedule("high", 200)];
+        let selected = pick_startable_schedule(&schedules).unwrap().1;
+        assert_eq!(selected.name, "high");
+    }
+
+    #[test]
+    fn pick_startable_schedule_keeps_config_order_on_tie() {
+        let schedules = vec![make_schedule("first", 100), make_schedule("second", 100)];
+        let selected = pick_startable_schedule(&schedules).unwrap().1;
+        assert_eq!(selected.name, "first");
+    }
+
+    #[tokio::test]
+    async fn scheduler_state_enforces_single_running_slot_and_pending_cancel() {
+        let state = SchedulerState::new();
+
+        assert!(matches!(state.start("alpha").await, Ok(_)));
+        assert!(matches!(
+            state.start("beta").await,
+            Err(ScheduleStartError::Busy { running_name }) if running_name == "alpha"
+        ));
+
+        assert!(state.mark_pending("beta", Some("alpha".to_string())).await);
+
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.current_running.as_deref(), Some("alpha"));
+        assert!(snapshot.pending.contains_key("beta"));
+
+        assert_eq!(
+            state.stop("beta").await,
+            ScheduleStopOutcome::PendingCancelled
+        );
+        assert_eq!(
+            state.stop("alpha").await,
+            ScheduleStopOutcome::RunningCancelled
+        );
+    }
 }

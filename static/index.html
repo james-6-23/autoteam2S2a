@@ -437,6 +437,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">结束时间 *</label><input id="sched-end" class="field-input" type="time" value="14:00"></div>
       <div><label class="field-label">每批RT目标 *</label><input id="sched-target" type="number" min="1" value="50" class="field-input"></div>
       <div><label class="field-label">批次间隔(分)</label><input id="sched-interval" type="number" min="1" value="30" class="field-input"></div>
+      <div><label class="field-label">优先级</label><input id="sched-priority" type="number" min="0" value="100" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="sched-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
@@ -494,6 +495,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">结束时间</label><input id="es-end" class="field-input" type="time"></div>
       <div><label class="field-label">每批RT目标</label><input id="es-target" type="number" min="1" class="field-input"></div>
       <div><label class="field-label">批次间隔(分)</label><input id="es-interval" type="number" min="1" class="field-input"></div>
+      <div><label class="field-label">优先级</label><input id="es-priority" type="number" min="0" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="es-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>

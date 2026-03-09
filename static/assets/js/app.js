@@ -763,14 +763,19 @@ async function loadSchedules(){
   try{const d=await api('/api/schedules');const el=document.getElementById('schedule-list');
   if(!d.schedules||!d.schedules.length){el.innerHTML='<p class="text-sm text-dim text-center py-8">暂无定时计划</p>';return}
   el.innerHTML=d.schedules.map(s=>{
-    const bc=s.running?'badge-run':s.enabled?'badge-ok':'badge-off';
-    const bt=s.running?'运行中':s.enabled?'已启用':'已禁用';
+    const isPending=!!s.pending;
+    const bc=s.running?'badge-run':isPending?'badge-warn':s.enabled?'badge-ok':'badge-off';
+    const bt=s.running?'运行中':isPending?'等待中':s.enabled?'已启用':'已禁用';
     const dt=s.distribution.map(d=>`${d.team}:${d.percent}%`).join(' / ');
     const logModeTxt=scheduleLogModeText(s.register_log_mode);
     const perfModeTxt=schedulePerfModeText(s.register_perf_mode);
+    const esc=n=>String(n).replace(/'/g,"\\'");
+    const safeName=esc(s.name);
     const startBtn=s.running
-      ?`<button onclick="stopSchedule('${s.name}')" class="btn btn-danger text-xs py-1 px-2">停止</button>`
-      :`<button onclick="triggerSchedule('${s.name}')" class="btn btn-ghost text-xs py-1 px-2">启动</button>`;
+      ?`<button onclick="stopSchedule('${safeName}')" class="btn btn-danger text-xs py-1 px-2">停止</button>`
+      :isPending
+        ?`<button onclick="stopSchedule('${safeName}')" class="btn btn-danger text-xs py-1 px-2">取消等待</button>`
+        :`<button onclick="triggerSchedule('${safeName}')" class="btn btn-ghost text-xs py-1 px-2">启动</button>`;
     // 运行信息
     let runHtml='';
     if(s.running&&s.run_info){
@@ -781,9 +786,15 @@ async function loadSchedules(){
         <span class="text-amber-400 font-medium">${batchTxt}</span>
         <span class="text-dim font-mono">${nextTxt}</span>
       </div>`;
+    }else if(isPending&&s.pending_info){
+      const blockedBy=s.pending_info.blocked_by?`等待 ${s.pending_info.blocked_by}`:'等待调度槽位';
+      const sinceTxt=s.pending_info.pending_since?`自 ${s.pending_info.pending_since}`:'等待中...';
+      runHtml=`<div class="flex items-center gap-3 mt-1.5 text-xs">
+        <span class="text-amber-400 font-medium">${blockedBy}</span>
+        <span class="text-dim font-mono">${sinceTxt}</span>
+      </div>`;
     }
-    const esc=n=>n.replace(/'/g,"\\'");
-    const runOnceBtn=s.running?'':`<button id="run-once-${esc(s.name)}" onclick="runOnceSchedule('${esc(s.name)}')" class="btn btn-ghost text-xs py-1 px-2">运行一次</button>`;
+    const runOnceBtn=(s.running||isPending)?'':`<button id="run-once-${safeName}" onclick="runOnceSchedule('${safeName}')" class="btn btn-ghost text-xs py-1 px-2">运行一次</button>`;
     return `<div class="row-item" style="padding:10px 14px">
       <div class="flex items-center justify-between mb-1.5">
         <div class="flex items-center gap-2.5">
@@ -802,6 +813,7 @@ async function loadSchedules(){
       <div class="flex items-center gap-4 text-xs text-dim flex-wrap">
         <span>每批RT目标 <span class="font-mono text-dim-2">${s.target_count}</span></span>
         <span>间隔 <span class="font-mono text-dim-2">${s.batch_interval_mins}分</span></span>
+        <span>优先级 <span class="font-mono text-dim-2">${s.priority??100}</span></span>
         <span>注册 <span class="font-mono text-dim-2">${s.register_workers||'默认'}</span></span>
         <span>RT <span class="font-mono text-dim-2">${s.rt_workers||'默认'}</span></span>
         <span>邮箱 <span class="text-dim-2">${s.use_chatgpt_mail?'chatgpt':'kyx'}</span></span>
@@ -830,6 +842,8 @@ function addDistRow(){
 }
 async function submitAddSchedule(){
   const name=document.getElementById('sched-name').value.trim(),startTime=document.getElementById('sched-start').value,endTime=document.getElementById('sched-end').value,target=parseInt(document.getElementById('sched-target').value),interval=parseInt(document.getElementById('sched-interval').value)||30;
+  const priorityValue=parseInt(document.getElementById('sched-priority').value,10);
+  const priority=Number.isNaN(priorityValue)?100:priorityValue;
   if(!name||!startTime||!endTime||!target){toast('请填写必填字段','error');return}
   if(startTime===endTime){toast('开始和结束时间不能相同','error');return}
   const distribution=[];
@@ -841,7 +855,7 @@ async function submitAddSchedule(){
     const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
     if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
   }
-  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,use_chatgpt_mail:document.getElementById('sched-mail').value==='true',free_mode:isFree};
+  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,use_chatgpt_mail:document.getElementById('sched-mail').value==='true',free_mode:isFree};
   const addLogMode=document.getElementById('sched-reg-log-mode').value;
   const addPerfMode=normalizeRegisterPerfMode(document.getElementById('sched-reg-perf-mode').value);
   body.register_log_mode=addLogMode==='inherit'?null:addLogMode;
@@ -879,6 +893,7 @@ async function editSchedule(name){
   document.getElementById('es-end').value=s.end_time;
   document.getElementById('es-target').value=s.target_count;
   document.getElementById('es-interval').value=s.batch_interval_mins;
+  document.getElementById('es-priority').value=s.priority??100;
   document.getElementById('es-reg-workers').value=s.register_workers||'';
   document.getElementById('es-rt-workers').value=s.rt_workers||'';
   document.getElementById('es-rt-retries').value=s.rt_retries||'';
@@ -905,6 +920,8 @@ function addEditDistRow(team,pct){
 async function submitEditSchedule(){
   if(!editSchedName) return;
   const newName=document.getElementById('es-name').value.trim();
+  const priorityValue=parseInt(document.getElementById('es-priority').value,10);
+  const priority=Number.isNaN(priorityValue)?100:priorityValue;
   if(!newName){toast('名称不能为空','error');return}
   const body={
     name:newName,
@@ -912,6 +929,7 @@ async function submitEditSchedule(){
     end_time:document.getElementById('es-end').value,
     target_count:parseInt(document.getElementById('es-target').value),
     batch_interval_mins:parseInt(document.getElementById('es-interval').value)||30,
+    priority,
     push_s2a:document.getElementById('es-push-s2a').checked,
     use_chatgpt_mail:document.getElementById('es-mail').value==='true',
     free_mode:document.getElementById('es-mode').value==='free',

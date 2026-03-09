@@ -285,6 +285,9 @@ pub struct ScheduleConfig {
     pub batch_interval_mins: u64,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 调度优先级（值越大越优先）
+    #[serde(default = "default_schedule_priority_serde")]
+    pub priority: u32,
     pub register_workers: Option<usize>,
     pub rt_workers: Option<usize>,
     pub rt_retries: Option<usize>,
@@ -305,6 +308,10 @@ pub struct ScheduleConfig {
 
 fn default_batch_interval() -> u64 {
     30
+}
+
+fn default_schedule_priority_serde() -> u32 {
+    100
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

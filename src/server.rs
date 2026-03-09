@@ -1641,6 +1641,8 @@ struct CreateScheduleRequest {
     batch_interval_mins: u64,
     #[serde(default = "default_true_serde")]
     enabled: bool,
+    #[serde(default = "default_schedule_priority_serde")]
+    priority: u32,
     register_workers: Option<usize>,
     rt_workers: Option<usize>,
     rt_retries: Option<usize>,
@@ -1665,12 +1667,17 @@ fn default_batch_interval_serde() -> u64 {
     30
 }
 
+fn default_schedule_priority_serde() -> u32 {
+    100
+}
+
 #[derive(Deserialize)]
 struct UpdateScheduleRequest {
     name: Option<String>,
     start_time: Option<String>,
     end_time: Option<String>,
     enabled: Option<bool>,
+    priority: Option<u32>,
     target_count: Option<usize>,
     batch_interval_mins: Option<u64>,
     register_workers: Option<usize>,
@@ -1697,8 +1704,11 @@ struct ScheduleWithStatus {
     #[serde(flatten)]
     config: crate::config::ScheduleConfig,
     running: bool,
+    pending: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     run_info: Option<crate::scheduler::ScheduleRunInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_info: Option<crate::scheduler::SchedulePendingInfo>,
 }
 
 #[derive(Serialize)]
@@ -1721,16 +1731,20 @@ async fn list_schedules_handler(State(state): State<AppState>) -> impl IntoRespo
         let cfg = state.config.read().await;
         cfg.schedule.clone()
     };
-    let run_snapshot = state.scheduler_state.snapshot().await;
+    let scheduler_snapshot = state.scheduler_state.snapshot().await;
 
     let mut schedules = Vec::with_capacity(schedule_configs.len());
     for config in schedule_configs {
-        let run_info = run_snapshot.get(&config.name).cloned();
+        let run_info = scheduler_snapshot.running.get(&config.name).cloned();
+        let pending_info = scheduler_snapshot.pending.get(&config.name).cloned();
         let running = run_info.is_some();
+        let pending = pending_info.is_some();
         schedules.push(ScheduleWithStatus {
             running,
+            pending,
             config,
             run_info,
+            pending_info,
         });
     }
     Json(ScheduleListResponse { schedules })
@@ -1790,6 +1804,7 @@ async fn create_schedule_handler(
         target_count: req.target_count.clamp(1, MAX_TARGET_COUNT),
         batch_interval_mins: req.batch_interval_mins,
         enabled: req.enabled,
+        priority: req.priority,
         register_workers,
         rt_workers,
         rt_retries,
@@ -1872,6 +1887,9 @@ async fn update_schedule_handler(
     if let Some(enabled) = req.enabled {
         sched.enabled = enabled;
     }
+    if let Some(priority) = req.priority {
+        sched.priority = priority;
+    }
     if let Some(target_count) = req.target_count {
         sched.target_count = target_count.clamp(1, MAX_TARGET_COUNT);
     }
@@ -1947,6 +1965,8 @@ async fn delete_schedule_handler(
         ));
     }
     auto_save(&cfg, &state.config_path);
+    drop(cfg);
+    let _ = state.scheduler_state.stop(&name).await;
     Ok(Json(MsgResponse {
         message: format!("定时计划 {name} 已删除"),
     }))
@@ -1995,11 +2015,22 @@ async fn trigger_schedule_handler(
         .clone();
     drop(cfg);
 
-    let (cancel_flag, batch_counter, next_batch_ts) = state
-        .scheduler_state
-        .start(&name)
-        .await
-        .ok_or_else(|| error_json(StatusCode::CONFLICT, &format!("计划 {name} 已在运行中")))?;
+    let (cancel_flag, batch_counter, next_batch_ts) = match state.scheduler_state.start(&name).await
+    {
+        Ok(handles) => handles,
+        Err(crate::scheduler::ScheduleStartError::AlreadyRunning) => {
+            return Err(error_json(
+                StatusCode::CONFLICT,
+                &format!("计划 {name} 已在运行中"),
+            ));
+        }
+        Err(crate::scheduler::ScheduleStartError::Busy { running_name }) => {
+            return Err(error_json(
+                StatusCode::CONFLICT,
+                &format!("当前有计划正在运行: {running_name}，请等待其结束后再手动启动 {name}"),
+            ));
+        }
+    };
 
     let state_clone = state.clone();
     let db = state.run_history_db.clone();
@@ -2116,7 +2147,9 @@ async fn trigger_schedule_handler(
                     should_continue = false;
                     break;
                 }
-                let Some(latest_schedule) = crate::scheduler::load_schedule_config(&state_clone, &schedule_name).await else {
+                let Some(latest_schedule) =
+                    crate::scheduler::load_schedule_config(&state_clone, &schedule_name).await
+                else {
                     crate::log_broadcast::broadcast_log(&format!(
                         "[手动触发] {} 已停止（等待期间计划已删除）",
                         schedule_name
@@ -2132,7 +2165,10 @@ async fn trigger_schedule_handler(
                     should_continue = false;
                     break;
                 }
-                if !crate::scheduler::is_in_window(&latest_schedule.start_time, &latest_schedule.end_time) {
+                if !crate::scheduler::is_in_window(
+                    &latest_schedule.start_time,
+                    &latest_schedule.end_time,
+                ) {
                     crate::log_broadcast::broadcast_log(&format!(
                         "[手动触发] {} 等待期间时间窗口结束",
                         schedule_name
@@ -2180,25 +2216,47 @@ async fn run_once_schedule_handler(
     let config_snapshot = cfg.clone();
     drop(cfg);
 
+    let (cancel_flag, batch_counter, next_batch_ts) = match state.scheduler_state.start(&name).await
+    {
+        Ok(handles) => handles,
+        Err(crate::scheduler::ScheduleStartError::AlreadyRunning) => {
+            return Err(error_json(
+                StatusCode::CONFLICT,
+                &format!("计划 {name} 已在运行中"),
+            ));
+        }
+        Err(crate::scheduler::ScheduleStartError::Busy { running_name }) => {
+            return Err(error_json(
+                StatusCode::CONFLICT,
+                &format!("当前有计划正在运行: {running_name}，请等待其结束后再执行 {name}"),
+            ));
+        }
+    };
+
+    batch_counter.store(1, std::sync::atomic::Ordering::Relaxed);
+    next_batch_ts.store(0, std::sync::atomic::Ordering::Relaxed);
+
     crate::log_broadcast::broadcast_log(&format!(
         "[运行一次] {} 开始执行单批次 (目标 {} 个)",
         name, schedule.target_count
     ));
 
-    let runner = build_workflow_runner(
+    let runner = match build_workflow_runner(
         &config_snapshot,
         state.proxy_file.as_deref(),
         schedule.use_chatgpt_mail,
     )
     .await
-    .map_err(|e| {
-        error_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("构建 runner 失败: {e}"),
-        )
-    })?;
-
-    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        Ok(runner) => runner,
+        Err(e) => {
+            state.scheduler_state.remove(&name).await;
+            return Err(error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("构建 runner 失败: {e}"),
+            ));
+        }
+    };
 
     let result = crate::distribution::run_distribution(
         &runner,
@@ -2209,6 +2267,8 @@ async fn run_once_schedule_handler(
         cancel_flag,
     )
     .await;
+
+    state.scheduler_state.remove(&name).await;
 
     match result {
         Ok(report) => {
@@ -2226,10 +2286,7 @@ async fn run_once_schedule_handler(
             Ok(Json(report))
         }
         Err(e) => {
-            crate::log_broadcast::broadcast_log(&format!(
-                "[运行一次] {} 执行失败: {e:#}",
-                name
-            ));
+            crate::log_broadcast::broadcast_log(&format!("[运行一次] {} 执行失败: {e:#}", name));
             Err(error_json(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("执行失败: {e}"),
@@ -2238,20 +2295,22 @@ async fn run_once_schedule_handler(
     }
 }
 
-/// 停止一个正在运行的计划
+/// 停止一个运行中或等待中的计划
 async fn stop_schedule_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    if state.scheduler_state.stop(&name).await {
-        Ok(Json(MsgResponse {
+    match state.scheduler_state.stop(&name).await {
+        crate::scheduler::ScheduleStopOutcome::RunningCancelled => Ok(Json(MsgResponse {
             message: format!("定时计划 {name} 停止信号已发送"),
-        }))
-    } else {
-        Err(error_json(
+        })),
+        crate::scheduler::ScheduleStopOutcome::PendingCancelled => Ok(Json(MsgResponse {
+            message: format!("定时计划 {name} 的等待已取消"),
+        })),
+        crate::scheduler::ScheduleStopOutcome::NotFound => Err(error_json(
             StatusCode::NOT_FOUND,
-            &format!("计划 {name} 未在运行中"),
-        ))
+            &format!("计划 {name} 未在运行或等待中"),
+        )),
     }
 }
 
