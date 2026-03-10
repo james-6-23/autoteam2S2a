@@ -55,7 +55,8 @@ pub trait CodexService: Send + Sync {
 #[async_trait]
 pub trait S2aService: Send + Sync {
     async fn test_connection(&self, team: &S2aConfig) -> Result<()>;
-    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt) -> Result<()>;
+    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt) -> Result<Option<i64>>;
+    async fn batch_refresh(&self, team: &S2aConfig, account_ids: &[i64]) -> Result<usize>;
 }
 
 #[derive(Default)]
@@ -1773,10 +1774,14 @@ impl S2aService for DryRunS2aService {
         Ok(())
     }
 
-    async fn add_account(&self, _team: &S2aConfig, _account: &AccountWithRt) -> Result<()> {
+    async fn add_account(&self, _team: &S2aConfig, _account: &AccountWithRt) -> Result<Option<i64>> {
         let wait_ms = random_delay_ms(40, 120);
         sleep(Duration::from_millis(wait_ms)).await;
-        Ok(())
+        Ok(None)
+    }
+
+    async fn batch_refresh(&self, _team: &S2aConfig, _account_ids: &[i64]) -> Result<usize> {
+        Ok(0)
     }
 }
 
@@ -1908,6 +1913,20 @@ impl S2aHttpService {
         }
         Ok(())
     }
+
+    /// Best-effort extraction of account ID from S2A create response.
+    /// Expected format: `{"code":0,"data":{"id":123,...}}`
+    fn extract_account_id(body: &str) -> Option<i64> {
+        let json: serde_json::Value = serde_json::from_str(body).ok()?;
+        // Try data.id first (standard S2A response wrapper)
+        json.get("data")
+            .and_then(|d| d.get("id"))
+            .and_then(|v| v.as_i64())
+            .or_else(|| {
+                // Fallback: top-level id
+                json.get("id").and_then(|v| v.as_i64())
+            })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1965,7 +1984,7 @@ impl S2aService for S2aHttpService {
         bail!("S2A 连接测试失败: {}", failures.join(" | "))
     }
 
-    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt) -> Result<()> {
+    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt) -> Result<Option<i64>> {
         let prefix = if account.plan_type.contains("team") {
             "team"
         } else {
@@ -2015,7 +2034,9 @@ impl S2aService for S2aHttpService {
                 if status == StatusCode::OK || status == StatusCode::CREATED {
                     Self::ensure_s2a_body_ok(&body)?;
                     self.remember_mode(&base, mode);
-                    return Ok(());
+                    // Best-effort: try to extract the account ID from response
+                    let account_id = Self::extract_account_id(&body);
+                    return Ok(account_id);
                 }
 
                 failures.push(format!(
@@ -2045,6 +2066,61 @@ impl S2aService for S2aHttpService {
         }
 
         bail!("S2A 入库失败: 重试耗尽");
+    }
+
+    async fn batch_refresh(&self, team: &S2aConfig, account_ids: &[i64]) -> Result<usize> {
+        if account_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let base = Self::normalized_api_base(&team.api_base);
+        let url = format!("{base}/admin/accounts/batch-refresh");
+
+        let body = serde_json::json!({ "account_ids": account_ids });
+
+        let modes = self.mode_candidates(&base);
+        let mut failures = Vec::new();
+
+        for mode in modes {
+            let resp = self
+                .with_auth_headers(self.client.post(&url), &team.admin_key, mode)
+                .json(&body)
+                .send()
+                .await;
+            let resp = match resp {
+                Ok(v) => v,
+                Err(err) => {
+                    failures.push(format!("{} 请求异常: {err}", mode.name()));
+                    continue;
+                }
+            };
+            let status = resp.status();
+            let resp_body = resp.text().await.unwrap_or_default();
+
+            if status == StatusCode::OK {
+                Self::ensure_s2a_body_ok(&resp_body)?;
+                self.remember_mode(&base, mode);
+                // Parse success count from response: {"code":0,"data":{"success":N,...}}
+                let success_count = serde_json::from_str::<serde_json::Value>(&resp_body)
+                    .ok()
+                    .and_then(|v| v.get("data")?.get("success")?.as_u64())
+                    .unwrap_or(0) as usize;
+                return Ok(success_count);
+            }
+
+            failures.push(format!(
+                "{} HTTP {} {}",
+                mode.name(),
+                status,
+                truncate_text(&resp_body, 160)
+            ));
+
+            if status != StatusCode::UNAUTHORIZED && status != StatusCode::FORBIDDEN {
+                break;
+            }
+        }
+
+        bail!("S2A batch-refresh 失败: {}", failures.join(" | "));
     }
 }
 

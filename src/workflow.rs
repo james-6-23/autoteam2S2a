@@ -485,6 +485,7 @@ impl WorkflowRunner {
 
         let s2a_concurrency = team.concurrency.max(1).min(accounts.len().max(1));
         let mut s2a_ok = 0usize;
+        let mut created_ids: Vec<i64> = Vec::new();
         let mut pending = accounts;
         let mut final_failed: Vec<AccountWithRt> = Vec::new();
 
@@ -520,8 +521,11 @@ impl WorkflowRunner {
             let mut round_failed = Vec::new();
             for (acc, ret) in s2a_results {
                 match ret {
-                    Ok(_) => {
+                    Ok(opt_id) => {
                         s2a_ok += 1;
+                        if let Some(id) = opt_id {
+                            created_ids.push(id);
+                        }
                         if let Some(p) = progress {
                             p.s2a_ok.fetch_add(1, Ordering::Relaxed);
                         }
@@ -555,6 +559,28 @@ impl WorkflowRunner {
         }
         if let Ok(Some(path)) = save_json_records("accounts-s2a-failed", &final_failed) {
             broadcast_log(&format!("[S2A] 失败记录已保存: {}", path.display()));
+        }
+
+        // Batch-refresh tokens for all successfully created accounts
+        if !created_ids.is_empty() {
+            broadcast_log(&format!(
+                "[S2A-Refresh] 正在刷新 {} 个新入库账号的令牌...",
+                created_ids.len()
+            ));
+            match self.s2a_service.batch_refresh(team, &created_ids).await {
+                Ok(n) => {
+                    broadcast_log(&format!(
+                        "[S2A-Refresh] 令牌刷新完成: {}/{} 成功",
+                        n,
+                        created_ids.len()
+                    ));
+                }
+                Err(err) => {
+                    broadcast_log(&format!(
+                        "[S2A-Refresh] 令牌刷新失败（不影响入库结果）: {err}"
+                    ));
+                }
+            }
         }
 
         (s2a_ok, s2a_failed)
