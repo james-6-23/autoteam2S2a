@@ -109,7 +109,4 @@ impl InviteProgress {
         }
     }
 
-    pub fn get_stage(&self) -> String {
-        self.stage.lock().map(|s| s.clone()).unwrap_or_default()
-    }
 }
