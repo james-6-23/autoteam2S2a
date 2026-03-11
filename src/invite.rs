@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use futures::{StreamExt, stream};
 
 use crate::config::{AppConfig, InviteRuntimeConfig, S2aConfig};
 use crate::db::{InviteEmailUpdate, InviteOwnerInsert, InviteTaskUpdate, RunHistoryDb};
@@ -331,9 +332,9 @@ pub async fn run_invite_workflow(
     }
 
     // ─── 阶段 2: 注册 ───────────────────────────────────────────────────────
-    progress.set_stage("注册中");
+    progress.set_stage("注册 + RT");
     broadcast_log(&format!(
-        "[注册] 开始注册 {} 个已邀请邮箱",
+        "[注册+RT] 开始并发处理 {} 个已邀请邮箱",
         invited_emails_ok.len()
     ));
 
@@ -369,31 +370,87 @@ pub async fn run_invite_workflow(
 
     let s2a_service = Arc::new(crate::services::S2aHttpService::new());
 
-    let mut reg_ok = 0usize;
-    let mut reg_failed = 0usize;
-    let mut rt_ok = 0usize;
-    let mut rt_failed = 0usize;
-    let mut s2a_ok_count = 0usize;
-    let mut s2a_failed_count = 0usize;
-    let mut accounts_for_s2a: Vec<crate::models::AccountWithRt> = Vec::new();
+    // 并发度：min(邀请成功数, 3)，避免触发频率限制
+    let concurrency = invited_emails_ok.len().min(3).max(1);
 
-    for &(seed_idx, email_db_id) in &invited_emails_ok {
-        let seed = &seeds[seed_idx];
-        let proxy = proxy_pool.next();
+    enum WorkerOutcome {
+        RegFailed,
+        RtFailed,
+        Success {
+            email_db_id: i64,
+            account_with_rt: crate::models::AccountWithRt,
+        },
+    }
 
-        // 注册
-        let input = crate::services::RegisterInput {
-            seed: seed.clone(),
-            proxy: proxy.clone(),
-            worker_id: seed_idx + 1,
-            task_index: seed_idx,
-            task_total: total,
-            skip_payment: true, // 邀请账号不需要支付
-        };
+    let worker_results: Vec<WorkerOutcome> = stream::iter(invited_emails_ok.iter().copied())
+        .map(|(seed_idx, email_db_id)| {
+            let register_service = register_service.clone();
+            let codex_service = codex_service.clone();
+            let proxy_pool = proxy_pool.clone();
+            let progress = progress.clone();
+            let db = db.clone();
+            let seed = seeds[seed_idx].clone();
 
-        match register_service.register(input).await {
-            Ok(registered) => {
-                reg_ok += 1;
+            async move {
+                let proxy = proxy_pool.next();
+
+                // ── 注册（最多 3 次尝试，退避 2s → 5s）──
+                const MAX_REG_RETRIES: usize = 3;
+                const REG_DELAYS: [u64; 3] = [0, 2000, 5000];
+                let mut registered = None;
+                let mut last_reg_err = String::new();
+
+                for attempt in 0..MAX_REG_RETRIES {
+                    if attempt > 0 {
+                        tokio::time::sleep(Duration::from_millis(REG_DELAYS[attempt])).await;
+                        broadcast_log(&format!(
+                            "[注册重试] {} (第{}/{}次)",
+                            seed.account,
+                            attempt + 1,
+                            MAX_REG_RETRIES
+                        ));
+                    }
+
+                    let input = crate::services::RegisterInput {
+                        seed: seed.clone(),
+                        proxy: proxy.clone(),
+                        worker_id: seed_idx + 1,
+                        task_index: seed_idx,
+                        task_total: total,
+                        skip_payment: true,
+                    };
+
+                    match register_service.register(input).await {
+                        Ok(acc) => {
+                            registered = Some(acc);
+                            break;
+                        }
+                        Err(e) => {
+                            last_reg_err = format!("{e:#}");
+                        }
+                    }
+                }
+
+                let acc = match registered {
+                    Some(acc) => acc,
+                    None => {
+                        progress.reg_failed.fetch_add(1, Ordering::Relaxed);
+                        let _ = db.enqueue_update_invite_email(
+                            email_db_id,
+                            InviteEmailUpdate {
+                                reg_status: Some("failed".to_string()),
+                                error: Some(last_reg_err.clone()),
+                                ..Default::default()
+                            },
+                        );
+                        broadcast_log(&format!(
+                            "[注册失败] {}: {}",
+                            seed.account, last_reg_err
+                        ));
+                        return WorkerOutcome::RegFailed;
+                    }
+                };
+
                 progress.reg_ok.fetch_add(1, Ordering::Relaxed);
                 let _ = db.enqueue_update_invite_email(
                     email_db_id,
@@ -402,16 +459,44 @@ pub async fn run_invite_workflow(
                         ..Default::default()
                     },
                 );
-                broadcast_log(&format!("[注册成功] {} plan={}", registered.account, registered.plan_type));
+                broadcast_log(&format!(
+                    "[注册成功] {} plan={}",
+                    acc.account, acc.plan_type
+                ));
 
-                // ─── 阶段 3: 获取 RT ───
-                progress.set_stage("获取 RT");
-                match codex_service
-                    .fetch_refresh_token(&registered, proxy, seed_idx + 1)
-                    .await
-                {
-                    Ok(rt) => {
-                        rt_ok += 1;
+                // ── RT（最多 3 次尝试，退避 1s → 3s）──
+                const MAX_RT_RETRIES: usize = 3;
+                const RT_DELAYS: [u64; 3] = [0, 1000, 3000];
+                let mut rt_result = None;
+                let mut last_rt_err = String::new();
+
+                for attempt in 0..MAX_RT_RETRIES {
+                    if attempt > 0 {
+                        tokio::time::sleep(Duration::from_millis(RT_DELAYS[attempt])).await;
+                        broadcast_log(&format!(
+                            "[RT重试] {} (第{}/{}次)",
+                            acc.account,
+                            attempt + 1,
+                            MAX_RT_RETRIES
+                        ));
+                    }
+
+                    match codex_service
+                        .fetch_refresh_token(&acc, proxy.clone(), seed_idx + 1)
+                        .await
+                    {
+                        Ok(rt) => {
+                            rt_result = Some(rt);
+                            break;
+                        }
+                        Err(e) => {
+                            last_rt_err = format!("{e:#}");
+                        }
+                    }
+                }
+
+                match rt_result {
+                    Some(rt) => {
                         progress.rt_ok.fetch_add(1, Ordering::Relaxed);
                         let _ = db.enqueue_update_invite_email(
                             email_db_id,
@@ -420,60 +505,80 @@ pub async fn run_invite_workflow(
                                 ..Default::default()
                             },
                         );
-                        broadcast_log(&format!("[RT成功] {}", registered.account));
+                        broadcast_log(&format!("[RT成功] {}", acc.account));
 
-                        let acc_with_rt = crate::models::AccountWithRt {
-                            account: registered.account,
-                            password: registered.password,
-                            token: registered.token,
-                            account_id: registered.account_id,
-                            plan_type: registered.plan_type,
-                            refresh_token: rt,
-                        };
-                        accounts_for_s2a.push(acc_with_rt);
+                        WorkerOutcome::Success {
+                            email_db_id,
+                            account_with_rt: crate::models::AccountWithRt {
+                                account: acc.account,
+                                password: acc.password,
+                                token: acc.token,
+                                account_id: acc.account_id,
+                                plan_type: acc.plan_type,
+                                refresh_token: rt,
+                            },
+                        }
                     }
-                    Err(e) => {
-                        rt_failed += 1;
+                    None => {
                         progress.rt_failed.fetch_add(1, Ordering::Relaxed);
                         let _ = db.enqueue_update_invite_email(
                             email_db_id,
                             InviteEmailUpdate {
                                 rt_status: Some("failed".to_string()),
-                                error: Some(format!("{e:#}")),
+                                error: Some(last_rt_err.clone()),
                                 ..Default::default()
                             },
                         );
-                        broadcast_log(&format!("[RT失败] {}: {e:#}", registered.account));
+                        broadcast_log(&format!("[RT失败] {}: {}", acc.account, last_rt_err));
+                        WorkerOutcome::RtFailed
                     }
                 }
             }
-            Err(e) => {
-                reg_failed += 1;
-                progress.reg_failed.fetch_add(1, Ordering::Relaxed);
-                let _ = db.enqueue_update_invite_email(
-                    email_db_id,
-                    InviteEmailUpdate {
-                        reg_status: Some("failed".to_string()),
-                        error: Some(format!("{e:#}")),
-                        ..Default::default()
-                    },
-                );
-                broadcast_log(&format!("[注册失败] {}: {e:#}", seed.account));
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+
+    // 统计并发结果
+    let mut reg_ok = 0usize;
+    let mut reg_failed = 0usize;
+    let mut rt_ok = 0usize;
+    let mut rt_failed = 0usize;
+    let mut s2a_ok_count = 0usize;
+    let mut s2a_failed_count = 0usize;
+    let mut accounts_for_s2a: Vec<crate::models::AccountWithRt> = Vec::new();
+    let mut s2a_email_db_ids: Vec<i64> = Vec::new();
+
+    for outcome in worker_results {
+        match outcome {
+            WorkerOutcome::RegFailed => reg_failed += 1,
+            WorkerOutcome::RtFailed => {
+                reg_ok += 1;
+                rt_failed += 1;
+            }
+            WorkerOutcome::Success {
+                email_db_id,
+                account_with_rt,
+            } => {
+                reg_ok += 1;
+                rt_ok += 1;
+                s2a_email_db_ids.push(email_db_id);
+                accounts_for_s2a.push(account_with_rt);
             }
         }
-
-        // 更新任务进度
-        let _ = db.enqueue_update_invite_task(
-            task_id.clone(),
-            InviteTaskUpdate {
-                reg_ok: Some(reg_ok),
-                reg_failed: Some(reg_failed),
-                rt_ok: Some(rt_ok),
-                rt_failed: Some(rt_failed),
-                ..Default::default()
-            },
-        );
     }
+
+    // 更新任务进度
+    let _ = db.enqueue_update_invite_task(
+        task_id.clone(),
+        InviteTaskUpdate {
+            reg_ok: Some(reg_ok),
+            reg_failed: Some(reg_failed),
+            rt_ok: Some(rt_ok),
+            rt_failed: Some(rt_failed),
+            ..Default::default()
+        },
+    );
 
     // ─── 阶段 4: S2A 入库 ───────────────────────────────────────────────────
     if push_s2a && !accounts_for_s2a.is_empty() {
@@ -498,19 +603,16 @@ pub async fn run_invite_workflow(
             s2a_ok_count = ok;
             s2a_failed_count = failed;
 
-            // 更新每个邮箱的 S2A 状态
-            for (idx, &(_, email_db_id)) in invited_emails_ok.iter().enumerate() {
-                // 只有成功获取 RT 的才有 S2A 结果
-                if idx < accounts_for_s2a.len() {
-                    let status = if idx < s2a_ok_count { "ok" } else { "failed" };
-                    let _ = db.enqueue_update_invite_email(
-                        email_db_id,
-                        InviteEmailUpdate {
-                            s2a_status: Some(status.to_string()),
-                            ..Default::default()
-                        },
-                    );
-                }
+            // 更新每个邮箱的 S2A 状态（使用并发结果追踪的 email_db_id）
+            for (idx, &email_db_id) in s2a_email_db_ids.iter().enumerate() {
+                let status = if idx < s2a_ok_count { "ok" } else { "failed" };
+                let _ = db.enqueue_update_invite_email(
+                    email_db_id,
+                    InviteEmailUpdate {
+                        s2a_status: Some(status.to_string()),
+                        ..Default::default()
+                    },
+                );
             }
 
             progress.s2a_ok.fetch_add(s2a_ok_count, Ordering::Relaxed);
