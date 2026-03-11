@@ -370,8 +370,8 @@ pub async fn run_invite_workflow(
 
     let s2a_service = Arc::new(crate::services::S2aHttpService::new());
 
-    // 并发度：min(邀请成功数, 3)，避免触发频率限制
-    let concurrency = invited_emails_ok.len().min(3).max(1);
+    // 全量并发：邀请链接有超时窗口，所有邮箱需尽快完成注册
+    let concurrency = invited_emails_ok.len();
 
     enum WorkerOutcome {
         RegFailed,
