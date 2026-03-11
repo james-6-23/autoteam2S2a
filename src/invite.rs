@@ -223,6 +223,36 @@ async fn invite_single_email(
     }
 }
 
+// ─── 注销 Owner 账号 ────────────────────────────────────────────────────────
+
+/// 调用 ChatGPT deactivate API 注销母号
+async fn deactivate_owner(owner: &TeamOwner, invite_cfg: &InviteRuntimeConfig) -> Result<()> {
+    let client = rquest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let resp = client
+        .post("https://chatgpt.com/backend-api/accounts/deactivate")
+        .header("Authorization", format!("Bearer {}", owner.access_token))
+        .header("Content-Type", "application/json")
+        .header("User-Agent", &invite_cfg.user_agent)
+        .header("Origin", "https://chatgpt.com")
+        .header("Referer", "https://chatgpt.com/")
+        .body("{}")
+        .send()
+        .await?;
+
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else {
+        let body = resp.text().await.unwrap_or_default();
+        bail!("HTTP {}: {}", status.as_u16(), if body.len() > 200 { &body[..200] } else { &body })
+    }
+}
+
 // ─── 完整邀请工作流 ──────────────────────────────────────────────────────────
 
 /// 单个 Owner 的完整邀请工作流
@@ -619,6 +649,21 @@ pub async fn run_invite_workflow(
             progress
                 .s2a_failed
                 .fetch_add(s2a_failed_count, Ordering::Relaxed);
+        }
+    }
+
+    // ─── 阶段 5: 注销母号 ────────────────────────────────────────────────────
+    // 只要有任何账号成功入库 S2A，就注销 owner（母号已完成使命）
+    if s2a_ok_count > 0 {
+        progress.set_stage("注销母号");
+        broadcast_log(&format!("[注销] 正在注销母号 {}...", owner.email));
+        match deactivate_owner(&owner, &invite_cfg).await {
+            Ok(()) => {
+                broadcast_log(&format!("[注销成功] {} 已停用", owner.email));
+            }
+            Err(e) => {
+                broadcast_log(&format!("[注销失败] {}: {e:#}", owner.email));
+            }
         }
     }
 
