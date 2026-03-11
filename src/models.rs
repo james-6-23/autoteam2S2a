@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicUsize;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSeed {
@@ -71,4 +73,43 @@ pub struct DistributionReport {
     pub output_files: Vec<String>,
     pub elapsed_secs: f32,
     pub target_count: usize,
+}
+
+/// 邀请任务进度（原子计数器，线程安全）
+pub struct InviteProgress {
+    pub invited_ok: AtomicUsize,
+    pub invited_failed: AtomicUsize,
+    pub reg_ok: AtomicUsize,
+    pub reg_failed: AtomicUsize,
+    pub rt_ok: AtomicUsize,
+    pub rt_failed: AtomicUsize,
+    pub s2a_ok: AtomicUsize,
+    pub s2a_failed: AtomicUsize,
+    stage: Mutex<String>,
+}
+
+impl InviteProgress {
+    pub fn new() -> Self {
+        Self {
+            invited_ok: AtomicUsize::new(0),
+            invited_failed: AtomicUsize::new(0),
+            reg_ok: AtomicUsize::new(0),
+            reg_failed: AtomicUsize::new(0),
+            rt_ok: AtomicUsize::new(0),
+            rt_failed: AtomicUsize::new(0),
+            s2a_ok: AtomicUsize::new(0),
+            s2a_failed: AtomicUsize::new(0),
+            stage: Mutex::new("准备中".to_string()),
+        }
+    }
+
+    pub fn set_stage(&self, stage: &str) {
+        if let Ok(mut s) = self.stage.lock() {
+            *s = stage.to_string();
+        }
+    }
+
+    pub fn get_stage(&self) -> String {
+        self.stage.lock().map(|s| s.clone()).unwrap_or_default()
+    }
 }

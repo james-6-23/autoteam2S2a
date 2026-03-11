@@ -30,6 +30,8 @@ use crate::workflow::{WorkflowOptions, WorkflowRunner};
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const APP_CSS: &str = include_str!("../static/assets/css/app.css");
 const APP_JS: &str = include_str!("../static/assets/js/app.js");
+const INVITE_HTML: &str = include_str!("../static/invite.html");
+const INVITE_JS: &str = include_str!("../static/assets/js/invite.js");
 const TASK_FINISHED_KEEP: usize = 300;
 const TASK_PRUNE_THRESHOLD: usize = 600;
 const MAX_TARGET_COUNT: usize = 5000;
@@ -490,6 +492,20 @@ async fn app_js_handler() -> impl IntoResponse {
             "application/javascript; charset=utf-8",
         )],
         APP_JS,
+    )
+}
+
+async fn invite_handler() -> impl IntoResponse {
+    Html(INVITE_HTML)
+}
+
+async fn invite_js_handler() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        INVITE_JS,
     )
 }
 
@@ -2552,8 +2568,10 @@ pub async fn start_server(
     let app = Router::new()
         // Frontend
         .route("/", get(index_handler))
+        .route("/invite", get(invite_handler))
         .route("/assets/css/app.css", get(app_css_handler))
         .route("/assets/js/app.js", get(app_js_handler))
+        .route("/assets/js/invite.js", get(invite_js_handler))
         // Health
         .route("/health", get(health_handler))
         // Config management
@@ -2610,6 +2628,23 @@ pub async fn start_server(
         .route("/api/runs/{run_id}", get(get_run_handler))
         // Log stream (SSE)
         .route("/api/logs/stream", get(log_stream_handler))
+        // Invite module
+        .route("/api/invite/upload", post(invite_upload_handler))
+        .route("/api/invite/uploads", get(list_invite_uploads_handler))
+        .route(
+            "/api/invite/uploads/{id}",
+            get(get_invite_upload_handler),
+        )
+        .route("/api/invite/execute", post(execute_invite_handler))
+        .route("/api/invite/tasks", get(list_invite_tasks_handler))
+        .route(
+            "/api/invite/tasks/{id}",
+            get(get_invite_task_handler),
+        )
+        .route(
+            "/api/invite/config",
+            get(get_invite_config_handler).put(update_invite_config_handler),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -2631,6 +2666,293 @@ pub async fn start_server(
 
     println!("\n服务已停止");
     Ok(())
+}
+
+// ─── Invite handlers ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct InviteUploadRequest {
+    filename: Option<String>,
+    accounts: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct InviteUploadResponse {
+    upload_id: String,
+    owner_count: usize,
+    owners: Vec<InviteOwnerBrief>,
+}
+
+#[derive(Serialize)]
+struct InviteOwnerBrief {
+    email: String,
+    account_id: String,
+    expires: Option<String>,
+}
+
+async fn invite_upload_handler(
+    State(state): State<AppState>,
+    Json(req): Json<InviteUploadRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let owners = crate::invite::parse_owners_json(&req.accounts)
+        .map_err(|e| error_json(StatusCode::BAD_REQUEST, &format!("JSON 解析失败: {e}")))?;
+
+    let upload_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let filename = req.filename.unwrap_or_else(|| "upload.json".to_string());
+    let db_owners = crate::invite::owners_to_db(&owners);
+
+    state
+        .run_history_db
+        .insert_invite_upload_sync(&upload_id, &filename, &db_owners)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("保存失败: {e}")))?;
+
+    let briefs: Vec<InviteOwnerBrief> = owners
+        .iter()
+        .map(|o| InviteOwnerBrief {
+            email: o.email.clone(),
+            account_id: o.account_id.clone(),
+            expires: o.expires.clone(),
+        })
+        .collect();
+
+    Ok((
+        StatusCode::CREATED,
+        Json(InviteUploadResponse {
+            upload_id,
+            owner_count: owners.len(),
+            owners: briefs,
+        }),
+    ))
+}
+
+async fn list_invite_uploads_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let uploads = state
+        .run_history_db
+        .list_invite_uploads()
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    Ok(Json(uploads))
+}
+
+async fn get_invite_upload_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let detail = state
+        .run_history_db
+        .get_invite_upload_detail(&id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "上传记录不存在"))?;
+    Ok(Json(detail))
+}
+
+#[derive(Deserialize)]
+struct ExecuteInviteRequest {
+    upload_id: String,
+    invite_count: Option<usize>,
+    s2a_team: Option<String>,
+    push_s2a: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct ExecuteInviteResponse {
+    task_count: usize,
+    task_ids: Vec<String>,
+    message: String,
+}
+
+async fn execute_invite_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ExecuteInviteRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let invite_runtime = cfg.invite_runtime();
+    let invite_count = req
+        .invite_count
+        .unwrap_or(invite_runtime.default_invite_count)
+        .clamp(1, 25);
+    let push_s2a = req.push_s2a.unwrap_or(true);
+
+    // 找到目标号池
+    let team = if push_s2a {
+        let teams = cfg.effective_s2a_configs();
+        if let Some(ref name) = req.s2a_team {
+            teams
+                .iter()
+                .find(|t| t.name == *name)
+                .cloned()
+        } else {
+            teams.first().cloned()
+        }
+    } else {
+        None
+    };
+
+    let config_snapshot = cfg.clone();
+    drop(cfg);
+
+    // 获取未使用的 owners
+    let unused_owners = state
+        .run_history_db
+        .get_unused_owners(&req.upload_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+
+    if unused_owners.is_empty() {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            "该上传中没有可用的 Owner（全部已使用）",
+        ));
+    }
+
+    let mut task_ids = Vec::new();
+
+    for (owner_db_id, owner_email, owner_account_id, access_token) in unused_owners {
+        let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+
+        // 生成邮箱种子
+        let seeds: Vec<crate::models::AccountSeed> = (0..invite_count)
+            .map(|_| crate::util::generate_account_seed(&config_snapshot.email_domains))
+            .collect();
+
+        // 写入任务记录
+        let new_task = crate::db::NewInviteTask {
+            id: task_id.clone(),
+            upload_id: req.upload_id.clone(),
+            owner_email: owner_email.clone(),
+            owner_account_id: owner_account_id.clone(),
+            s2a_team: team.as_ref().map(|t| t.name.clone()),
+            invite_count,
+            created_at: crate::util::beijing_now().to_rfc3339(),
+        };
+        let _ = state.run_history_db.enqueue_insert_invite_task(new_task);
+
+        // 写入邮箱记录
+        let email_inserts: Vec<crate::db::InviteEmailInsert> = seeds
+            .iter()
+            .map(|s| crate::db::InviteEmailInsert {
+                email: s.account.clone(),
+                password: s.password.clone(),
+            })
+            .collect();
+        let _ = state
+            .run_history_db
+            .enqueue_insert_invite_emails(task_id.clone(), email_inserts);
+
+        // 短暂等待 DB 写入
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let owner = crate::invite::TeamOwner {
+            email: owner_email,
+            account_id: owner_account_id,
+            access_token,
+            expires: None,
+        };
+
+        let progress = Arc::new(crate::models::InviteProgress::new());
+        let db = state.run_history_db.clone();
+        let invite_cfg = config_snapshot.invite_runtime();
+        let cfg_clone = config_snapshot.clone();
+        let team_clone = team.clone();
+        let task_id_clone = task_id.clone();
+
+        tokio::spawn(async move {
+            crate::invite::run_invite_workflow(
+                task_id_clone,
+                owner_db_id,
+                owner,
+                seeds,
+                invite_cfg,
+                cfg_clone,
+                team_clone,
+                push_s2a,
+                db,
+                progress,
+            )
+            .await;
+        });
+
+        task_ids.push(task_id);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ExecuteInviteResponse {
+            task_count: task_ids.len(),
+            task_ids,
+            message: "邀请任务已创建".to_string(),
+        }),
+    ))
+}
+
+async fn list_invite_tasks_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let tasks = state
+        .run_history_db
+        .list_invite_tasks(None)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    Ok(Json(tasks))
+}
+
+async fn get_invite_task_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let detail = state
+        .run_history_db
+        .get_invite_task_detail(&id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "邀请任务不存在"))?;
+    Ok(Json(detail))
+}
+
+#[derive(Serialize)]
+struct InviteConfigResponse {
+    oai_client_version: String,
+    default_invite_count: usize,
+    request_timeout_sec: u64,
+}
+
+async fn get_invite_config_handler(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let cfg = state.config.read().await;
+    let rt = cfg.invite_runtime();
+    Json(InviteConfigResponse {
+        oai_client_version: rt.oai_client_version,
+        default_invite_count: rt.default_invite_count,
+        request_timeout_sec: rt.request_timeout_sec,
+    })
+}
+
+#[derive(Deserialize)]
+struct UpdateInviteConfigRequest {
+    oai_client_version: Option<String>,
+    default_invite_count: Option<usize>,
+    request_timeout_sec: Option<u64>,
+}
+
+async fn update_invite_config_handler(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateInviteConfigRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    if let Some(v) = req.oai_client_version {
+        cfg.invite.oai_client_version = Some(v);
+    }
+    if let Some(v) = req.default_invite_count {
+        cfg.invite.default_invite_count = Some(v.clamp(1, 25));
+    }
+    if let Some(v) = req.request_timeout_sec {
+        cfg.invite.request_timeout_sec = Some(v.max(5));
+    }
+    let rt = cfg.invite_runtime();
+    Ok(Json(InviteConfigResponse {
+        oai_client_version: rt.oai_client_version,
+        default_invite_count: rt.default_invite_count,
+        request_timeout_sec: rt.request_timeout_sec,
+    }))
 }
 
 async fn shutdown_signal() {

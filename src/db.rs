@@ -60,6 +60,33 @@ enum WriteCommand {
         old_name: String,
         new_name: String,
     },
+    // ─── 邀请模块写命令 ───
+    InsertInviteUpload {
+        id: String,
+        filename: String,
+        owner_count: usize,
+        created_at: String,
+    },
+    InsertInviteOwners {
+        upload_id: String,
+        owners: Vec<InviteOwnerInsert>,
+    },
+    InsertInviteTask(NewInviteTask),
+    InsertInviteEmails {
+        task_id: String,
+        emails: Vec<InviteEmailInsert>,
+    },
+    UpdateInviteTask {
+        task_id: String,
+        update: InviteTaskUpdate,
+    },
+    UpdateInviteEmail {
+        email_id: i64,
+        update: InviteEmailUpdate,
+    },
+    MarkOwnerUsed {
+        owner_id: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -138,6 +165,121 @@ pub struct RunDetail {
     pub distributions: Vec<DistributionRecord>,
 }
 
+// ─── 邀请模块数据结构 ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct InviteOwnerInsert {
+    pub email: String,
+    pub account_id: String,
+    pub access_token: String,
+    pub expires: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewInviteTask {
+    pub id: String,
+    pub upload_id: String,
+    pub owner_email: String,
+    pub owner_account_id: String,
+    pub s2a_team: Option<String>,
+    pub invite_count: usize,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct InviteEmailInsert {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InviteTaskUpdate {
+    pub status: Option<String>,
+    pub invited_ok: Option<usize>,
+    pub invited_failed: Option<usize>,
+    pub reg_ok: Option<usize>,
+    pub reg_failed: Option<usize>,
+    pub rt_ok: Option<usize>,
+    pub rt_failed: Option<usize>,
+    pub s2a_ok: Option<usize>,
+    pub s2a_failed: Option<usize>,
+    pub error: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InviteEmailUpdate {
+    pub invite_status: Option<String>,
+    pub reg_status: Option<String>,
+    pub rt_status: Option<String>,
+    pub s2a_status: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InviteUploadRecord {
+    pub id: String,
+    pub filename: String,
+    pub owner_count: usize,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InviteOwnerRecord {
+    pub id: i64,
+    pub upload_id: String,
+    pub email: String,
+    pub account_id: String,
+    pub expires: Option<String>,
+    pub used: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InviteUploadDetail {
+    pub upload: InviteUploadRecord,
+    pub owners: Vec<InviteOwnerRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InviteTaskRecord {
+    pub id: String,
+    pub upload_id: String,
+    pub owner_email: String,
+    pub owner_account_id: String,
+    pub s2a_team: Option<String>,
+    pub invite_count: usize,
+    pub status: String,
+    pub invited_ok: usize,
+    pub invited_failed: usize,
+    pub reg_ok: usize,
+    pub reg_failed: usize,
+    pub rt_ok: usize,
+    pub rt_failed: usize,
+    pub s2a_ok: usize,
+    pub s2a_failed: usize,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InviteEmailRecord {
+    pub id: i64,
+    pub task_id: String,
+    pub email: String,
+    pub invite_status: String,
+    pub reg_status: String,
+    pub rt_status: String,
+    pub s2a_status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InviteTaskDetail {
+    pub task: InviteTaskRecord,
+    pub emails: Vec<InviteEmailRecord>,
+}
+
 impl RunHistoryDb {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -205,7 +347,68 @@ impl RunHistoryDb {
             CREATE INDEX IF NOT EXISTS idx_runs_schedule_finished_at
                 ON runs(schedule_name, finished_at DESC);
             CREATE INDEX IF NOT EXISTS idx_run_distributions_run_id_team
-                ON run_distributions(run_id, team_name);",
+                ON run_distributions(run_id, team_name);
+
+            -- 邀请模块: 上传记录
+            CREATE TABLE IF NOT EXISTS invite_uploads (
+                id           TEXT PRIMARY KEY,
+                filename     TEXT NOT NULL,
+                owner_count  INTEGER NOT NULL,
+                created_at   TEXT NOT NULL
+            );
+
+            -- 邀请模块: Owner 账号
+            CREATE TABLE IF NOT EXISTS invite_owners (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                upload_id     TEXT NOT NULL REFERENCES invite_uploads(id),
+                email         TEXT NOT NULL,
+                account_id    TEXT NOT NULL,
+                access_token  TEXT NOT NULL,
+                expires       TEXT,
+                used          INTEGER DEFAULT 0
+            );
+
+            -- 邀请模块: 邀请任务
+            CREATE TABLE IF NOT EXISTS invite_tasks (
+                id               TEXT PRIMARY KEY,
+                upload_id        TEXT NOT NULL,
+                owner_email      TEXT NOT NULL,
+                owner_account_id TEXT NOT NULL,
+                s2a_team         TEXT,
+                invite_count     INTEGER NOT NULL,
+                status           TEXT NOT NULL DEFAULT 'pending',
+                invited_ok       INTEGER DEFAULT 0,
+                invited_failed   INTEGER DEFAULT 0,
+                reg_ok           INTEGER DEFAULT 0,
+                reg_failed       INTEGER DEFAULT 0,
+                rt_ok            INTEGER DEFAULT 0,
+                rt_failed        INTEGER DEFAULT 0,
+                s2a_ok           INTEGER DEFAULT 0,
+                s2a_failed       INTEGER DEFAULT 0,
+                error            TEXT,
+                created_at       TEXT NOT NULL,
+                finished_at      TEXT
+            );
+
+            -- 邀请模块: 被邀请邮箱详情
+            CREATE TABLE IF NOT EXISTS invite_emails (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id         TEXT NOT NULL REFERENCES invite_tasks(id),
+                email           TEXT NOT NULL,
+                password        TEXT NOT NULL,
+                invite_status   TEXT DEFAULT 'pending',
+                reg_status      TEXT DEFAULT 'pending',
+                rt_status       TEXT DEFAULT 'pending',
+                s2a_status      TEXT DEFAULT 'pending',
+                error           TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_invite_owners_upload
+                ON invite_owners(upload_id);
+            CREATE INDEX IF NOT EXISTS idx_invite_tasks_upload
+                ON invite_tasks(upload_id);
+            CREATE INDEX IF NOT EXISTS idx_invite_emails_task
+                ON invite_emails(task_id);",
         )?;
         Ok(())
     }
@@ -399,6 +602,93 @@ impl RunHistoryDb {
                 conn.execute(
                     "UPDATE runs SET schedule_name = ?2 WHERE schedule_name = ?1",
                     params![old_name, new_name],
+                )?;
+            }
+            WriteCommand::InsertInviteUpload {
+                id,
+                filename,
+                owner_count,
+                created_at,
+            } => {
+                conn.execute(
+                    "INSERT INTO invite_uploads (id, filename, owner_count, created_at) VALUES (?1, ?2, ?3, ?4)",
+                    params![id, filename, owner_count as i64, created_at],
+                )?;
+            }
+            WriteCommand::InsertInviteOwners { upload_id, owners } => {
+                let tx = conn.transaction()?;
+                {
+                    let mut stmt = tx.prepare(
+                        "INSERT INTO invite_owners (upload_id, email, account_id, access_token, expires) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )?;
+                    for o in owners {
+                        stmt.execute(params![upload_id, o.email, o.account_id, o.access_token, o.expires])?;
+                    }
+                }
+                tx.commit()?;
+            }
+            WriteCommand::InsertInviteTask(task) => {
+                conn.execute(
+                    "INSERT INTO invite_tasks (id, upload_id, owner_email, owner_account_id, s2a_team, invite_count, status, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+                    params![
+                        task.id, task.upload_id, task.owner_email, task.owner_account_id,
+                        task.s2a_team, task.invite_count as i64, task.created_at,
+                    ],
+                )?;
+            }
+            WriteCommand::InsertInviteEmails { task_id, emails } => {
+                let tx = conn.transaction()?;
+                {
+                    let mut stmt = tx.prepare(
+                        "INSERT INTO invite_emails (task_id, email, password) VALUES (?1, ?2, ?3)",
+                    )?;
+                    for e in emails {
+                        stmt.execute(params![task_id, e.email, e.password])?;
+                    }
+                }
+                tx.commit()?;
+            }
+            WriteCommand::UpdateInviteTask { task_id, update } => {
+                let mut sets = Vec::new();
+                let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+                if let Some(ref s) = update.status { sets.push("status = ?"); values.push(Box::new(s.clone())); }
+                if let Some(v) = update.invited_ok { sets.push("invited_ok = ?"); values.push(Box::new(v as i64)); }
+                if let Some(v) = update.invited_failed { sets.push("invited_failed = ?"); values.push(Box::new(v as i64)); }
+                if let Some(v) = update.reg_ok { sets.push("reg_ok = ?"); values.push(Box::new(v as i64)); }
+                if let Some(v) = update.reg_failed { sets.push("reg_failed = ?"); values.push(Box::new(v as i64)); }
+                if let Some(v) = update.rt_ok { sets.push("rt_ok = ?"); values.push(Box::new(v as i64)); }
+                if let Some(v) = update.rt_failed { sets.push("rt_failed = ?"); values.push(Box::new(v as i64)); }
+                if let Some(v) = update.s2a_ok { sets.push("s2a_ok = ?"); values.push(Box::new(v as i64)); }
+                if let Some(v) = update.s2a_failed { sets.push("s2a_failed = ?"); values.push(Box::new(v as i64)); }
+                if let Some(ref e) = update.error { sets.push("error = ?"); values.push(Box::new(e.clone())); }
+                if let Some(ref f) = update.finished_at { sets.push("finished_at = ?"); values.push(Box::new(f.clone())); }
+                if !sets.is_empty() {
+                    values.push(Box::new(task_id));
+                    let sql = format!("UPDATE invite_tasks SET {} WHERE id = ?", sets.join(", "));
+                    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+                    conn.execute(&sql, params.as_slice())?;
+                }
+            }
+            WriteCommand::UpdateInviteEmail { email_id, update } => {
+                let mut sets = Vec::new();
+                let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+                if let Some(ref s) = update.invite_status { sets.push("invite_status = ?"); values.push(Box::new(s.clone())); }
+                if let Some(ref s) = update.reg_status { sets.push("reg_status = ?"); values.push(Box::new(s.clone())); }
+                if let Some(ref s) = update.rt_status { sets.push("rt_status = ?"); values.push(Box::new(s.clone())); }
+                if let Some(ref s) = update.s2a_status { sets.push("s2a_status = ?"); values.push(Box::new(s.clone())); }
+                if let Some(ref e) = update.error { sets.push("error = ?"); values.push(Box::new(e.clone())); }
+                if !sets.is_empty() {
+                    values.push(Box::new(email_id));
+                    let sql = format!("UPDATE invite_emails SET {} WHERE id = ?", sets.join(", "));
+                    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+                    conn.execute(&sql, params.as_slice())?;
+                }
+            }
+            WriteCommand::MarkOwnerUsed { owner_id } => {
+                conn.execute(
+                    "UPDATE invite_owners SET used = 1 WHERE id = ?1",
+                    params![owner_id],
                 )?;
             }
         }
@@ -781,6 +1071,224 @@ impl RunHistoryDb {
 
         Ok(Some(RunDetail { run, distributions }))
     }
+
+    // ─── 邀请模块 ────────────────────────────────────────────────────────────
+
+    pub fn enqueue_insert_invite_upload(
+        &self,
+        id: String,
+        filename: String,
+        owner_count: usize,
+        created_at: String,
+    ) -> Result<()> {
+        self.send_write_command(WriteCommand::InsertInviteUpload {
+            id,
+            filename,
+            owner_count,
+            created_at,
+        })
+    }
+
+    pub fn enqueue_insert_invite_owners(
+        &self,
+        upload_id: String,
+        owners: Vec<InviteOwnerInsert>,
+    ) -> Result<()> {
+        self.send_write_command(WriteCommand::InsertInviteOwners { upload_id, owners })
+    }
+
+    pub fn enqueue_insert_invite_task(&self, task: NewInviteTask) -> Result<()> {
+        self.send_write_command(WriteCommand::InsertInviteTask(task))
+    }
+
+    pub fn enqueue_insert_invite_emails(
+        &self,
+        task_id: String,
+        emails: Vec<InviteEmailInsert>,
+    ) -> Result<()> {
+        self.send_write_command(WriteCommand::InsertInviteEmails { task_id, emails })
+    }
+
+    pub fn enqueue_update_invite_task(
+        &self,
+        task_id: String,
+        update: InviteTaskUpdate,
+    ) -> Result<()> {
+        self.send_write_command(WriteCommand::UpdateInviteTask { task_id, update })
+    }
+
+    pub fn enqueue_update_invite_email(
+        &self,
+        email_id: i64,
+        update: InviteEmailUpdate,
+    ) -> Result<()> {
+        self.send_write_command(WriteCommand::UpdateInviteEmail { email_id, update })
+    }
+
+    pub fn enqueue_mark_owner_used(&self, owner_id: i64) -> Result<()> {
+        self.send_write_command(WriteCommand::MarkOwnerUsed { owner_id })
+    }
+
+    /// 同步插入上传记录和 owners（用于上传接口立即返回结果）
+    pub fn insert_invite_upload_sync(
+        &self,
+        id: &str,
+        filename: &str,
+        owners: &[InviteOwnerInsert],
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO invite_uploads (id, filename, owner_count, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id, filename, owners.len() as i64, crate::util::beijing_now().to_rfc3339()],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO invite_owners (upload_id, email, account_id, access_token, expires) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for o in owners {
+                stmt.execute(params![id, o.email, o.account_id, o.access_token, o.expires])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_invite_uploads(&self) -> Result<Vec<InviteUploadRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, filename, owner_count, created_at FROM invite_uploads ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(InviteUploadRecord {
+                    id: row.get(0)?,
+                    filename: row.get(1)?,
+                    owner_count: row.get::<_, i64>(2)? as usize,
+                    created_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_invite_upload_detail(&self, upload_id: &str) -> Result<Option<InviteUploadDetail>> {
+        let conn = self.conn.lock().unwrap();
+        let upload = {
+            let mut stmt = conn.prepare(
+                "SELECT id, filename, owner_count, created_at FROM invite_uploads WHERE id = ?1",
+            )?;
+            let mut rows = stmt.query_map(params![upload_id], |row| {
+                Ok(InviteUploadRecord {
+                    id: row.get(0)?,
+                    filename: row.get(1)?,
+                    owner_count: row.get::<_, i64>(2)? as usize,
+                    created_at: row.get(3)?,
+                })
+            })?;
+            match rows.next() {
+                Some(Ok(r)) => r,
+                _ => return Ok(None),
+            }
+        };
+        let owners = {
+            let mut stmt = conn.prepare(
+                "SELECT id, upload_id, email, account_id, expires, used FROM invite_owners WHERE upload_id = ?1 ORDER BY id",
+            )?;
+            stmt.query_map(params![upload_id], |row| {
+                Ok(InviteOwnerRecord {
+                    id: row.get(0)?,
+                    upload_id: row.get(1)?,
+                    email: row.get(2)?,
+                    account_id: row.get(3)?,
+                    expires: row.get(4)?,
+                    used: row.get::<_, i64>(5)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(Some(InviteUploadDetail { upload, owners }))
+    }
+
+    /// 获取指定 upload 中未使用的 owner（含 access_token）
+    pub fn get_unused_owners(&self, upload_id: &str) -> Result<Vec<(i64, String, String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, email, account_id, access_token FROM invite_owners WHERE upload_id = ?1 AND used = 0 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![upload_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_invite_tasks(&self, upload_id: Option<&str>) -> Result<Vec<InviteTaskRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, has_filter) = match upload_id {
+            Some(_) => (
+                "SELECT id, upload_id, owner_email, owner_account_id, s2a_team, invite_count,
+                        status, invited_ok, invited_failed, reg_ok, reg_failed, rt_ok, rt_failed,
+                        s2a_ok, s2a_failed, error, created_at, finished_at
+                 FROM invite_tasks WHERE upload_id = ?1 ORDER BY created_at DESC",
+                true,
+            ),
+            None => (
+                "SELECT id, upload_id, owner_email, owner_account_id, s2a_team, invite_count,
+                        status, invited_ok, invited_failed, reg_ok, reg_failed, rt_ok, rt_failed,
+                        s2a_ok, s2a_failed, error, created_at, finished_at
+                 FROM invite_tasks ORDER BY created_at DESC",
+                false,
+            ),
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = if has_filter {
+            stmt.query_map(params![upload_id.unwrap()], map_invite_task_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map([], map_invite_task_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(rows)
+    }
+
+    pub fn get_invite_task_detail(&self, task_id: &str) -> Result<Option<InviteTaskDetail>> {
+        let conn = self.conn.lock().unwrap();
+        let task = {
+            let mut stmt = conn.prepare(
+                "SELECT id, upload_id, owner_email, owner_account_id, s2a_team, invite_count,
+                        status, invited_ok, invited_failed, reg_ok, reg_failed, rt_ok, rt_failed,
+                        s2a_ok, s2a_failed, error, created_at, finished_at
+                 FROM invite_tasks WHERE id = ?1",
+            )?;
+            let mut rows = stmt.query_map(params![task_id], map_invite_task_row)?;
+            match rows.next() {
+                Some(Ok(r)) => r,
+                _ => return Ok(None),
+            }
+        };
+        let emails = {
+            let mut stmt = conn.prepare(
+                "SELECT id, task_id, email, invite_status, reg_status, rt_status, s2a_status, error
+                 FROM invite_emails WHERE task_id = ?1 ORDER BY id",
+            )?;
+            stmt.query_map(params![task_id], |row| {
+                Ok(InviteEmailRecord {
+                    id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    email: row.get(2)?,
+                    invite_status: row.get(3)?,
+                    reg_status: row.get(4)?,
+                    rt_status: row.get(5)?,
+                    s2a_status: row.get(6)?,
+                    error: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(Some(InviteTaskDetail { task, emails }))
+    }
 }
 
 fn map_run_row(row: &rusqlite::Row) -> rusqlite::Result<RunRecord> {
@@ -800,5 +1308,28 @@ fn map_run_row(row: &rusqlite::Row) -> rusqlite::Result<RunRecord> {
         error: row.get(12)?,
         started_at: row.get(13)?,
         finished_at: row.get(14)?,
+    })
+}
+
+fn map_invite_task_row(row: &rusqlite::Row) -> rusqlite::Result<InviteTaskRecord> {
+    Ok(InviteTaskRecord {
+        id: row.get(0)?,
+        upload_id: row.get(1)?,
+        owner_email: row.get(2)?,
+        owner_account_id: row.get(3)?,
+        s2a_team: row.get(4)?,
+        invite_count: row.get::<_, i64>(5)? as usize,
+        status: row.get(6)?,
+        invited_ok: row.get::<_, i64>(7)? as usize,
+        invited_failed: row.get::<_, i64>(8)? as usize,
+        reg_ok: row.get::<_, i64>(9)? as usize,
+        reg_failed: row.get::<_, i64>(10)? as usize,
+        rt_ok: row.get::<_, i64>(11)? as usize,
+        rt_failed: row.get::<_, i64>(12)? as usize,
+        s2a_ok: row.get::<_, i64>(13)? as usize,
+        s2a_failed: row.get::<_, i64>(14)? as usize,
+        error: row.get(15)?,
+        created_at: row.get(16)?,
+        finished_at: row.get(17)?,
     })
 }

@@ -34,6 +34,8 @@ pub struct AppConfig {
     pub proxy_check_timeout_sec: Option<u64>,
     #[serde(default)]
     pub schedule: Vec<ScheduleConfig>,
+    #[serde(default)]
+    pub invite: InviteConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -99,6 +101,24 @@ pub struct RegisterConfig {
     pub register_log_mode: Option<RegisterLogMode>,
     /// 注册性能模式：baseline=基线兼容，adaptive=自适应优化
     pub register_perf_mode: Option<RegisterPerfMode>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct InviteConfig {
+    /// OAI 客户端版本号（邀请 API 请求头）
+    pub oai_client_version: Option<String>,
+    /// 每个 Owner 默认邀请数量
+    pub default_invite_count: Option<usize>,
+    /// 邀请 API 请求超时（秒）
+    pub request_timeout_sec: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InviteRuntimeConfig {
+    pub oai_client_version: String,
+    pub default_invite_count: usize,
+    pub request_timeout_sec: u64,
+    pub user_agent: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -491,6 +511,23 @@ impl AppConfig {
             payment_retries: self.payment.payment_retries.unwrap_or(3).max(1),
             poll_max_attempts: self.payment.poll_max_attempts.unwrap_or(15).max(3),
             poll_interval_ms: self.payment.poll_interval_ms.unwrap_or(500).max(200),
+        }
+    }
+
+    pub fn invite_runtime(&self) -> InviteRuntimeConfig {
+        InviteRuntimeConfig {
+            oai_client_version: self
+                .invite
+                .oai_client_version
+                .clone()
+                .unwrap_or_else(|| "2025-03-01".to_string()),
+            default_invite_count: self.invite.default_invite_count.unwrap_or(6).clamp(1, 25),
+            request_timeout_sec: self.invite.request_timeout_sec.unwrap_or(15).max(5),
+            user_agent: self
+                .register
+                .user_agent
+                .clone()
+                .unwrap_or_else(default_register_user_agent),
         }
     }
 
