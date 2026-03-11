@@ -32,7 +32,9 @@ function toast(msg,type='info'){
 
 async function api(path,opts={}){
   try{
-    const res=await fetch(API+path,{headers:{'Content-Type':'application/json'},...opts,body:opts.body?JSON.stringify(opts.body):undefined});
+    const body=opts.body!=null?(typeof opts.body==='string'?opts.body:JSON.stringify(opts.body)):undefined;
+    const {body:_,...restOpts}=opts;
+    const res=await fetch(API+path,{headers:{'Content-Type':'application/json'},...restOpts,body});
     const data=await res.json();
     if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
     return data;
@@ -111,6 +113,109 @@ function clearLogs(){
 
 let inviteCurrentUploadId=null;
 let inviteTaskPollTimer=null;
+let currentInputMode='file';
+
+// ─── Tab 切换 + 滑块动画 ───
+function updateTabIndicator(){
+  const tabs=document.getElementById('upload-tabs');
+  const indicator=document.getElementById('tab-indicator');
+  const active=tabs.querySelector('.upload-tab.active');
+  if(!tabs||!indicator||!active) return;
+  const tabsRect=tabs.getBoundingClientRect();
+  const activeRect=active.getBoundingClientRect();
+  indicator.style.width=activeRect.width+'px';
+  indicator.style.transform='translateX('+(activeRect.left-tabsRect.left-3)+'px)';
+}
+
+function switchInputMode(mode){
+  currentInputMode=mode;
+  document.getElementById('input-mode-file').classList.toggle('hidden',mode!=='file');
+  document.getElementById('input-mode-json').classList.toggle('hidden',mode!=='json');
+  document.querySelectorAll('.upload-tab').forEach(t=>{
+    t.classList.toggle('active',t.id==='tab-'+mode);
+  });
+  updateTabIndicator();
+}
+
+// ─── 拖拽上传 ───
+function initDropZone(){
+  const zone=document.getElementById('drop-zone');
+  const input=document.getElementById('invite-file');
+  if(!zone||!input) return;
+
+  ['dragenter','dragover'].forEach(ev=>zone.addEventListener(ev,e=>{
+    e.preventDefault();e.stopPropagation();zone.classList.add('drag-over');
+  }));
+  ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{
+    e.preventDefault();e.stopPropagation();zone.classList.remove('drag-over');
+  }));
+  zone.addEventListener('drop',e=>{
+    const files=e.dataTransfer.files;
+    if(files.length>0){input.files=files;handleFileSelected()}
+  });
+  input.addEventListener('change',handleFileSelected);
+}
+
+function handleFileSelected(){
+  const input=document.getElementById('invite-file');
+  if(!input.files||!input.files[0]) return;
+  const file=input.files[0];
+  document.getElementById('file-name').textContent=file.name;
+  document.getElementById('file-size').textContent=formatFileSize(file.size);
+  document.getElementById('file-selected').classList.remove('hidden');
+  document.getElementById('drop-zone').style.display='none';
+}
+
+function clearFileSelection(){
+  const input=document.getElementById('invite-file');
+  input.value='';
+  document.getElementById('file-selected').classList.add('hidden');
+  document.getElementById('drop-zone').style.display='';
+}
+
+function formatFileSize(bytes){
+  if(bytes<1024) return bytes+' B';
+  if(bytes<1048576) return (bytes/1024).toFixed(1)+' KB';
+  return (bytes/1048576).toFixed(1)+' MB';
+}
+
+// ─── JSON 编辑器 ───
+function initJsonEditor(){
+  const ta=document.getElementById('invite-json-input');
+  if(!ta) return;
+  ta.addEventListener('input',()=>{
+    const len=ta.value.length;
+    const el=document.getElementById('json-char-count');
+    el.textContent=len>=1000?(len/1000).toFixed(1)+'K 字符':len+' 字符';
+  });
+}
+
+function formatJsonInput(){
+  const ta=document.getElementById('invite-json-input');
+  try{
+    const parsed=JSON.parse(ta.value.trim());
+    ta.value=JSON.stringify(parsed,null,2);
+    ta.dispatchEvent(new Event('input'));
+    toast('JSON 已格式化','success');
+  }catch(e){toast('JSON 格式错误: '+e.message,'error')}
+}
+
+function clearJsonInput(){
+  const ta=document.getElementById('invite-json-input');
+  ta.value='';ta.dispatchEvent(new Event('input'));
+}
+
+// ─── 上传逻辑 ───
+async function uploadFromJsonInput(){
+  const ta=document.getElementById('invite-json-input');
+  const raw=ta.value.trim();
+  if(!raw){toast('请粘贴 JSON 数据','error');return}
+  try{
+    let parsed=JSON.parse(raw);
+    if(!Array.isArray(parsed)) parsed=[parsed];
+    await doUpload('pasted-json',parsed);
+  }catch(e){toast('JSON 解析失败: '+e.message,'error')}
+}
 
 async function uploadInviteFile(){
   const input=document.getElementById('invite-file');
@@ -118,16 +223,55 @@ async function uploadInviteFile(){
   const file=input.files[0];
   try{
     const text=await file.text();
-    const accounts=JSON.parse(text);
-    const resp=await api('/api/invite/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:file.name,accounts})});
+    let accounts=JSON.parse(text);
+    if(!Array.isArray(accounts)) accounts=[accounts];
+    await doUpload(file.name,accounts);
+  }catch(e){toast('文件解析失败: '+e.message,'error')}
+}
+
+async function doUpload(filename,accounts){
+  try{
+    const resp=await api('/api/invite/upload',{method:'POST',body:{filename,accounts}});
     if(resp.error){toast(resp.error,'error');return}
     toast(`上传成功: ${resp.owner_count} 个 Owner`,'success');
-    const preview=document.getElementById('invite-owners-preview');
-    preview.innerHTML=resp.owners.map(o=>`<div class="flex gap-4 py-1" style="border-bottom:1px solid var(--border)"><span class="c-heading">${esc(o.email)}</span><span class="text-dim">${esc(o.account_id.substring(0,8))}...</span><span class="text-dim">${o.expires?o.expires.substring(0,10):'--'}</span></div>`).join('');
-    document.getElementById('invite-upload-result').classList.remove('hidden');
+    showOwnersPreview(resp.owners,resp.owner_count);
     inviteCurrentUploadId=resp.upload_id;
     loadInviteUploads();
-  }catch(e){toast('文件解析失败: '+e.message,'error')}
+  }catch(e){/* api() 已 toast */}
+}
+
+// ─── 丰富的数据预览 ───
+function showOwnersPreview(owners,count){
+  const preview=document.getElementById('invite-owners-preview');
+  const badge=document.getElementById('owner-count-badge');
+  badge.textContent=count+' 个 Owner';
+  preview.innerHTML=owners.map((o,i)=>{
+    const expired=o.expires?new Date(o.expires)<new Date():false;
+    const statusDot=expired?'background:#f87171;box-shadow:0 0 6px rgba(248,113,113,.5)':'background:#2dd4bf;box-shadow:0 0 6px rgba(45,212,191,.5)';
+    const statusText=expired?'已过期':'有效';
+    const expDate=o.expires?o.expires.substring(0,10):'--';
+    const idShort=o.account_id?o.account_id.substring(0,8):'--';
+    return `<div class="owner-card" style="animation-delay:${i*50}ms">
+      <div class="flex items-center gap-3 min-w-0">
+        <div style="width:30px;height:30px;border-radius:8px;background:var(--ghost);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <span class="font-mono text-[.6rem] c-dim font-semibold">${i+1}</span>
+        </div>
+        <div class="min-w-0">
+          <div class="text-xs c-heading font-medium truncate">${esc(o.email||'未知邮箱')}</div>
+          <div class="flex items-center gap-2 mt-0.5">
+            <span class="font-mono text-[.6rem] text-dim">${esc(idShort)}…</span>
+            <span class="text-[.6rem] text-dim">·</span>
+            <span class="text-[.6rem] text-dim">${expDate}</span>
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <div style="width:5px;height:5px;border-radius:50%;${statusDot}"></div>
+        <span class="text-[.6rem] font-medium" style="color:${expired?'#f87171':'#2dd4bf'}">${statusText}</span>
+      </div>
+    </div>`;
+  }).join('');
+  document.getElementById('invite-upload-result').classList.remove('hidden');
 }
 
 async function loadInviteUploads(){
@@ -166,7 +310,7 @@ async function executeInvite(){
   const s2aTeam=document.getElementById('inv-s2a-team').value||undefined;
   const pushS2a=document.getElementById('inv-push-s2a').value==='true';
   try{
-    const resp=await api('/api/invite/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({upload_id:uploadId,invite_count:inviteCount,s2a_team:s2aTeam,push_s2a:pushS2a})});
+    const resp=await api('/api/invite/execute',{method:'POST',body:{upload_id:uploadId,invite_count:inviteCount,s2a_team:s2aTeam,push_s2a:pushS2a}});
     if(resp.error){toast(resp.error,'error');return}
     toast(`已创建 ${resp.task_count} 个邀请任务`,'success');
     loadInviteTasks();
@@ -241,9 +385,14 @@ async function loadTeamsForSelect(){
 // ─── 页面初始化 ────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded',()=>{
+  initDropZone();
+  initJsonEditor();
+  updateTabIndicator();
   loadInviteConfig();
   loadInviteUploads();
   loadInviteTasks();
   loadTeamsForSelect();
   connectLogStream();
 });
+// 窗口大小变化时重新计算 tab 滑块位置
+window.addEventListener('resize',updateTabIndicator);
