@@ -115,6 +115,23 @@ let inviteCurrentUploadId=null;
 let inviteTaskPollTimer=null;
 let currentInputMode='file';
 
+// ─── 分页状态 ───
+const PAGE_SIZE=5;
+let allInviteTasks=[];let inviteTasksPage=1;
+let allInviteUploads=[];let inviteUploadsPage=1;
+
+function paginationHtml(total,page,perPage,fnName){
+  const pages=Math.ceil(total/perPage);
+  if(pages<=1) return '';
+  const prevAttr=page>1?`onclick="${fnName}(${page-1})"`:'disabled style="opacity:.35;pointer-events:none"';
+  const nextAttr=page<pages?`onclick="${fnName}(${page+1})"`:'disabled style="opacity:.35;pointer-events:none"';
+  return `<div class="flex items-center justify-center gap-3 mt-3 pt-3" style="border-top:1px solid var(--border)">
+    <button ${prevAttr} class="btn btn-ghost text-xs py-1 px-2">‹ 上一页</button>
+    <span class="text-[.65rem] font-mono text-dim">${page} / ${pages}</span>
+    <button ${nextAttr} class="btn btn-ghost text-xs py-1 px-2">下一页 ›</button>
+  </div>`;
+}
+
 // ─── Tab 切换 + 滑块动画 ───
 function updateTabIndicator(){
   const tabs=document.getElementById('upload-tabs');
@@ -277,17 +294,29 @@ function showOwnersPreview(owners,count){
 async function loadInviteUploads(){
   try{
     const uploads=await api('/api/invite/uploads');
-    const container=document.getElementById('invite-uploads-list');
+    allInviteUploads=uploads||[];
+    inviteUploadsPage=1;
+    renderInviteUploadsPage(1);
+    // 更新下拉选择器
     const select=document.getElementById('inv-upload-id');
-    if(!uploads||uploads.length===0){
-      container.innerHTML='<span class="text-dim">暂无上传记录</span>';
+    if(!allInviteUploads.length){
       select.innerHTML='<option value="">-- 无 --</option>';
       return;
     }
-    container.innerHTML=`<div class="grid gap-2">${uploads.map(u=>`<div class="flex items-center gap-4 py-2 px-3 rounded" style="background:var(--ghost)"><span class="c-heading font-mono">${esc(u.id)}</span><span>${esc(u.filename)}</span><span class="text-dim">${u.owner_count} 个 Owner</span><span class="text-dim">${formatTime(u.created_at)}</span></div>`).join('')}</div>`;
-    select.innerHTML=uploads.map(u=>`<option value="${u.id}"${u.id===inviteCurrentUploadId?' selected':''}>${esc(u.filename)} (${u.owner_count} Owner, ${formatTime(u.created_at)})</option>`).join('');
+    select.innerHTML=allInviteUploads.map(u=>`<option value="${u.id}"${u.id===inviteCurrentUploadId?' selected':''}>${esc(u.filename)} (${u.owner_count} Owner, ${formatTime(u.created_at)})</option>`).join('');
     loadInviteUploadDetail();
   }catch(e){console.error('loadInviteUploads',e)}
+}
+
+function renderInviteUploadsPage(page){
+  inviteUploadsPage=page;
+  const container=document.getElementById('invite-uploads-list');
+  if(!allInviteUploads.length){
+    container.innerHTML='<span class="text-dim">暂无上传记录</span>';return;
+  }
+  const start=(page-1)*PAGE_SIZE;
+  const slice=allInviteUploads.slice(start,start+PAGE_SIZE);
+  container.innerHTML=`<div class="grid gap-2">${slice.map(u=>`<div class="flex items-center gap-4 py-2 px-3 rounded" style="background:var(--ghost)"><span class="c-heading font-mono">${esc(u.id)}</span><span>${esc(u.filename)}</span><span class="text-dim">${u.owner_count} 个 Owner</span><span class="text-dim">${formatTime(u.created_at)}</span></div>`).join('')}</div>${paginationHtml(allInviteUploads.length,page,PAGE_SIZE,'renderInviteUploadsPage')}`;
 }
 
 async function loadInviteUploadDetail(){
@@ -319,34 +348,16 @@ async function executeInvite(){
   }catch(e){toast('执行失败: '+e.message,'error')}
 }
 
-async function loadInviteTasks(){
+async function loadInviteTasks(resetPage){
   try{
     const tasks=await api('/api/invite/tasks');
-    const container=document.getElementById('invite-tasks-list');
-    if(!tasks||tasks.length===0){
-      container.innerHTML='<span class="text-dim">暂无邀请任务</span>';
-      return;
-    }
-    container.innerHTML=`<div class="grid gap-2">${tasks.map(t=>{
-      const statusColor=t.status==='completed'?'text-teal-400':t.status==='running'?'text-amber-400':t.status==='failed'?'text-red-400':'text-dim';
-      return `<div class="py-2.5 px-3 rounded" style="background:var(--ghost)">
-        <div class="flex items-center gap-4 mb-1.5">
-          <span class="font-mono c-heading">${esc(t.id)}</span>
-          <span class="${statusColor} font-medium">${esc(t.status)}</span>
-          <span class="text-dim">${esc(t.owner_email)}</span>
-          <span class="text-dim">${t.s2a_team||'--'}</span>
-          <span class="text-dim">${formatTime(t.created_at)}</span>
-        </div>
-        <div class="flex gap-4 text-[.65rem]">
-          <span>邀请: <span class="text-teal-400">${t.invited_ok}</span>/<span class="text-red-400">${t.invited_failed}</span></span>
-          <span>注册: <span class="text-teal-400">${t.reg_ok}</span>/<span class="text-red-400">${t.reg_failed}</span></span>
-          <span>RT: <span class="text-teal-400">${t.rt_ok}</span>/<span class="text-red-400">${t.rt_failed}</span></span>
-          <span>S2A: <span class="text-teal-400">${t.s2a_ok}</span>/<span class="text-red-400">${t.s2a_failed}</span></span>
-        </div>
-        ${t.error?`<div class="text-red-400 text-[.65rem] mt-1">${esc(t.error)}</div>`:''}
-      </div>`;
-    }).join('')}</div>`;
-    if(tasks.some(t=>t.status==='running'||t.status==='pending')){
+    allInviteTasks=tasks||[];
+    if(resetPage!==false) inviteTasksPage=1;
+    // 页码越界修正
+    const totalPages=Math.max(1,Math.ceil(allInviteTasks.length/PAGE_SIZE));
+    if(inviteTasksPage>totalPages) inviteTasksPage=totalPages;
+    renderInviteTasksPage(inviteTasksPage);
+    if(allInviteTasks.some(t=>t.status==='running'||t.status==='pending')){
       startInviteTaskPoll();
     }else{
       stopInviteTaskPoll();
@@ -354,9 +365,38 @@ async function loadInviteTasks(){
   }catch(e){console.error('loadInviteTasks',e)}
 }
 
+function renderInviteTasksPage(page){
+  inviteTasksPage=page;
+  const container=document.getElementById('invite-tasks-list');
+  if(!allInviteTasks.length){
+    container.innerHTML='<span class="text-dim">暂无邀请任务</span>';return;
+  }
+  const start=(page-1)*PAGE_SIZE;
+  const slice=allInviteTasks.slice(start,start+PAGE_SIZE);
+  container.innerHTML=`<div class="grid gap-2">${slice.map(t=>{
+    const statusColor=t.status==='completed'?'text-teal-400':t.status==='running'?'text-amber-400':t.status==='failed'?'text-red-400':'text-dim';
+    return `<div class="py-2.5 px-3 rounded" style="background:var(--ghost)">
+      <div class="flex items-center gap-4 mb-1.5">
+        <span class="font-mono c-heading">${esc(t.id)}</span>
+        <span class="${statusColor} font-medium">${esc(t.status)}</span>
+        <span class="text-dim">${esc(t.owner_email)}</span>
+        <span class="text-dim">${t.s2a_team||'--'}</span>
+        <span class="text-dim">${formatTime(t.created_at)}</span>
+      </div>
+      <div class="flex gap-4 text-[.65rem]">
+        <span>邀请: <span class="text-teal-400">${t.invited_ok}</span>/<span class="text-red-400">${t.invited_failed}</span></span>
+        <span>注册: <span class="text-teal-400">${t.reg_ok}</span>/<span class="text-red-400">${t.reg_failed}</span></span>
+        <span>RT: <span class="text-teal-400">${t.rt_ok}</span>/<span class="text-red-400">${t.rt_failed}</span></span>
+        <span>S2A: <span class="text-teal-400">${t.s2a_ok}</span>/<span class="text-red-400">${t.s2a_failed}</span></span>
+      </div>
+      ${t.error?`<div class="text-red-400 text-[.65rem] mt-1">${esc(t.error)}</div>`:''}
+    </div>`;
+  }).join('')}</div>${paginationHtml(allInviteTasks.length,page,PAGE_SIZE,'renderInviteTasksPage')}`;
+}
+
 function startInviteTaskPoll(){
   if(inviteTaskPollTimer)return;
-  inviteTaskPollTimer=setInterval(loadInviteTasks,3000);
+  inviteTaskPollTimer=setInterval(()=>loadInviteTasks(false),3000);
 }
 function stopInviteTaskPoll(){
   if(inviteTaskPollTimer){clearInterval(inviteTaskPollTimer);inviteTaskPollTimer=null}
