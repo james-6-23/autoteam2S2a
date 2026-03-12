@@ -225,6 +225,7 @@ pub struct InviteUploadRecord {
     pub filename: String,
     pub owner_count: usize,
     pub unused_count: usize,
+    pub owner_emails: String,
     pub created_at: String,
 }
 
@@ -1172,7 +1173,12 @@ impl RunHistoryDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT u.id, u.filename, u.owner_count, u.created_at,
-                    COALESCE((SELECT COUNT(*) FROM invite_owners o WHERE o.upload_id = u.id AND o.used = 0), 0)
+                    COALESCE((SELECT COUNT(*) FROM invite_owners o
+                              WHERE o.upload_id = u.id AND o.used = 0
+                              AND (SELECT COUNT(*) FROM invite_tasks t
+                                   WHERE t.upload_id = u.id AND t.owner_email = o.email AND t.status = 'failed') < 2
+                    ), 0),
+                    COALESCE((SELECT GROUP_CONCAT(o2.email, ', ') FROM invite_owners o2 WHERE o2.upload_id = u.id), '')
              FROM invite_uploads u ORDER BY u.created_at DESC",
         )?;
         let rows = stmt
@@ -1183,6 +1189,7 @@ impl RunHistoryDb {
                     owner_count: row.get::<_, i64>(2)? as usize,
                     created_at: row.get(3)?,
                     unused_count: row.get::<_, i64>(4)? as usize,
+                    owner_emails: row.get::<_, String>(5).unwrap_or_default(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1194,7 +1201,12 @@ impl RunHistoryDb {
         let upload = {
             let mut stmt = conn.prepare(
                 "SELECT u.id, u.filename, u.owner_count, u.created_at,
-                        COALESCE((SELECT COUNT(*) FROM invite_owners o WHERE o.upload_id = u.id AND o.used = 0), 0)
+                        COALESCE((SELECT COUNT(*) FROM invite_owners o
+                                  WHERE o.upload_id = u.id AND o.used = 0
+                                  AND (SELECT COUNT(*) FROM invite_tasks t
+                                       WHERE t.upload_id = u.id AND t.owner_email = o.email AND t.status = 'failed') < 2
+                        ), 0),
+                        COALESCE((SELECT GROUP_CONCAT(o2.email, ', ') FROM invite_owners o2 WHERE o2.upload_id = u.id), '')
                  FROM invite_uploads u WHERE u.id = ?1",
             )?;
             let mut rows = stmt.query_map(params![upload_id], |row| {
@@ -1204,6 +1216,7 @@ impl RunHistoryDb {
                     owner_count: row.get::<_, i64>(2)? as usize,
                     created_at: row.get(3)?,
                     unused_count: row.get::<_, i64>(4)? as usize,
+                    owner_emails: row.get::<_, String>(5).unwrap_or_default(),
                 })
             })?;
             match rows.next() {

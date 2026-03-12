@@ -443,14 +443,18 @@ async function loadInviteUploads(){
     // 更新自定义下拉
     const available=allInviteUploads.filter(u=>u.unused_count>0);
     const selectedVal=inviteCurrentUploadId||(available[0]&&available[0].id)||'';
-    renderCustomSelectOptions('inv-upload-id',available.map(u=>({
-      value:u.id,
-      title:u.filename,
-      meta:`${u.unused_count}/${u.owner_count} 可用 · ${formatTime(u.created_at)}`,
-      dotColor:u.unused_count===u.owner_count?'#2dd4bf':'#fbbf24',
-      badge:`${u.unused_count} 可用`,
-      badgeCls:u.unused_count>0?'cs-badge-ok':'cs-badge-used',
-    })),selectedVal);
+    renderCustomSelectOptions('inv-upload-id',available.map(u=>{
+      const emails=u.owner_emails||'';
+      const emailShort=emails.length>30?emails.substring(0,30)+'…':emails;
+      return {
+        value:u.id,
+        title:`${u.filename} — ${emailShort||u.id.substring(0,8)}`,
+        meta:`${u.unused_count}/${u.owner_count} 可用 · ${formatTime(u.created_at)}`,
+        dotColor:u.unused_count===u.owner_count?'#2dd4bf':'#fbbf24',
+        badge:`${u.unused_count} 可用`,
+        badgeCls:'cs-badge-ok',
+      };
+    }),selectedVal);
     loadInviteUploadDetail();
   }catch(e){console.error('loadInviteUploads',e)}
 }
