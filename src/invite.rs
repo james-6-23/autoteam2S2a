@@ -23,29 +23,47 @@ pub struct TeamOwner {
     pub expires: Option<String>,
 }
 
-/// 解析上传的 accounts.json，提取 owner 信息
+/// 解析上传的 accounts JSON，兼容多种格式：
+/// - 格式 A（数组）：`[{ "user": { "email": "..." }, "account": { "id": "..." }, "accessToken": "..." }]`
+/// - 格式 B（对象）：`{ "accounts": [{ "id": "...", "access_token": "..." }] }`
+/// - email 缺失时自动从 JWT access_token 中提取
 pub fn parse_owners_json(value: &serde_json::Value) -> Result<Vec<TeamOwner>> {
-    let arr = value
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("JSON 必须是数组"))?;
+    // 兼容 { "accounts": [...] } 包装格式
+    let arr = if let Some(arr) = value.as_array() {
+        arr.clone()
+    } else if let Some(arr) = value.pointer("/accounts").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else {
+        bail!("JSON 格式不支持，需要数组或 {{ \"accounts\": [...] }}");
+    };
 
     let mut owners = Vec::new();
     for (i, item) in arr.iter().enumerate() {
-        let email = item
-            .pointer("/user/email")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let account_id = item
-            .pointer("/account/id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("第 {} 个账号缺少 account.id", i + 1))?
-            .to_string();
+        // access_token: 兼容 accessToken / access_token
         let access_token = item
             .get("accessToken")
+            .or_else(|| item.get("access_token"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("第 {} 个账号缺少 accessToken", i + 1))?
+            .ok_or_else(|| anyhow::anyhow!("第 {} 个账号缺少 accessToken / access_token", i + 1))?
             .to_string();
+
+        // account_id: 兼容 account.id / id
+        let account_id = item
+            .pointer("/account/id")
+            .or_else(|| item.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("第 {} 个账号缺少 account.id / id", i + 1))?
+            .to_string();
+
+        // email: 兼容 user.email / email，缺失时从 JWT 提取
+        let email = item
+            .pointer("/user/email")
+            .or_else(|| item.get("email"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| extract_email_from_jwt(&access_token))
+            .unwrap_or_default();
+
         let expires = item
             .get("expires")
             .and_then(|v| v.as_str())
@@ -63,6 +81,23 @@ pub fn parse_owners_json(value: &serde_json::Value) -> Result<Vec<TeamOwner>> {
         bail!("JSON 数组为空，没有解析到 owner 账号");
     }
     Ok(owners)
+}
+
+/// 从 JWT access_token 的 payload 中提取 email
+fn extract_email_from_jwt(token: &str) -> Option<String> {
+    use base64::Engine;
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    // ChatGPT JWT: "https://api.openai.com/profile" → { "email": "..." }
+    json.pointer("/https:~1~1api.openai.com~1profile/email")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// 将 TeamOwner 转为 DB 插入结构
