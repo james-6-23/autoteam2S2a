@@ -87,6 +87,9 @@ enum WriteCommand {
     MarkOwnerUsed {
         owner_id: i64,
     },
+    ResetOwnerUsed {
+        owner_id: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -221,6 +224,7 @@ pub struct InviteUploadRecord {
     pub id: String,
     pub filename: String,
     pub owner_count: usize,
+    pub unused_count: usize,
     pub created_at: String,
 }
 
@@ -691,6 +695,12 @@ impl RunHistoryDb {
                     params![owner_id],
                 )?;
             }
+            WriteCommand::ResetOwnerUsed { owner_id } => {
+                conn.execute(
+                    "UPDATE invite_owners SET used = 0 WHERE id = ?1",
+                    params![owner_id],
+                )?;
+            }
         }
         Ok(())
     }
@@ -1129,6 +1139,10 @@ impl RunHistoryDb {
         self.send_write_command(WriteCommand::MarkOwnerUsed { owner_id })
     }
 
+    pub fn enqueue_reset_owner_used(&self, owner_id: i64) -> Result<()> {
+        self.send_write_command(WriteCommand::ResetOwnerUsed { owner_id })
+    }
+
     /// 同步插入上传记录和 owners（用于上传接口立即返回结果）
     pub fn insert_invite_upload_sync(
         &self,
@@ -1157,7 +1171,9 @@ impl RunHistoryDb {
     pub fn list_invite_uploads(&self) -> Result<Vec<InviteUploadRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, filename, owner_count, created_at FROM invite_uploads ORDER BY created_at DESC",
+            "SELECT u.id, u.filename, u.owner_count, u.created_at,
+                    COALESCE((SELECT COUNT(*) FROM invite_owners o WHERE o.upload_id = u.id AND o.used = 0), 0)
+             FROM invite_uploads u ORDER BY u.created_at DESC",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -1166,6 +1182,7 @@ impl RunHistoryDb {
                     filename: row.get(1)?,
                     owner_count: row.get::<_, i64>(2)? as usize,
                     created_at: row.get(3)?,
+                    unused_count: row.get::<_, i64>(4)? as usize,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1176,7 +1193,9 @@ impl RunHistoryDb {
         let conn = self.conn.lock().unwrap();
         let upload = {
             let mut stmt = conn.prepare(
-                "SELECT id, filename, owner_count, created_at FROM invite_uploads WHERE id = ?1",
+                "SELECT u.id, u.filename, u.owner_count, u.created_at,
+                        COALESCE((SELECT COUNT(*) FROM invite_owners o WHERE o.upload_id = u.id AND o.used = 0), 0)
+                 FROM invite_uploads u WHERE u.id = ?1",
             )?;
             let mut rows = stmt.query_map(params![upload_id], |row| {
                 Ok(InviteUploadRecord {
@@ -1184,6 +1203,7 @@ impl RunHistoryDb {
                     filename: row.get(1)?,
                     owner_count: row.get::<_, i64>(2)? as usize,
                     created_at: row.get(3)?,
+                    unused_count: row.get::<_, i64>(4)? as usize,
                 })
             })?;
             match rows.next() {

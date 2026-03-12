@@ -652,6 +652,13 @@ pub async fn run_invite_workflow(
         }
     }
 
+    // ─── 失败回退：重置 owner 可用状态 ─────────────────────────────────────
+    // 没有任何账号成功入库 → owner 未被消耗，恢复为可用，允许重试
+    if s2a_ok_count == 0 {
+        let _ = db.enqueue_reset_owner_used(owner_db_id);
+        broadcast_log(&format!("[回退] {} 无成功入库，已恢复为可用", owner.email));
+    }
+
     // ─── 阶段 5: 注销母号 ────────────────────────────────────────────────────
     // 只要有任何账号成功入库 S2A，就注销 owner（母号已完成使命）
     if s2a_ok_count > 0 {

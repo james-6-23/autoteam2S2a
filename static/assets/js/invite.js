@@ -303,7 +303,13 @@ async function loadInviteUploads(){
       select.innerHTML='<option value="">-- 无 --</option>';
       return;
     }
-    select.innerHTML=allInviteUploads.map(u=>`<option value="${u.id}"${u.id===inviteCurrentUploadId?' selected':''}>${esc(u.filename)} (${u.owner_count} Owner, ${formatTime(u.created_at)})</option>`).join('');
+    const available=allInviteUploads.filter(u=>u.unused_count>0);
+    if(!available.length){
+      select.innerHTML='<option value="">-- 全部已使用 --</option>';
+      loadInviteUploadDetail();
+      return;
+    }
+    select.innerHTML=available.map(u=>`<option value="${u.id}"${u.id===inviteCurrentUploadId?' selected':''}>${esc(u.filename)} (${u.unused_count}/${u.owner_count} 可用, ${formatTime(u.created_at)})</option>`).join('');
     loadInviteUploadDetail();
   }catch(e){console.error('loadInviteUploads',e)}
 }
