@@ -2807,6 +2807,9 @@ async fn execute_invite_handler(
 
     let mut task_ids = Vec::new();
 
+    // 全局并发限制：最多 20 个 owner 同时执行邀请流程
+    let invite_semaphore = Arc::new(tokio::sync::Semaphore::new(20));
+
     for (owner_db_id, owner_email, owner_account_id, access_token) in unused_owners {
         let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
@@ -2855,8 +2858,10 @@ async fn execute_invite_handler(
         let cfg_clone = config_snapshot.clone();
         let team_clone = team.clone();
         let task_id_clone = task_id.clone();
+        let sem = invite_semaphore.clone();
 
         tokio::spawn(async move {
+            let _permit = sem.acquire().await;
             crate::invite::run_invite_workflow(
                 task_id_clone,
                 owner_db_id,
