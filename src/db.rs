@@ -61,12 +61,14 @@ enum WriteCommand {
         new_name: String,
     },
     // ─── 邀请模块写命令 ───
+    #[allow(dead_code)]
     InsertInviteUpload {
         id: String,
         filename: String,
         owner_count: usize,
         created_at: String,
     },
+    #[allow(dead_code)]
     InsertInviteOwners {
         upload_id: String,
         owners: Vec<InviteOwnerInsert>,
@@ -1085,6 +1087,7 @@ impl RunHistoryDb {
 
     // ─── 邀请模块 ────────────────────────────────────────────────────────────
 
+    #[allow(dead_code)]
     pub fn enqueue_insert_invite_upload(
         &self,
         id: String,
@@ -1100,6 +1103,7 @@ impl RunHistoryDb {
         })
     }
 
+    #[allow(dead_code)]
     pub fn enqueue_insert_invite_owners(
         &self,
         upload_id: String,
