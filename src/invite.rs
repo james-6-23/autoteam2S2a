@@ -668,19 +668,19 @@ pub async fn run_invite_workflow(
         broadcast_log(&format!("[回退] {} 无有效产出，已恢复为可用", owner.email));
     }
 
-    // ─── 阶段 5: 注销母号 ────────────────────────────────────────────────────
-    if has_useful_output {
-        progress.set_stage("注销母号");
-        broadcast_log(&format!("[注销] 正在注销母号 {}...", owner.email));
-        match deactivate_owner(&owner, &invite_cfg).await {
-            Ok(()) => {
-                broadcast_log(&format!("[注销成功] {} 已停用", owner.email));
-            }
-            Err(e) => {
-                broadcast_log(&format!("[注销失败] {}: {e:#}", owner.email));
-            }
-        }
-    }
+    // ─── 阶段 5: 注销母号（已暂停）─────────────────────────────────────────
+    // if has_useful_output {
+    //     progress.set_stage("注销母号");
+    //     broadcast_log(&format!("[注销] 正在注销母号 {}...", owner.email));
+    //     match deactivate_owner(&owner, &invite_cfg).await {
+    //         Ok(()) => {
+    //             broadcast_log(&format!("[注销成功] {} 已停用", owner.email));
+    //         }
+    //         Err(e) => {
+    //             broadcast_log(&format!("[注销失败] {}: {e:#}", owner.email));
+    //         }
+    //     }
+    // }
 
     // ─── 完成 ────────────────────────────────────────────────────────────────
     let task_status = if has_useful_output { "completed" } else { "failed" };
