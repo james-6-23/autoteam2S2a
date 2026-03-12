@@ -531,13 +531,7 @@ function stopInviteTaskPoll(){
 }
 
 async function loadInviteConfig(){
-  try{
-    const cfg=await api('/api/invite/config');
-    if(cfg&&cfg.default_invite_count){
-      const el=document.getElementById('inv-count');
-      if(el&&!el.dataset.userChanged)el.value=cfg.default_invite_count;
-    }
-  }catch(e){/* ignore */}
+  // 邀请数固定为 4（team 最大席位），不从后端覆盖
 }
 
 async function loadTeamsForSelect(){
