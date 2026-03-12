@@ -423,6 +423,57 @@ nav{-webkit-overflow-scrolling:touch}
   padding:8px 12px;border-top:1px solid var(--border);background:var(--ghost)
 }
 
+/* Custom select dropdown */
+.custom-select{position:relative;width:100%}
+.custom-select-trigger{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  width:100%;padding:8px 12px;border-radius:8px;cursor:pointer;
+  background:var(--input-bg);border:1px solid var(--border-input);
+  color:var(--text);font-size:.8125rem;font-family:'DM Sans',sans-serif;
+  transition:border-color .2s,box-shadow .2s;user-select:none
+}
+.custom-select-trigger:hover{border-color:var(--border-hover)}
+.custom-select.open .custom-select-trigger{
+  border-color:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.12);border-radius:8px 8px 0 0
+}
+.custom-select-trigger .cs-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.custom-select-trigger .cs-placeholder{color:var(--text-dim)}
+.custom-select-trigger .cs-arrow{
+  flex-shrink:0;width:16px;height:16px;color:var(--text-dim);transition:transform .2s
+}
+.custom-select.open .cs-arrow{transform:rotate(180deg)}
+
+.custom-select-panel{
+  display:none;position:absolute;top:100%;left:0;right:0;z-index:60;
+  max-height:240px;overflow-y:auto;
+  background:var(--bg-card);border:1px solid var(--border-hover);border-top:none;
+  border-radius:0 0 10px 10px;
+  box-shadow:0 12px 32px -8px rgba(0,0,0,.5)
+}
+.custom-select.open .custom-select-panel{display:block}
+
+.cs-option{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 14px;cursor:pointer;transition:background .15s;
+  border-bottom:1px solid var(--border)
+}
+.cs-option:last-child{border-bottom:none}
+.cs-option:hover{background:var(--ghost-hover)}
+.cs-option.selected{background:rgba(245,158,11,.08)}
+.cs-option .cs-opt-dot{
+  width:7px;height:7px;border-radius:50%;flex-shrink:0
+}
+.cs-option .cs-opt-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.cs-option .cs-opt-title{font-size:.78rem;color:var(--text-heading);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cs-option .cs-opt-meta{font-size:.65rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace}
+.cs-option .cs-opt-badge{
+  flex-shrink:0;font-size:.6rem;font-weight:600;padding:2px 8px;border-radius:9999px;
+  white-space:nowrap
+}
+.cs-badge-ok{background:rgba(20,184,166,.1);color:#2dd4bf;border:1px solid rgba(20,184,166,.2)}
+.cs-badge-used{background:var(--ghost);color:var(--text-dim);border:1px solid var(--border)}
+html.light .custom-select-panel{box-shadow:0 12px 32px -8px rgba(0,0,0,.12)}
+
 /* Owner preview cards */
 .owner-card{
   display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;

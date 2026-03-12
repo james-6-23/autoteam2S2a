@@ -52,6 +52,123 @@ function formatTime(iso){
   try{const d=new Date(iso);return d.toLocaleString('zh-CN',{hour12:false,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch{return iso}
 }
 
+// ─── 自定义下拉组件 ──────────────────────────────────────────────────────
+
+let customSelectValue={};
+
+function toggleCustomSelect(id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  const wasOpen=el.classList.contains('open');
+  // 关闭所有
+  document.querySelectorAll('.custom-select.open').forEach(s=>s.classList.remove('open'));
+  if(!wasOpen) el.classList.add('open');
+}
+
+function selectCustomOption(id,value){
+  customSelectValue[id]=value;
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.classList.remove('open');
+  // 更新选中状态
+  el.querySelectorAll('.cs-option').forEach(o=>{
+    o.classList.toggle('selected',o.dataset.value===value);
+  });
+  // 更新 trigger 文本
+  const opt=el.querySelector(`.cs-option[data-value="${value}"]`);
+  const label=el.querySelector('.cs-label');
+  if(opt&&label){
+    label.textContent=opt.querySelector('.cs-opt-title').textContent;
+    label.classList.remove('cs-placeholder');
+  }
+  // 触发回调
+  if(id==='inv-upload-id') loadInviteUploadDetail();
+}
+
+function getCustomSelectValue(id){
+  return customSelectValue[id]||'';
+}
+
+function renderCustomSelectOptions(id,options,selectedVal){
+  const el=document.getElementById(id);
+  if(!el)return;
+  const panel=el.querySelector('.custom-select-panel');
+  const label=el.querySelector('.cs-label');
+  if(!options.length){
+    panel.innerHTML='<div class="cs-option" style="cursor:default;color:var(--text-dim)">暂无可用批次</div>';
+    label.textContent='-- 无 --';
+    label.classList.add('cs-placeholder');
+    customSelectValue[id]='';
+    return;
+  }
+  panel.innerHTML=options.map(o=>`<div class="cs-option${o.value===selectedVal?' selected':''}" data-value="${esc(o.value)}" onclick="selectCustomOption('${id}','${esc(o.value)}')">
+    <div class="cs-opt-dot" style="background:${o.dotColor};box-shadow:0 0 6px ${o.dotColor}44"></div>
+    <div class="cs-opt-info">
+      <div class="cs-opt-title">${esc(o.title)}</div>
+      <div class="cs-opt-meta">${esc(o.meta)}</div>
+    </div>
+    <span class="cs-opt-badge ${o.badgeCls}">${esc(o.badge)}</span>
+  </div>`).join('');
+  // 设置选中项文本
+  const sel=options.find(o=>o.value===selectedVal)||options[0];
+  if(sel){
+    customSelectValue[id]=sel.value;
+    label.textContent=sel.title;
+    label.classList.remove('cs-placeholder');
+  }
+}
+
+// 点击外部关闭下拉
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.custom-select')){
+    document.querySelectorAll('.custom-select.open').forEach(s=>s.classList.remove('open'));
+  }
+});
+
+// ─── TXT 文件解析 ────────────────────────────────────────────────────────
+
+function parseTxtToAccounts(text){
+  // 尝试整体解析
+  try{
+    const parsed=JSON.parse(text.trim());
+    return Array.isArray(parsed)?parsed:[parsed];
+  }catch{}
+
+  // 按空行分割成块，每块尝试解析为 JSON
+  const results=[];
+  // 用正则匹配所有 JSON 对象/数组（大括号/方括号配对）
+  const chunks=text.split(/\n\s*\n/);
+  for(const chunk of chunks){
+    const trimmed=chunk.trim();
+    if(!trimmed) continue;
+    try{
+      const parsed=JSON.parse(trimmed);
+      if(Array.isArray(parsed)) results.push(...parsed);
+      else results.push(parsed);
+    }catch{
+      // 尝试逐行扫描 JSON 对象
+      const lines=trimmed.split('\n');
+      let buf='';let depth=0;
+      for(const line of lines){
+        for(const ch of line){
+          if(ch==='{'||ch==='[') depth++;
+          if(ch==='}'||ch===']') depth--;
+        }
+        buf+=line+'\n';
+        if(depth===0&&buf.trim()){
+          try{
+            const obj=JSON.parse(buf.trim());
+            if(Array.isArray(obj)) results.push(...obj);
+            else results.push(obj);
+          }catch{}
+          buf='';
+        }
+      }
+    }
+  }
+  return results;
+}
+
 // ─── SSE 实时日志 ──────────────────────────────────────────────────────────
 
 let logEs=null;let logAutoScroll=true;let logLineCount=0;
@@ -236,12 +353,18 @@ async function uploadFromJsonInput(){
 
 async function uploadInviteFile(){
   const input=document.getElementById('invite-file');
-  if(!input.files||!input.files[0]){toast('请选择 JSON 文件','error');return}
+  if(!input.files||!input.files[0]){toast('请选择文件','error');return}
   const file=input.files[0];
   try{
     const text=await file.text();
-    let accounts=JSON.parse(text);
-    if(!Array.isArray(accounts)) accounts=[accounts];
+    let accounts;
+    if(file.name.endsWith('.txt')){
+      accounts=parseTxtToAccounts(text);
+      if(!accounts.length){toast('TXT 中未找到有效 JSON 数据','error');return}
+    }else{
+      accounts=JSON.parse(text);
+      if(!Array.isArray(accounts)) accounts=[accounts];
+    }
     await doUpload(file.name,accounts);
   }catch(e){toast('文件解析失败: '+e.message,'error')}
 }
@@ -297,19 +420,17 @@ async function loadInviteUploads(){
     allInviteUploads=uploads||[];
     inviteUploadsPage=1;
     renderInviteUploadsPage(1);
-    // 更新下拉选择器
-    const select=document.getElementById('inv-upload-id');
-    if(!allInviteUploads.length){
-      select.innerHTML='<option value="">-- 无 --</option>';
-      return;
-    }
+    // 更新自定义下拉
     const available=allInviteUploads.filter(u=>u.unused_count>0);
-    if(!available.length){
-      select.innerHTML='<option value="">-- 全部已使用 --</option>';
-      loadInviteUploadDetail();
-      return;
-    }
-    select.innerHTML=available.map(u=>`<option value="${u.id}"${u.id===inviteCurrentUploadId?' selected':''}>${esc(u.filename)} (${u.unused_count}/${u.owner_count} 可用, ${formatTime(u.created_at)})</option>`).join('');
+    const selectedVal=inviteCurrentUploadId||(available[0]&&available[0].id)||'';
+    renderCustomSelectOptions('inv-upload-id',available.map(u=>({
+      value:u.id,
+      title:u.filename,
+      meta:`${u.unused_count}/${u.owner_count} 可用 · ${formatTime(u.created_at)}`,
+      dotColor:u.unused_count===u.owner_count?'#2dd4bf':'#fbbf24',
+      badge:`${u.unused_count} 可用`,
+      badgeCls:u.unused_count>0?'cs-badge-ok':'cs-badge-used',
+    })),selectedVal);
     loadInviteUploadDetail();
   }catch(e){console.error('loadInviteUploads',e)}
 }
@@ -326,7 +447,7 @@ function renderInviteUploadsPage(page){
 }
 
 async function loadInviteUploadDetail(){
-  const uploadId=document.getElementById('inv-upload-id').value;
+  const uploadId=getCustomSelectValue('inv-upload-id');
   const container=document.getElementById('invite-owners-table');
   const wrapper=document.getElementById('invite-owners-list');
   if(!uploadId){wrapper.classList.add('hidden');return}
@@ -339,7 +460,7 @@ async function loadInviteUploadDetail(){
 }
 
 async function executeInvite(){
-  const uploadId=document.getElementById('inv-upload-id').value;
+  const uploadId=getCustomSelectValue('inv-upload-id');
   if(!uploadId){toast('请先选择上传批次','error');return}
   const inviteCount=parseInt(document.getElementById('inv-count').value)||6;
   const s2aTeam=document.getElementById('inv-s2a-team').value||undefined;

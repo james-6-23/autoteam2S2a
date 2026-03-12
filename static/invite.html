@@ -76,7 +76,7 @@ tailwind.config={theme:{extend:{
 
     <!-- 文件拖拽上传模式 -->
     <div id="input-mode-file" class="px-5 pb-5">
-      <input type="file" id="invite-file" accept=".json" class="hidden">
+      <input type="file" id="invite-file" accept=".json,.txt" class="hidden">
       <div id="drop-zone" class="drop-zone" onclick="document.getElementById('invite-file').click()">
         <div class="drop-zone-inner">
           <div class="drop-icon">
@@ -84,7 +84,7 @@ tailwind.config={theme:{extend:{
           </div>
           <div class="drop-text">
             <span class="c-heading text-sm font-medium">拖放 JSON 文件到此处</span>
-            <span class="text-dim text-xs mt-1">或点击选择文件 · 支持 .json 格式</span>
+            <span class="text-dim text-xs mt-1">或点击选择文件 · 支持 .json / .txt 格式</span>
           </div>
         </div>
         <div class="drop-zone-glow"></div>
@@ -162,7 +162,13 @@ tailwind.config={theme:{extend:{
     <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
       <div>
         <label class="field-label">选择上传批次</label>
-        <select id="inv-upload-id" class="field-input" onchange="loadInviteUploadDetail()"></select>
+        <div id="inv-upload-id" class="custom-select">
+          <div class="custom-select-trigger" onclick="toggleCustomSelect('inv-upload-id')">
+            <span class="cs-label cs-placeholder">-- 无 --</span>
+            <svg class="cs-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+          </div>
+          <div class="custom-select-panel"></div>
+        </div>
       </div>
       <div>
         <label class="field-label">每 Owner 邀请数</label>
