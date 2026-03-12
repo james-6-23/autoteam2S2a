@@ -35,8 +35,9 @@ async function api(path,opts={}){
     const body=opts.body!=null?(typeof opts.body==='string'?opts.body:JSON.stringify(opts.body)):undefined;
     const {body:_,...restOpts}=opts;
     const res=await fetch(API+path,{headers:{'Content-Type':'application/json'},...restOpts,body});
-    const data=await res.json();
-    if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    const text=await res.text();
+    const data=text?JSON.parse(text):null;
+    if(!res.ok) throw new Error((data&&data.error)||`HTTP ${res.status}`);
     return data;
   }catch(e){toast(e.message,'error');throw e}
 }
