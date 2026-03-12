@@ -604,14 +604,22 @@ async function loadInviteConfig(){
 let invDistRowCount=0;
 let inviteTeams=[];
 
+function getInvDistUsedPercent(){
+  let sum=0;
+  document.querySelectorAll('#inv-dist-rows .inv-dist-percent').forEach(el=>{sum+=parseInt(el.value)||0});
+  return sum;
+}
+
 function addInvDistRow(team,pct){
   const id=invDistRowCount++;
   const rows=document.getElementById('inv-dist-rows');
+  // 未指定百分比时，自动填充剩余值
+  if(pct==null) pct=Math.max(0,100-getInvDistUsedPercent());
   const opts=inviteTeams.map(t=>`<option value="${esc(t.name)}" ${t.name===team?'selected':''}>${esc(t.name)}</option>`).join('');
   const row=document.createElement('div');
   row.className='flex items-center gap-2';
   row.id=`inv-dist-row-${id}`;
-  row.innerHTML=`<select class="inv-dist-team field-input flex-1">${opts}</select><input class="inv-dist-percent field-input w-24" type="number" min="1" max="100" placeholder="%" value="${pct||100}"><button onclick="document.getElementById('inv-dist-row-${id}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
+  row.innerHTML=`<select class="inv-dist-team field-input flex-1">${opts}</select><input class="inv-dist-percent field-input w-24" type="number" min="0" max="100" placeholder="%" value="${pct}"><button onclick="document.getElementById('inv-dist-row-${id}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
   rows.appendChild(row);
 }
 
