@@ -145,7 +145,20 @@ function smartParseAccounts(text){
     return unwrapAccounts(parsed);
   }catch{}
 
-  // ── 策略 2: 按空行分块，逐块解析 ──
+  // ── 策略 2: 全文大括号配对扫描（处理 JSON 中夹杂空行的情况）──
+  const extracted=extractJsonBlocks(raw);
+  if(extracted.length>0){
+    const results=[];
+    for(const block of extracted){
+      try{
+        const parsed=JSON.parse(block);
+        results.push(...unwrapAccounts(parsed));
+      }catch{}
+    }
+    if(results.length>0) return results;
+  }
+
+  // ── 策略 3: 按空行分块，逐块解析 ──
   const results=[];
   const chunks=raw.split(/\n\s*\n/);
   for(const chunk of chunks){
@@ -154,28 +167,41 @@ function smartParseAccounts(text){
     try{
       const parsed=JSON.parse(trimmed);
       results.push(...unwrapAccounts(parsed));
-      continue;
     }catch{}
-
-    // ── 策略 3: 逐行扫描大括号/方括号配对 ──
-    const lines=trimmed.split('\n');
-    let buf='';let depth=0;
-    for(const line of lines){
-      for(const ch of line){
-        if(ch==='{'||ch==='[') depth++;
-        if(ch==='}'||ch===']') depth--;
-      }
-      buf+=line+'\n';
-      if(depth===0&&buf.trim()){
-        try{
-          const obj=JSON.parse(buf.trim());
-          results.push(...unwrapAccounts(obj));
-        }catch{}
-        buf='';
-      }
-    }
   }
   return results;
+}
+
+// 从混合文本中提取所有顶层 JSON 块（{ } 或 [ ] 配对）
+function extractJsonBlocks(text){
+  const blocks=[];
+  let i=0;
+  while(i<text.length){
+    // 找到第一个 { 或 [
+    if(text[i]==='{'||text[i]==='['){
+      const open=text[i];
+      const close=open==='{'?'}':']';
+      let depth=1;let j=i+1;let inStr=false;let esc=false;
+      while(j<text.length&&depth>0){
+        const ch=text[j];
+        if(esc){esc=false;j++;continue}
+        if(ch==='\\'){esc=true;j++;continue}
+        if(ch==='"'){inStr=!inStr;j++;continue}
+        if(!inStr){
+          if(ch===open) depth++;
+          else if(ch===close) depth--;
+        }
+        j++;
+      }
+      if(depth===0){
+        blocks.push(text.substring(i,j));
+        i=j;
+        continue;
+      }
+    }
+    i++;
+  }
+  return blocks;
 }
 
 // 统一解包：数组 / 包装对象 / 单个对象 → 扁平数组
