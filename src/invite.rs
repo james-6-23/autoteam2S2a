@@ -316,7 +316,8 @@ async fn fetch_team_members(
 
 // ─── 注销 Owner 账号 ────────────────────────────────────────────────────────
 
-/// 调用 ChatGPT deactivate API 注销母号
+/// 调用 ChatGPT deactivate API 注销母号（暂停使用，保留备用）
+#[allow(dead_code)]
 async fn deactivate_owner(owner: &TeamOwner, invite_cfg: &InviteRuntimeConfig) -> Result<()> {
     let client = rquest::Client::builder()
         .timeout(Duration::from_secs(30))
