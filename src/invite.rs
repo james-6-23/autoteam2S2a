@@ -652,16 +652,17 @@ pub async fn run_invite_workflow(
         }
     }
 
+    // 判断是否产生了有用输出
+    let has_useful_output = if push_s2a { s2a_ok_count > 0 } else { rt_ok > 0 };
+
     // ─── 失败回退：重置 owner 可用状态 ─────────────────────────────────────
-    // 没有任何账号成功入库 → owner 未被消耗，恢复为可用，允许重试
-    if s2a_ok_count == 0 {
+    if !has_useful_output {
         let _ = db.enqueue_reset_owner_used(owner_db_id);
-        broadcast_log(&format!("[回退] {} 无成功入库，已恢复为可用", owner.email));
+        broadcast_log(&format!("[回退] {} 无有效产出，已恢复为可用", owner.email));
     }
 
     // ─── 阶段 5: 注销母号 ────────────────────────────────────────────────────
-    // 只要有任何账号成功入库 S2A，就注销 owner（母号已完成使命）
-    if s2a_ok_count > 0 {
+    if has_useful_output {
         progress.set_stage("注销母号");
         broadcast_log(&format!("[注销] 正在注销母号 {}...", owner.email));
         match deactivate_owner(&owner, &invite_cfg).await {
@@ -675,10 +676,11 @@ pub async fn run_invite_workflow(
     }
 
     // ─── 完成 ────────────────────────────────────────────────────────────────
+    let task_status = if has_useful_output { "completed" } else { "failed" };
     let _ = db.enqueue_update_invite_task(
         task_id.clone(),
         InviteTaskUpdate {
-            status: Some("completed".to_string()),
+            status: Some(task_status.to_string()),
             invited_ok: Some(invited_ok),
             invited_failed: Some(invited_failed),
             reg_ok: Some(reg_ok),
@@ -692,8 +694,10 @@ pub async fn run_invite_workflow(
         },
     );
 
+    let emoji = if has_useful_output { "邀请完成" } else { "邀请失败" };
     broadcast_log(&format!(
-        "[邀请完成] owner={} | 邀请: {}/{} | 注册: {}/{} | RT: {}/{} | S2A: {}/{}",
+        "[{}] owner={} | 邀请: {}/{} | 注册: {}/{} | RT: {}/{} | S2A: {}/{}",
+        emoji,
         owner.email,
         invited_ok,
         total,
