@@ -610,7 +610,7 @@ function getInvDistUsedPercent(){
   return sum;
 }
 
-function addInvDistRow(team,pct){
+function addInvDistRow(team,pct,skipSave){
   const id=invDistRowCount++;
   const rows=document.getElementById('inv-dist-rows');
   // 未指定百分比时，自动填充剩余值
@@ -619,8 +619,43 @@ function addInvDistRow(team,pct){
   const row=document.createElement('div');
   row.className='flex items-center gap-2';
   row.id=`inv-dist-row-${id}`;
-  row.innerHTML=`<select class="inv-dist-team field-input flex-1">${opts}</select><input class="inv-dist-percent field-input w-24" type="number" min="0" max="100" placeholder="%" value="${pct}"><button onclick="document.getElementById('inv-dist-row-${id}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
+  row.innerHTML=`<select class="inv-dist-team field-input flex-1">${opts}</select><input class="inv-dist-percent field-input w-24" type="number" min="0" max="100" placeholder="%" value="${pct}"><button onclick="removeInvDistRow('inv-dist-row-${id}')" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
+  // 选择/百分比变更时自动保存
+  row.querySelector('.inv-dist-team').addEventListener('change',saveInvDist);
+  row.querySelector('.inv-dist-percent').addEventListener('change',saveInvDist);
   rows.appendChild(row);
+  if(!skipSave) saveInvDist();
+}
+
+function removeInvDistRow(rowId){
+  const el=document.getElementById(rowId);
+  if(el) el.remove();
+  saveInvDist();
+}
+
+function saveInvDist(){
+  const dist=[];
+  document.querySelectorAll('#inv-dist-rows > div').forEach(r=>{
+    const t=r.querySelector('.inv-dist-team').value;
+    const p=parseInt(r.querySelector('.inv-dist-percent').value)||0;
+    dist.push({team:t,percent:p});
+  });
+  localStorage.setItem('inv-dist',JSON.stringify(dist));
+}
+
+function restoreInvDist(){
+  const raw=localStorage.getItem('inv-dist');
+  if(!raw) return false;
+  try{
+    const dist=JSON.parse(raw);
+    if(!Array.isArray(dist)||!dist.length) return false;
+    // 过滤掉已不存在的号池
+    const names=new Set(inviteTeams.map(t=>t.name));
+    const valid=dist.filter(d=>names.has(d.team));
+    if(!valid.length) return false;
+    valid.forEach(d=>addInvDistRow(d.team,d.percent,true));
+    return true;
+  }catch{return false}
 }
 
 function toggleInvDistRows(){
@@ -634,9 +669,8 @@ async function loadTeamsForSelect(){
     const config=await api('/api/config');
     if(config&&config.teams){
       inviteTeams=config.teams;
-      // 默认添加一行分发行
-      const rows=document.getElementById('inv-dist-rows');
-      if(rows&&!rows.children.length) addInvDistRow();
+      // 恢复上次保存的分发配置，无则默认一行
+      if(!restoreInvDist()) addInvDistRow();
     }
   }catch(e){/* ignore */}
 }
