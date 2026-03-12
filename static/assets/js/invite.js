@@ -371,6 +371,11 @@ async function uploadInviteFile(){
 }
 
 async function doUpload(filename,accounts){
+  // 兼容 { "accounts": [...] } 包装格式
+  if(!Array.isArray(accounts)&&accounts&&accounts.accounts&&Array.isArray(accounts.accounts)){
+    accounts=accounts.accounts;
+  }
+  if(!Array.isArray(accounts)) accounts=[accounts];
   try{
     const resp=await api('/api/invite/upload',{method:'POST',body:{filename,accounts}});
     if(resp.error){toast(resp.error,'error');return}
