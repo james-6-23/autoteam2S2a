@@ -126,48 +126,75 @@ document.addEventListener('click',e=>{
   }
 });
 
-// ─── TXT 文件解析 ────────────────────────────────────────────────────────
+// ─── 万能 JSON 解析 ─────────────────────────────────────────────────────
+// 兼容：
+//   1. 标准数组 [{ ... }, { ... }]
+//   2. 包装对象 { "accounts": [{ ... }] }
+//   3. 单个对象 { "accessToken": "..." }
+//   4. 多个对象换行/空行分隔（无逗号、无数组括号）
+//   5. TXT 混合文本中夹杂 JSON 块
+//   6. 字符串中包含字段（纯文本 key=value 不处理，仅 JSON）
 
-function parseTxtToAccounts(text){
-  // 尝试整体解析
+function smartParseAccounts(text){
+  const raw=text.trim();
+  if(!raw) return [];
+
+  // ── 策略 1: 整体 JSON.parse ──
   try{
-    const parsed=JSON.parse(text.trim());
-    return Array.isArray(parsed)?parsed:[parsed];
+    const parsed=JSON.parse(raw);
+    return unwrapAccounts(parsed);
   }catch{}
 
-  // 按空行分割成块，每块尝试解析为 JSON
+  // ── 策略 2: 按空行分块，逐块解析 ──
   const results=[];
-  // 用正则匹配所有 JSON 对象/数组（大括号/方括号配对）
-  const chunks=text.split(/\n\s*\n/);
+  const chunks=raw.split(/\n\s*\n/);
   for(const chunk of chunks){
     const trimmed=chunk.trim();
     if(!trimmed) continue;
     try{
       const parsed=JSON.parse(trimmed);
-      if(Array.isArray(parsed)) results.push(...parsed);
-      else results.push(parsed);
-    }catch{
-      // 尝试逐行扫描 JSON 对象
-      const lines=trimmed.split('\n');
-      let buf='';let depth=0;
-      for(const line of lines){
-        for(const ch of line){
-          if(ch==='{'||ch==='[') depth++;
-          if(ch==='}'||ch===']') depth--;
-        }
-        buf+=line+'\n';
-        if(depth===0&&buf.trim()){
-          try{
-            const obj=JSON.parse(buf.trim());
-            if(Array.isArray(obj)) results.push(...obj);
-            else results.push(obj);
-          }catch{}
-          buf='';
-        }
+      results.push(...unwrapAccounts(parsed));
+      continue;
+    }catch{}
+
+    // ── 策略 3: 逐行扫描大括号/方括号配对 ──
+    const lines=trimmed.split('\n');
+    let buf='';let depth=0;
+    for(const line of lines){
+      for(const ch of line){
+        if(ch==='{'||ch==='[') depth++;
+        if(ch==='}'||ch===']') depth--;
+      }
+      buf+=line+'\n';
+      if(depth===0&&buf.trim()){
+        try{
+          const obj=JSON.parse(buf.trim());
+          results.push(...unwrapAccounts(obj));
+        }catch{}
+        buf='';
       }
     }
   }
   return results;
+}
+
+// 统一解包：数组 / 包装对象 / 单个对象 → 扁平数组
+function unwrapAccounts(parsed){
+  if(Array.isArray(parsed)) return parsed;
+  if(parsed&&typeof parsed==='object'){
+    // { "accounts": [...] }
+    if(Array.isArray(parsed.accounts)) return parsed.accounts;
+    // 单个对象（有 accessToken / access_token / id 等关键字段）
+    if(parsed.accessToken||parsed.access_token||parsed.id) return [parsed];
+    // 尝试遍历所有 key，找第一个数组值
+    for(const key of Object.keys(parsed)){
+      if(Array.isArray(parsed[key])&&parsed[key].length>0&&typeof parsed[key][0]==='object'){
+        return parsed[key];
+      }
+    }
+    return [parsed];
+  }
+  return [];
 }
 
 // ─── SSE 实时日志 ──────────────────────────────────────────────────────────
@@ -345,11 +372,9 @@ async function uploadFromJsonInput(){
   const ta=document.getElementById('invite-json-input');
   const raw=ta.value.trim();
   if(!raw){toast('请粘贴 JSON 数据','error');return}
-  try{
-    let parsed=JSON.parse(raw);
-    if(!Array.isArray(parsed)) parsed=[parsed];
-    await doUpload('pasted-json',parsed);
-  }catch(e){toast('JSON 解析失败: '+e.message,'error')}
+  const accounts=smartParseAccounts(raw);
+  if(!accounts.length){toast('未解析到有效账号数据','error');return}
+  await doUpload('pasted-json',accounts);
 }
 
 async function uploadInviteFile(){
@@ -358,24 +383,13 @@ async function uploadInviteFile(){
   const file=input.files[0];
   try{
     const text=await file.text();
-    let accounts;
-    if(file.name.endsWith('.txt')){
-      accounts=parseTxtToAccounts(text);
-      if(!accounts.length){toast('TXT 中未找到有效 JSON 数据','error');return}
-    }else{
-      accounts=JSON.parse(text);
-      if(!Array.isArray(accounts)) accounts=[accounts];
-    }
+    const accounts=smartParseAccounts(text);
+    if(!accounts.length){toast('文件中未找到有效账号数据','error');return}
     await doUpload(file.name,accounts);
   }catch(e){toast('文件解析失败: '+e.message,'error')}
 }
 
 async function doUpload(filename,accounts){
-  // 兼容 { "accounts": [...] } 包装格式
-  if(!Array.isArray(accounts)&&accounts&&accounts.accounts&&Array.isArray(accounts.accounts)){
-    accounts=accounts.accounts;
-  }
-  if(!Array.isArray(accounts)) accounts=[accounts];
   try{
     const resp=await api('/api/invite/upload',{method:'POST',body:{filename,accounts}});
     if(resp.error){toast(resp.error,'error');return}
