@@ -2752,6 +2752,7 @@ struct ExecuteInviteRequest {
     upload_id: String,
     invite_count: Option<usize>,
     s2a_team: Option<String>,
+    distribution: Option<Vec<crate::config::DistributionEntry>>,
     push_s2a: Option<bool>,
 }
 
@@ -2774,19 +2775,37 @@ async fn execute_invite_handler(
         .clamp(1, 25);
     let push_s2a = req.push_s2a.unwrap_or(true);
 
-    // 找到目标号池
-    let team = if push_s2a {
-        let teams = cfg.effective_s2a_configs();
-        if let Some(ref name) = req.s2a_team {
-            teams
+    // 构建号池分配方案：Vec<(S2aConfig, 百分比)>
+    let team_assignments: Vec<(crate::config::S2aConfig, u8)> = if push_s2a {
+        let available_teams = cfg.effective_s2a_configs();
+        if let Some(ref dist) = req.distribution {
+            // 多号池百分比分配模式
+            if let Err(e) = crate::distribution::validate_distribution(dist, &available_teams) {
+                return Err(error_json(StatusCode::BAD_REQUEST, &e));
+            }
+            dist.iter()
+                .filter_map(|d| {
+                    available_teams
+                        .iter()
+                        .find(|t| t.name == d.team)
+                        .map(|t| (t.clone(), d.percent))
+                })
+                .collect()
+        } else if let Some(ref name) = req.s2a_team {
+            // 兼容旧的单号池模式
+            available_teams
                 .iter()
                 .find(|t| t.name == *name)
-                .cloned()
+                .map(|t| vec![(t.clone(), 100)])
+                .unwrap_or_default()
         } else {
-            teams.first().cloned()
+            available_teams
+                .first()
+                .map(|t| vec![(t.clone(), 100)])
+                .unwrap_or_default()
         }
     } else {
-        None
+        vec![]
     };
 
     let config_snapshot = cfg.clone();
@@ -2805,12 +2824,36 @@ async fn execute_invite_handler(
         ));
     }
 
+    // 按百分比将 owners 分配到各号池
+    // owner_team_map: 每个 owner index → 对应的 S2aConfig
+    let total_owners = unused_owners.len();
+    let mut owner_team_map: Vec<Option<crate::config::S2aConfig>> = vec![None; total_owners];
+
+    if !team_assignments.is_empty() {
+        let mut offset = 0usize;
+        for (i, (team_cfg, percent)) in team_assignments.iter().enumerate() {
+            let count = if i + 1 < team_assignments.len() {
+                (total_owners * (*percent as usize)) / 100
+            } else {
+                total_owners - offset
+            };
+            let end = (offset + count).min(total_owners);
+            for idx in offset..end {
+                owner_team_map[idx] = Some(team_cfg.clone());
+            }
+            offset = end;
+        }
+    }
+
     let mut task_ids = Vec::new();
 
     // 全局并发限制：最多 20 个 owner 同时执行邀请流程
     let invite_semaphore = Arc::new(tokio::sync::Semaphore::new(20));
 
-    for (owner_db_id, owner_email, owner_account_id, access_token) in unused_owners {
+    for (idx, (owner_db_id, owner_email, owner_account_id, access_token)) in
+        unused_owners.into_iter().enumerate()
+    {
+        let team = owner_team_map[idx].clone();
         let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
         // 生成邮箱种子
@@ -2856,7 +2899,6 @@ async fn execute_invite_handler(
         let db = state.run_history_db.clone();
         let invite_cfg = config_snapshot.invite_runtime();
         let cfg_clone = config_snapshot.clone();
-        let team_clone = team.clone();
         let task_id_clone = task_id.clone();
         let sem = invite_semaphore.clone();
 
@@ -2869,7 +2911,7 @@ async fn execute_invite_handler(
                 seeds,
                 invite_cfg,
                 cfg_clone,
-                team_clone,
+                team,
                 push_s2a,
                 db,
                 progress,

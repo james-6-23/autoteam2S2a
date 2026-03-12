@@ -513,10 +513,26 @@ async function executeInvite(){
   const uploadId=getCustomSelectValue('inv-upload-id');
   if(!uploadId){toast('请先选择上传批次','error');return}
   const inviteCount=parseInt(document.getElementById('inv-count').value)||6;
-  const s2aTeam=document.getElementById('inv-s2a-team').value||undefined;
   const pushS2a=document.getElementById('inv-push-s2a').value==='true';
+
+  const body={upload_id:uploadId,invite_count:inviteCount,push_s2a:pushS2a};
+
+  if(pushS2a){
+    // 收集分发配置
+    const distribution=[];
+    document.querySelectorAll('#inv-dist-rows > div').forEach(r=>{
+      const t=r.querySelector('.inv-dist-team').value;
+      const p=parseInt(r.querySelector('.inv-dist-percent').value);
+      if(t&&p>0) distribution.push({team:t,percent:p});
+    });
+    if(!distribution.length){toast('请至少添加一个号池','error');return}
+    const tot=distribution.reduce((s,d)=>s+d.percent,0);
+    if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
+    body.distribution=distribution;
+  }
+
   try{
-    const resp=await api('/api/invite/execute',{method:'POST',body:{upload_id:uploadId,invite_count:inviteCount,s2a_team:s2aTeam,push_s2a:pushS2a}});
+    const resp=await api('/api/invite/execute',{method:'POST',body});
     if(resp.error){toast(resp.error,'error');return}
     toast(`已创建 ${resp.task_count} 个邀请任务`,'success');
     loadInviteTasks();
@@ -583,12 +599,36 @@ async function loadInviteConfig(){
   // 邀请数固定为 4（team 最大席位），不从后端覆盖
 }
 
+// ─── 号池分发行管理 ─────────────────────────────────────────────────────
+
+let invDistRowCount=0;
+let inviteTeams=[];
+
+function addInvDistRow(team,pct){
+  const id=invDistRowCount++;
+  const rows=document.getElementById('inv-dist-rows');
+  const opts=inviteTeams.map(t=>`<option value="${esc(t.name)}" ${t.name===team?'selected':''}>${esc(t.name)}</option>`).join('');
+  const row=document.createElement('div');
+  row.className='flex items-center gap-2';
+  row.id=`inv-dist-row-${id}`;
+  row.innerHTML=`<select class="inv-dist-team field-input flex-1">${opts}</select><input class="inv-dist-percent field-input w-24" type="number" min="1" max="100" placeholder="%" value="${pct||100}"><button onclick="document.getElementById('inv-dist-row-${id}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
+  rows.appendChild(row);
+}
+
+function toggleInvDistRows(){
+  const pushS2a=document.getElementById('inv-push-s2a').value==='true';
+  const section=document.getElementById('inv-dist-section');
+  if(section) section.style.display=pushS2a?'':'none';
+}
+
 async function loadTeamsForSelect(){
   try{
     const config=await api('/api/config');
     if(config&&config.teams){
-      const sel=document.getElementById('inv-s2a-team');
-      sel.innerHTML=config.teams.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('');
+      inviteTeams=config.teams;
+      // 默认添加一行分发行
+      const rows=document.getElementById('inv-dist-rows');
+      if(rows&&!rows.children.length) addInvDistRow();
     }
   }catch(e){/* ignore */}
 }
