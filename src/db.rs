@@ -1230,6 +1230,31 @@ impl RunHistoryDb {
         Ok(Some(InviteUploadDetail { upload, owners }))
     }
 
+    /// 根据邮箱列表查找已注册账号的密码（用于 team 满员恢复场景）
+    pub fn find_passwords_by_emails(&self, emails: &[String]) -> Result<Vec<(String, String)>> {
+        if emails.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders = std::iter::repeat("?")
+            .take(emails.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT email, password FROM invite_emails WHERE email IN ({}) GROUP BY email",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            emails.iter().map(|e| e as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// 获取指定 upload 中未使用的 owner（含 access_token）
     pub fn get_unused_owners(&self, upload_id: &str) -> Result<Vec<(i64, String, String, String)>> {
         let conn = self.conn.lock().unwrap();

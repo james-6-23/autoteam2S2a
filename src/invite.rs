@@ -258,6 +258,62 @@ async fn invite_single_email(
     }
 }
 
+// ─── 查询 Team 成员 ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct TeamMember {
+    pub email: String,
+    #[allow(dead_code)]
+    pub user_id: String,
+}
+
+/// 查询 team 当前的标准用户成员列表（不含 owner）
+async fn fetch_team_members(
+    owner: &TeamOwner,
+    invite_cfg: &InviteRuntimeConfig,
+) -> Result<Vec<TeamMember>> {
+    let client = rquest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let url = format!(
+        "https://chatgpt.com/backend-api/accounts/{}/users?offset=0&limit=25&query=",
+        owner.account_id
+    );
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", owner.access_token))
+        .header("User-Agent", &invite_cfg.user_agent)
+        .header("Origin", "https://chatgpt.com")
+        .header("Referer", "https://chatgpt.com/")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        bail!("HTTP {}", resp.status().as_u16());
+    }
+
+    let body: serde_json::Value = resp.json().await?;
+    let items = body["items"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("响应格式异常"))?;
+
+    let mut members = Vec::new();
+    for item in items {
+        let role = item["role"].as_str().unwrap_or("");
+        if role == "standard-user" {
+            members.push(TeamMember {
+                email: item["email"].as_str().unwrap_or("").to_string(),
+                user_id: item["id"].as_str().unwrap_or("").to_string(),
+            });
+        }
+    }
+    Ok(members)
+}
+
 // ─── 注销 Owner 账号 ────────────────────────────────────────────────────────
 
 /// 调用 ChatGPT deactivate API 注销母号
@@ -379,21 +435,165 @@ pub async fn run_invite_workflow(
             break;
         }
 
+        // ─── 检查 team 成员状态 ──────────────────────────────────────────
+        let existing_members = match fetch_team_members(&owner, &invite_cfg).await {
+            Ok(m) => {
+                broadcast_log(&format!(
+                    "[检查] team 当前 {} 个标准用户 (满员={})",
+                    m.len(),
+                    target
+                ));
+                m
+            }
+            Err(e) => {
+                broadcast_log(&format!("[检查] 查询 team 成员失败: {e:#}, 继续正常流程"));
+                Vec::new()
+            }
+        };
+
+        let max_seats = target; // 可邀请席位 = 目标数
+        let available_seats = max_seats.saturating_sub(existing_members.len());
+
+        // ─── 满员恢复路径：跳过邀请+注册，直接 RT → S2A ─────────────────
+        if available_seats == 0 && !existing_members.is_empty() {
+            broadcast_log(&format!(
+                "[恢复] team 已满员 ({}/{}), 尝试对已有成员直接获取 RT + S2A",
+                existing_members.len(),
+                max_seats
+            ));
+
+            let member_emails: Vec<String> =
+                existing_members.iter().map(|m| m.email.clone()).collect();
+            let known_passwords = db
+                .find_passwords_by_emails(&member_emails)
+                .unwrap_or_default();
+
+            if known_passwords.is_empty() {
+                broadcast_log("[恢复] DB 中未找到已有成员的密码记录，无法恢复");
+                break;
+            }
+
+            let pw_map: std::collections::HashMap<String, String> =
+                known_passwords.into_iter().collect();
+
+            // 为已有成员构造 RegisteredAccount，批量获取 RT
+            let mut recovery_accounts: Vec<crate::models::AccountWithRt> = Vec::new();
+
+            for member in &existing_members {
+                if let Some(password) = pw_map.get(&member.email) {
+                    let fake_registered = crate::models::RegisteredAccount {
+                        account: member.email.clone(),
+                        password: password.clone(),
+                        token: String::new(),
+                        account_id: owner.account_id.clone(),
+                        plan_type: "team".to_string(),
+                        proxy: None,
+                    };
+
+                    broadcast_log(&format!("[恢复-RT] 获取 RT: {}", member.email));
+                    match codex_service
+                        .fetch_refresh_token(&fake_registered, proxy_pool.next(), 1)
+                        .await
+                    {
+                        Ok(rt) => {
+                            cum_rt_ok += 1;
+                            progress.rt_ok.fetch_add(1, Ordering::Relaxed);
+                            broadcast_log(&format!("[恢复-RT成功] {}", member.email));
+                            recovery_accounts.push(crate::models::AccountWithRt {
+                                account: member.email.clone(),
+                                password: password.clone(),
+                                token: fake_registered.token,
+                                account_id: owner.account_id.clone(),
+                                plan_type: "team".to_string(),
+                                refresh_token: rt,
+                            });
+                        }
+                        Err(e) => {
+                            cum_rt_failed += 1;
+                            progress.rt_failed.fetch_add(1, Ordering::Relaxed);
+                            broadcast_log(&format!(
+                                "[恢复-RT失败] {}: {e:#}",
+                                member.email
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // S2A 入库
+            if push_s2a && !recovery_accounts.is_empty() {
+                if let Some(ref team_cfg) = team {
+                    progress.set_stage("S2A 入库");
+                    broadcast_log(&format!(
+                        "[恢复-S2A] 准备入库 {} 个恢复账号到 {}",
+                        recovery_accounts.len(),
+                        team_cfg.name
+                    ));
+                    let workflow_runner = crate::workflow::WorkflowRunner::new(
+                        register_service.clone(),
+                        codex_service.clone(),
+                        s2a_service.clone(),
+                        proxy_pool.clone(),
+                    );
+                    let (ok, failed) = workflow_runner
+                        .push_to_s2a(team_cfg, recovery_accounts, None)
+                        .await;
+                    cum_s2a_ok += ok;
+                    cum_s2a_failed += failed;
+                    progress.s2a_ok.fetch_add(ok, Ordering::Relaxed);
+                    progress.s2a_failed.fetch_add(failed, Ordering::Relaxed);
+                }
+            }
+
+            // 更新任务进度
+            let _ = db.enqueue_update_invite_task(
+                task_id.clone(),
+                InviteTaskUpdate {
+                    rt_ok: Some(cum_rt_ok),
+                    rt_failed: Some(cum_rt_failed),
+                    s2a_ok: Some(cum_s2a_ok),
+                    s2a_failed: Some(cum_s2a_failed),
+                    ..Default::default()
+                },
+            );
+
+            if cum_s2a_ok >= target {
+                broadcast_log(&format!(
+                    "[目标达成] 恢复入库 {}/{}",
+                    cum_s2a_ok, target
+                ));
+            }
+            break; // 恢复路径完成，退出循环
+        }
+
+        // ─── 正常路径：邀请 → 注册 → RT → S2A ──────────────────────────
+        let invite_count = deficit.min(available_seats.max(deficit)); // 如果查询失败，available_seats=0 但 deficit>0
+
         // 生成本轮种子
         let round_seeds: Vec<crate::models::AccountSeed> = if round == 0 {
-            seeds.clone()
+            // 首轮：如果可用席位 < 初始种子数，只取前 N 个
+            if available_seats > 0 && available_seats < seeds.len() {
+                seeds[..available_seats].to_vec()
+            } else {
+                seeds.clone()
+            }
         } else {
             broadcast_log(&format!(
                 "[补邀] ── 第{}轮补充 (已入库 {}/{}, 还差 {}) ──",
                 round + 1,
                 cum_s2a_ok,
                 target,
-                deficit
+                invite_count
             ));
-            (0..deficit)
+            (0..invite_count)
                 .map(|_| crate::util::generate_account_seed(&cfg.email_domains))
                 .collect()
         };
+
+        if round_seeds.is_empty() {
+            broadcast_log("[跳过] 无可邀请席位");
+            break;
+        }
 
         // 补轮时写入新邮箱记录到 DB
         if round > 0 {
