@@ -350,16 +350,23 @@ pub async fn run_invite_workflow(
 
     if invited_emails_ok.is_empty() {
         broadcast_log("[邀请] 所有邮箱邀请均失败，跳过后续流程");
+        let _ = db.enqueue_reset_owner_used(owner_db_id);
+        broadcast_log(&format!("[回退] {} 邀请全失败，已恢复为可用", owner.email));
         let _ = db.enqueue_update_invite_task(
             task_id.clone(),
             InviteTaskUpdate {
-                status: Some("completed".to_string()),
+                status: Some("failed".to_string()),
                 finished_at: Some(crate::util::beijing_now().to_rfc3339()),
                 ..Default::default()
             },
         );
         return;
     }
+
+    // ─── 等待邀请生效 ──────────────────────────────────────────────────────
+    // ChatGPT 后端处理邀请有延迟，立即注册可能导致未加入 team（变成 free）
+    broadcast_log("[等待] 等待 5s 让邀请在服务端生效...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     // ─── 阶段 2: 注册 ───────────────────────────────────────────────────────
     progress.set_stage("注册 + RT");
