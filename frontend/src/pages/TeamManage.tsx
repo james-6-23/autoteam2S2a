@@ -333,7 +333,7 @@ export default function TeamManage() {
       {/* ─── Members Modal ─── */}
       {selected && (
         <div className="team-modal" onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
-          <div className="team-modal-card p-5" style={{ maxWidth: 860, width: '96vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+          <div className="team-modal-card p-5" style={{ maxWidth: 920, width: '96vw', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
             {/* Header */}
             <div className="flex items-center justify-between mb-3">
               <div className="min-w-0">

@@ -149,8 +149,8 @@ html.light .switch-input:checked + .switch-slider{background:linear-gradient(135
   .team-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
 }
 .team-modal{
-  position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;
-  padding:18px;background:rgba(0,0,0,.45);backdrop-filter:blur(4px)
+  position:fixed;inset:0;z-index:120;display:flex;align-items:flex-start;justify-content:center;
+  padding:6vh 18px 18px;background:rgba(0,0,0,.45);backdrop-filter:blur(4px)
 }
 .team-modal-card{
   width:min(1080px,100%);
