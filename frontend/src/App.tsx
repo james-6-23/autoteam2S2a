@@ -11,6 +11,7 @@ import Runs from './pages/Runs';
 import Logs from './pages/Logs';
 import Invite from './pages/Invite';
 import TeamManage from './pages/TeamManage';
+import OwnerAudit from './pages/OwnerAudit';
 
 export default function App() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="logs" element={<Logs />} />
             <Route path="invite" element={<Invite />} />
             <Route path="team-manage" element={<TeamManage />} />
+            <Route path="owner-audit" element={<OwnerAudit />} />
           </Route>
         </Routes>
       </BrowserRouter>

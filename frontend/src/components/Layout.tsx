@@ -2,13 +2,14 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useTheme } from '../hooks/useTheme';
 import { useEffect, useState } from 'react';
 import { fetchHealth } from '../lib/api';
-import { LayoutDashboard, Users, Settings, Rocket, Clock, History, ScrollText, MailPlus, UserCog } from 'lucide-react';
+import { ClipboardList, LayoutDashboard, Users, Settings, Rocket, Clock, History, ScrollText, MailPlus, UserCog } from 'lucide-react';
 
 const NAV_ITEMS = [
   { to: '/', label: '概览', icon: <LayoutDashboard size={15} /> },
   { to: '/teams', label: '号池', icon: <Users size={15} /> },
   { to: '/config', label: '配置', icon: <Settings size={15} /> },
   { to: '/team-manage', label: 'Team', icon: <UserCog size={15} /> },
+  { to: '/owner-audit', label: '审计', icon: <ClipboardList size={15} /> },
   { to: '/tasks', label: '任务', icon: <Rocket size={15} /> },
   { to: '/schedules', label: '定时', icon: <Clock size={15} /> },
   { to: '/runs', label: '记录', icon: <History size={15} /> },
