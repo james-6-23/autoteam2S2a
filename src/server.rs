@@ -2915,6 +2915,7 @@ async fn execute_invite_handler(
                 push_s2a,
                 db,
                 progress,
+                0, // max_members=0: 使用 seeds.len() 作为满员线（批量邀请的原有行为）
             )
             .await;
         });
@@ -3629,6 +3630,7 @@ async fn team_manage_invite_handler(
     let progress = Arc::new(crate::models::InviteProgress::new());
     let db = state.run_history_db.clone();
     let invite_cfg = config_snapshot.invite_runtime();
+    let max_members = invite_cfg.default_invite_count; // team 最大成员数（如 4）
     let task_id_clone = task_id.clone();
 
     tokio::spawn(async move {
@@ -3643,12 +3645,13 @@ async fn team_manage_invite_handler(
             true,
             db,
             progress,
+            max_members,
         )
         .await;
     });
 
     tracing::info!(
-        "[TeamManage] 邀请任务已创建: task_id={task_id}, invite_count={invite_count}"
+        "[TeamManage] 邀请任务已创建: task_id={task_id}, invite_count={invite_count}, max_members={max_members}"
     );
 
     Ok((

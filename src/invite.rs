@@ -348,6 +348,8 @@ async fn deactivate_owner(owner: &TeamOwner, invite_cfg: &InviteRuntimeConfig) -
 // ─── 完整邀请工作流 ──────────────────────────────────────────────────────────
 
 /// 单个 Owner 的完整邀请工作流
+///
+/// - `max_members`: team 最大成员数（如 4），用于判断满员；传 0 则自动使用 seeds.len()
 #[allow(clippy::too_many_arguments)]
 pub async fn run_invite_workflow(
     task_id: String,
@@ -360,11 +362,13 @@ pub async fn run_invite_workflow(
     push_s2a: bool,
     db: Arc<RunHistoryDb>,
     progress: Arc<InviteProgress>,
+    max_members: usize,
 ) {
     let target = seeds.len();
+    let seat_cap = if max_members > 0 { max_members } else { target };
     broadcast_log(&format!(
-        "[邀请] 开始: owner={} 邀请 {} 个邮箱",
-        owner.email, target
+        "[邀请] 开始: owner={} 邀请 {} 个邮箱 (seat_cap={})",
+        owner.email, target, seat_cap
     ));
 
     // 标记任务运行中
@@ -442,7 +446,7 @@ pub async fn run_invite_workflow(
                 broadcast_log(&format!(
                     "[检查] team 当前 {} 个标准用户 (满员={})",
                     m.len(),
-                    target
+                    seat_cap
                 ));
                 m
             }
@@ -452,7 +456,7 @@ pub async fn run_invite_workflow(
             }
         };
 
-        let max_seats = target; // 可邀请席位 = 目标数
+        let max_seats = seat_cap; // 可邀请席位 = team 最大成员数
         let available_seats = max_seats.saturating_sub(existing_members.len());
 
         // ─── 满员恢复路径：跳过邀请+注册，直接 RT → S2A ─────────────────
