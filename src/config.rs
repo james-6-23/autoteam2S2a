@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{env, fs, path::Path};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,8 @@ pub struct AppConfig {
     pub schedule: Vec<ScheduleConfig>,
     #[serde(default)]
     pub invite: InviteConfig,
+    #[serde(default)]
+    pub redis: RedisConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -119,6 +121,31 @@ pub struct InviteRuntimeConfig {
     pub default_invite_count: usize,
     pub request_timeout_sec: u64,
     pub user_agent: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct RedisConfig {
+    /// 是否启用 Redis；未设置时只要提供 URL 就启用
+    pub enabled: Option<bool>,
+    /// Redis 连接地址，例如 redis://127.0.0.1:6379/0
+    pub url: Option<String>,
+    /// key 前缀，默认 tm
+    pub key_prefix: Option<String>,
+    /// Owner 健康/成员缓存 TTL，默认 1800 秒
+    pub default_ttl_secs: Option<u64>,
+    /// 批量任务摘要缓存 TTL，默认 86400 秒
+    pub batch_progress_ttl_secs: Option<u64>,
+    /// 分布式锁 TTL，默认 120 秒
+    pub lock_ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RedisRuntimeConfig {
+    pub url: String,
+    pub key_prefix: String,
+    pub default_ttl_secs: u64,
+    pub batch_progress_ttl_secs: u64,
+    pub lock_ttl_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -408,6 +435,42 @@ impl AppConfig {
                 Self::default()
             }
         }
+    }
+
+    pub fn redis_runtime(&self) -> Option<RedisRuntimeConfig> {
+        let env_url = env::var("AT2S2A_REDIS_URL")
+            .ok()
+            .or_else(|| env::var("REDIS_URL").ok());
+        let url = self
+            .redis
+            .url
+            .clone()
+            .or(env_url)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())?;
+        if self.redis.enabled == Some(false) {
+            return None;
+        }
+        let key_prefix = self
+            .redis
+            .key_prefix
+            .clone()
+            .or_else(|| env::var("AT2S2A_REDIS_PREFIX").ok())
+            .unwrap_or_else(|| "tm".to_string())
+            .trim()
+            .to_string();
+
+        Some(RedisRuntimeConfig {
+            url,
+            key_prefix: if key_prefix.is_empty() {
+                "tm".to_string()
+            } else {
+                key_prefix
+            },
+            default_ttl_secs: self.redis.default_ttl_secs.unwrap_or(1800).max(60),
+            batch_progress_ttl_secs: self.redis.batch_progress_ttl_secs.unwrap_or(86_400).max(300),
+            lock_ttl_secs: self.redis.lock_ttl_secs.unwrap_or(120).max(15),
+        })
     }
 
     pub fn effective_s2a_configs(&self) -> Vec<S2aConfig> {

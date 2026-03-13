@@ -10,6 +10,7 @@ mod invite;
 mod log_broadcast;
 mod models;
 mod proxy_pool;
+mod redis_cache;
 mod scheduler;
 mod server;
 mod services;

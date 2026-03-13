@@ -1,3 +1,27 @@
+import type {
+  CodexQuota,
+  InviteTaskDetail,
+  OwnerHealth,
+  S2aTeam,
+  TeamManageBatchCheckResponse,
+  TeamManageBatchInviteRequest,
+  TeamManageBatchInviteResponse,
+  TeamManageBatchJobDetail,
+  TeamManageBatchJobItem,
+  TeamManageBatchRetryRequest,
+  TeamManageBatchRetryResponse,
+  TeamManageBatchJobSummary,
+  TeamManageBatchOwnerStateRequest,
+  TeamManageBatchOwnerStateResponse,
+  TeamManageBatchRefreshMembersResponse,
+  TeamManageDashboardSummary,
+  TeamManageOwnerAuditPageResponse,
+  TeamManageOwnerAuditQuery,
+  TeamManageOwnerPageParams,
+  TeamManageOwnerPageResponse,
+  TeamMember,
+} from "./team-manage-types";
+
 const BASE = '';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -75,7 +99,8 @@ export const fetchRuns = (page: number, team?: string) => {
 export const uploadOwners = (body: unknown) => post<unknown>('/api/invite/upload', body);
 export const fetchInviteUploads = () => get<unknown>('/api/invite/uploads');
 export const fetchInviteTasks = () => get<unknown>('/api/invite/tasks');
-export const fetchInviteTaskDetail = (id: string) => get<unknown>(`/api/invite/tasks/${id}`);
+export const fetchInviteTaskDetail = (id: string) =>
+  get<InviteTaskDetail>(`/api/invite/tasks/${encodeURIComponent(id)}`);
 export const executeInvite = (body: unknown) => post<unknown>('/api/invite/execute', body);
 
 // ─── Team Management ──
@@ -84,5 +109,111 @@ export const fetchTeamMembers = (accountId: string, accessToken: string) =>
 
 export const kickTeamMember = (accountId: string, accessToken: string, userId: string) =>
   post<unknown>('/api/team/kick', { account_id: accountId, access_token: accessToken, user_id: userId });
+
+function buildQueryString(params: TeamManageOwnerPageParams) {
+  const query = new URLSearchParams();
+  if (typeof params.page === "number") query.set("page", String(params.page));
+  if (typeof params.page_size === "number") query.set("page_size", String(params.page_size));
+  if (params.search) query.set("search", params.search);
+  if (params.state) query.set("state", params.state);
+  if (typeof params.has_slots === "boolean") query.set("has_slots", String(params.has_slots));
+  if (typeof params.has_banned_member === "boolean") query.set("has_banned_member", String(params.has_banned_member));
+  if (params.sort) query.set("sort", params.sort);
+  if (params.order) query.set("order", params.order);
+  return query.toString();
+}
+
+export async function fetchTeamManageOwnersPage(
+  params: TeamManageOwnerPageParams = {},
+): Promise<TeamManageOwnerPageResponse> {
+  const page = params.page ?? 1;
+  const pageSize = params.page_size ?? 10;
+  const query = buildQueryString(params);
+  const path = query ? `/api/team-manage/owners?${query}` : "/api/team-manage/owners";
+  const raw = await get<Record<string, unknown>>(path);
+  const hasPagedItems = Array.isArray(raw.items);
+  const rawItems = hasPagedItems
+    ? raw.items
+    : Array.isArray(raw.owners)
+      ? raw.owners
+      : [];
+  const total = typeof raw.total === "number" ? raw.total : rawItems.length;
+  const totalPages = typeof raw.total_pages === "number"
+    ? raw.total_pages
+    : Math.max(1, Math.ceil(total / pageSize));
+  const offset = (page - 1) * pageSize;
+  const items = hasPagedItems ? rawItems : rawItems.slice(offset, offset + pageSize);
+
+  return {
+    items: items as TeamManageOwnerPageResponse["items"],
+    page: typeof raw.page === "number" ? raw.page : page,
+    page_size: typeof raw.page_size === "number" ? raw.page_size : pageSize,
+    total,
+    total_pages: totalPages,
+    summary: raw.summary as TeamManageOwnerPageResponse["summary"],
+  };
+}
+
+export const fetchTeamManageDashboard = () => get<TeamManageDashboardSummary>('/api/team-manage/dashboard');
+export const fetchTeamManageHealth = () => get<{ records: OwnerHealth[] }>('/api/team-manage/health');
+export const fetchTeamManageConfigTeams = () => get<{ teams: S2aTeam[] }>('/api/config');
+export const fetchTeamManageOwnerMembers = (accountId: string, options?: { force_refresh?: boolean }) =>
+  get<{ members: TeamMember[] }>(
+    `/api/team-manage/owners/${encodeURIComponent(accountId)}/members${
+      options?.force_refresh ? "?force_refresh=true" : ""
+    }`,
+  );
+export const fetchTeamManageOwnerQuota = (accountId: string) =>
+  get<CodexQuota>(`/api/team-manage/owners/${encodeURIComponent(accountId)}/quota`);
+export const fetchTeamManageMemberQuota = (email: string) =>
+  post<CodexQuota>('/api/team-manage/member-quota', { email });
+export const refreshTeamManageOwnerMembers = (accountId: string) =>
+  post<{ members: TeamMember[] }>(`/api/team-manage/owners/${encodeURIComponent(accountId)}/refresh`);
+export const inviteTeamManageOwner = (accountId: string, body: { s2a_team: string; invite_count: number }) =>
+  post<{ task_id: string; message: string }>(`/api/team-manage/owners/${encodeURIComponent(accountId)}/invite`, body);
+export const batchCheckTeamManageOwners = (body: {
+  account_ids: string[];
+  concurrency: number;
+  force_refresh?: boolean;
+  prefer_cache?: boolean;
+  scope?: string;
+  filters?: TeamManageBatchOwnerStateRequest["filters"];
+}) =>
+  post<TeamManageBatchCheckResponse>('/api/team-manage/batch-check', body);
+export const batchInviteTeamManageOwners = (body: TeamManageBatchInviteRequest) =>
+  post<TeamManageBatchInviteResponse>('/api/team-manage/batch-invite', body);
+export const batchRefreshTeamManageOwnerMembers = (body: {
+  account_ids: string[];
+  concurrency: number;
+  scope?: string;
+  filters?: TeamManageBatchOwnerStateRequest["filters"];
+}) =>
+  post<TeamManageBatchRefreshMembersResponse>('/api/team-manage/batch-refresh-members', body);
+export const batchDisableTeamManageOwners = (body: TeamManageBatchOwnerStateRequest) =>
+  post<TeamManageBatchOwnerStateResponse>('/api/team-manage/owners/batch-disable', body);
+export const batchRestoreTeamManageOwners = (body: TeamManageBatchOwnerStateRequest) =>
+  post<TeamManageBatchOwnerStateResponse>('/api/team-manage/owners/batch-restore', body);
+export const batchArchiveTeamManageOwners = (body: TeamManageBatchOwnerStateRequest) =>
+  post<TeamManageBatchOwnerStateResponse>('/api/team-manage/owners/batch-archive', body);
+export const fetchTeamManageBatchJobs = () =>
+  get<{ jobs: TeamManageBatchJobSummary[] }>('/api/team-manage/batches');
+export const fetchTeamManageBatchJob = (jobId: string) =>
+  get<TeamManageBatchJobDetail>(`/api/team-manage/batches/${encodeURIComponent(jobId)}`);
+export const fetchTeamManageBatchJobItems = (jobId: string) =>
+  get<{ items: TeamManageBatchJobItem[] }>(`/api/team-manage/batches/${encodeURIComponent(jobId)}/items`);
+export const retryFailedTeamManageBatchItems = (jobId: string, body?: TeamManageBatchRetryRequest) =>
+  post<TeamManageBatchRetryResponse>(`/api/team-manage/batches/${encodeURIComponent(jobId)}/retry-failed`, body ?? {});
+export const fetchTeamManageOwnerAudits = (params?: TeamManageOwnerAuditQuery) => {
+  const query = new URLSearchParams();
+  if (params?.account_id) query.set("account_id", params.account_id);
+  if (params?.action) query.set("action", params.action);
+  if (params?.batch_job_id) query.set("batch_job_id", params.batch_job_id);
+  if (typeof params?.page === "number") query.set("page", String(params.page));
+  if (typeof params?.page_size === "number") query.set("page_size", String(params.page_size));
+  const suffix = query.toString();
+  return get<TeamManageOwnerAuditPageResponse>(
+    suffix ? `/api/team-manage/owners/audits?${suffix}` : "/api/team-manage/owners/audits",
+  );
+};
 
 export { get, post, put, del };

@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
@@ -23,6 +24,7 @@ use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::WorkflowReport;
 use crate::proxy_pool::{ProxyPool, health_check, resolve_proxies};
+use crate::redis_cache::RedisCache;
 use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService};
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
 
@@ -249,6 +251,8 @@ pub struct AppState {
     pub run_history_db: Arc<RunHistoryDb>,
     pub scheduler_state: Arc<crate::scheduler::SchedulerState>,
     pub log_tx: broadcast::Sender<String>,
+    pub redis_cache: Option<Arc<RedisCache>>,
+    team_manage_health_locks: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 // ─── Request / Response types ────────────────────────────────────────────────
@@ -2504,6 +2508,24 @@ pub async fn start_server(
 ) -> anyhow::Result<()> {
     let max_concurrent = cfg.server.max_concurrent_tasks.unwrap_or(3).max(1);
     let task_manager = Arc::new(TaskManager::new(max_concurrent));
+    let redis_cache = if let Some(redis_runtime) = cfg.redis_runtime() {
+        match RedisCache::new(redis_runtime.clone()) {
+            Ok(cache) => {
+                if let Err(error) = cache.ping().await {
+                    tracing::warn!("Redis 已配置，但当前不可达；将自动回退 SQLite: {error}");
+                } else {
+                    tracing::info!("Redis 已启用: prefix={}", redis_runtime.key_prefix);
+                }
+                Some(Arc::new(cache))
+            }
+            Err(error) => {
+                tracing::warn!("Redis 初始化失败；将回退 SQLite: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // 初始化 SQLite 运行记录数据库
     let db = Arc::new(
@@ -2524,6 +2546,8 @@ pub async fn start_server(
         run_history_db: db.clone(),
         scheduler_state: Arc::new(crate::scheduler::SchedulerState::new()),
         log_tx,
+        redis_cache,
+        team_manage_health_locks: Arc::new(Mutex::new(HashMap::new())),
     };
 
     // 启动后台调度器
@@ -2593,22 +2617,19 @@ pub async fn start_server(
         // Invite module
         .route("/api/invite/upload", post(invite_upload_handler))
         .route("/api/invite/uploads", get(list_invite_uploads_handler))
-        .route(
-            "/api/invite/uploads/{id}",
-            get(get_invite_upload_handler),
-        )
+        .route("/api/invite/uploads/{id}", get(get_invite_upload_handler))
         .route("/api/invite/execute", post(execute_invite_handler))
         .route("/api/invite/tasks", get(list_invite_tasks_handler))
-        .route(
-            "/api/invite/tasks/{id}",
-            get(get_invite_task_handler),
-        )
+        .route("/api/invite/tasks/{id}", get(get_invite_task_handler))
         .route(
             "/api/invite/config",
             get(get_invite_config_handler).put(update_invite_config_handler),
         )
         // Team Manage module
-        .route("/api/team-manage/owners", get(team_manage_list_owners_handler))
+        .route(
+            "/api/team-manage/owners",
+            get(team_manage_list_owners_handler),
+        )
         .route(
             "/api/team-manage/owners/{accountId}/members",
             get(team_manage_get_members_handler),
@@ -2622,6 +2643,14 @@ pub async fn start_server(
             post(team_manage_refresh_members_handler),
         )
         .route(
+            "/api/team-manage/batch-refresh-members",
+            post(team_manage_batch_refresh_members_handler),
+        )
+        .route(
+            "/api/team-manage/dashboard",
+            get(team_manage_dashboard_handler),
+        )
+        .route(
             "/api/team-manage/owners/{accountId}/quota",
             get(team_manage_quota_handler),
         )
@@ -2633,8 +2662,47 @@ pub async fn start_server(
             "/api/team-manage/owners/{accountId}/invite",
             post(team_manage_invite_handler),
         )
+        .route(
+            "/api/team-manage/owners/batch-disable",
+            post(team_manage_batch_disable_owners_handler),
+        )
+        .route(
+            "/api/team-manage/owners/batch-restore",
+            post(team_manage_batch_restore_owners_handler),
+        )
+        .route(
+            "/api/team-manage/owners/batch-archive",
+            post(team_manage_batch_archive_owners_handler),
+        )
+        .route(
+            "/api/team-manage/owners/audits",
+            get(team_manage_list_owner_audits_handler),
+        )
         .route("/api/team-manage/health", get(team_manage_health_handler))
-        .route("/api/team-manage/batch-check", post(team_manage_batch_check_handler))
+        .route(
+            "/api/team-manage/batch-check",
+            post(team_manage_batch_check_handler),
+        )
+        .route(
+            "/api/team-manage/batch-invite",
+            post(team_manage_batch_invite_handler),
+        )
+        .route(
+            "/api/team-manage/batches",
+            get(team_manage_list_batch_jobs_handler),
+        )
+        .route(
+            "/api/team-manage/batches/{jobId}",
+            get(team_manage_get_batch_job_handler),
+        )
+        .route(
+            "/api/team-manage/batches/{jobId}/items",
+            get(team_manage_get_batch_job_items_handler),
+        )
+        .route(
+            "/api/team-manage/batches/{jobId}/retry-failed",
+            post(team_manage_retry_failed_batch_items_handler),
+        )
         .fallback_service(spa)
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -2967,9 +3035,7 @@ struct InviteConfigResponse {
     request_timeout_sec: u64,
 }
 
-async fn get_invite_config_handler(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn get_invite_config_handler(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.config.read().await;
     let rt = cfg.invite_runtime();
     Json(InviteConfigResponse {
@@ -3010,20 +3076,89 @@ async fn update_invite_config_handler(
 
 // ─── Team Manage handlers ────────────────────────────────────────────────────
 
-#[derive(Serialize)]
-struct TeamManageOwner {
+const TEAM_MANAGE_PAGE_SIZE_DEFAULT: usize = 20;
+const TEAM_MANAGE_PAGE_SIZE_MAX: usize = 100;
+const TEAM_MANAGE_CACHE_FRESH_MINS: i64 = 10;
+const TEAM_MANAGE_CACHE_STALE_MINS: i64 = 30;
+
+#[derive(Deserialize, Default)]
+struct TeamManageOwnerListQuery {
+    page: Option<usize>,
+    page_size: Option<usize>,
+    search: Option<String>,
+    state: Option<String>,
+    has_slots: Option<bool>,
+    has_banned_member: Option<bool>,
+    sort: Option<String>,
+    order: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Default)]
+struct TeamManageBatchFilters {
+    search: Option<String>,
+    state: Option<String>,
+    has_slots: Option<bool>,
+    has_banned_member: Option<bool>,
+}
+
+#[derive(Serialize, Clone)]
+struct TeamManageOwnerListItem {
     email: String,
     account_id: String,
-    access_token: String,
     member_count: Option<usize>,
+    state: Option<String>,
+    disabled_reason: Option<String>,
+    owner_status: Option<String>,
+    checked_at: Option<String>,
+    cache_status: String,
+    has_banned_member: bool,
+    available_slots: Option<usize>,
+    available_slots_cached: Option<usize>,
+    last_health_checked_at: Option<String>,
+    last_health_status: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TeamManageOwnersSummary {
+    total_owners: usize,
+    active_owners: usize,
+    banned_owners: usize,
+    expired_owners: usize,
+    quarantined_owners: usize,
+    owners_with_slots: usize,
+    owners_with_banned_members: usize,
+    fresh_cache_owners: usize,
+    stale_cache_owners: usize,
+    running_batch_jobs: usize,
 }
 
 #[derive(Serialize)]
 struct TeamManageOwnersResponse {
-    owners: Vec<TeamManageOwner>,
+    items: Vec<TeamManageOwnerListItem>,
+    owners: Vec<TeamManageOwnerListItem>,
+    page: usize,
+    page_size: usize,
+    total: usize,
+    total_pages: usize,
+    summary: TeamManageOwnersSummary,
 }
 
 #[derive(Serialize)]
+struct TeamManageDashboardResponse {
+    total_owners: usize,
+    active_owners: usize,
+    banned_owners: usize,
+    expired_owners: usize,
+    quarantined_owners: usize,
+    owners_with_slots: usize,
+    owners_with_banned_members: usize,
+    fresh_cache_owners: usize,
+    stale_cache_owners: usize,
+    running_batch_jobs: usize,
+    checked_recently: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct TeamManageMember {
     user_id: String,
     email: Option<String>,
@@ -3032,32 +3167,515 @@ struct TeamManageMember {
     created_at: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct RedisOwnerMembersCacheEntry {
+    members: Vec<TeamManageMember>,
+    cached_at: String,
+}
+
 #[derive(Serialize)]
 struct TeamManageMembersResponse {
     members: Vec<TeamManageMember>,
 }
 
+#[derive(Deserialize, Default)]
+struct TeamManageMembersQuery {
+    #[serde(default)]
+    force_refresh: bool,
+}
+
+fn team_manage_cache_status(checked_at: Option<&str>) -> String {
+    let Some(checked_at) = checked_at else {
+        return "miss".to_string();
+    };
+    let Ok(ts) = DateTime::parse_from_rfc3339(checked_at) else {
+        return "unknown".to_string();
+    };
+    let age = Utc::now()
+        .signed_duration_since(ts.with_timezone(&Utc))
+        .num_minutes();
+    if age <= TEAM_MANAGE_CACHE_FRESH_MINS {
+        "fresh".to_string()
+    } else if age <= TEAM_MANAGE_CACHE_STALE_MINS {
+        "stale".to_string()
+    } else {
+        "expired".to_string()
+    }
+}
+
+fn team_manage_owner_runtime_state(owner_status: Option<&str>) -> String {
+    match owner_status {
+        Some("banned") => "banned".to_string(),
+        Some(_) => "active".to_string(),
+        None => "unknown".to_string(),
+    }
+}
+
+fn team_manage_batch_job_summary(
+    job: &crate::db::TeamManageBatchJobRecord,
+) -> TeamManageBatchJobSummary {
+    TeamManageBatchJobSummary {
+        job_id: job.job_id.clone(),
+        job_type: job.job_type.clone(),
+        status: job.status.clone(),
+        scope: job.scope.clone().unwrap_or_else(|| "manual".to_string()),
+        s2a_team: serde_json::from_str::<serde_json::Value>(&job.payload_json)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("s2a_team")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+            }),
+        total_count: job.total_count,
+        success_count: job.success_count,
+        failed_count: job.failed_count,
+        skipped_count: job.skipped_count,
+        created_at: job.created_at.clone(),
+        started_at: job.started_at.clone(),
+        finished_at: job.finished_at.clone(),
+    }
+}
+
+async fn team_manage_running_batch_jobs_count(state: &AppState) -> usize {
+    state
+        .run_history_db
+        .list_team_manage_batch_jobs(None, Some(500))
+        .map(|jobs| {
+            jobs.into_iter()
+                .filter(|job| matches!(job.status.as_str(), "pending" | "running"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn team_manage_max_members(cfg: &AppConfig) -> usize {
+    cfg.invite_runtime().default_invite_count.max(1)
+}
+
+fn team_manage_cached_results_map(
+    rows: Vec<(String, String, Option<String>, String)>,
+) -> HashMap<String, OwnerHealthResult> {
+    rows.into_iter()
+        .map(|(account_id, owner_status, members_json, checked_at)| {
+            let members = members_json
+                .and_then(|value| serde_json::from_str::<Vec<MemberHealthInfo>>(&value).ok())
+                .unwrap_or_default();
+            let result = OwnerHealthResult {
+                account_id: account_id.clone(),
+                owner_status,
+                members,
+                checked_at,
+            };
+            (account_id, result)
+        })
+        .collect()
+}
+
+fn team_manage_owner_health_result_from_record(
+    record: &crate::db::OwnerHealthRecord,
+) -> OwnerHealthResult {
+    OwnerHealthResult {
+        account_id: record.account_id.clone(),
+        owner_status: record.owner_status.clone(),
+        members: record
+            .members_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<Vec<MemberHealthInfo>>(value).ok())
+            .unwrap_or_default(),
+        checked_at: record.checked_at.clone(),
+    }
+}
+
+fn team_manage_owner_health_cache_status(record: &crate::db::OwnerHealthRecord) -> String {
+    if let Some(expires_at) = &record.expires_at {
+        if let Ok(expires_at) = DateTime::parse_from_rfc3339(expires_at) {
+            if Utc::now() > expires_at.with_timezone(&Utc) {
+                return "expired".to_string();
+            }
+        }
+    }
+    if !record.cache_status.trim().is_empty() {
+        return record.cache_status.clone();
+    }
+    team_manage_cache_status(Some(record.checked_at.as_str()))
+}
+
+fn team_manage_sort_key(sort: &str) -> String {
+    match sort {
+        "email" => "display_email",
+        "members" => "member_count",
+        "slots" => "available_slots",
+        "checked_at" => "last_health_checked_at",
+        "status" => "state",
+        _ => sort,
+    }
+    .to_string()
+}
+
+async fn team_manage_resolve_batch_account_ids(
+    state: &AppState,
+    explicit_ids: &[String],
+    scope: Option<&str>,
+    filters: Option<&TeamManageBatchFilters>,
+) -> Result<Vec<String>, (StatusCode, Json<ErrorResponse>)> {
+    if matches!(scope, Some("filtered")) {
+        let _ = state
+            .run_history_db
+            .sync_owner_registry_from_invite_owners()
+            .map_err(|e| {
+                error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("同步 owner_registry 失败: {e}"),
+                )
+            })?;
+        let filters = filters.cloned().unwrap_or_default();
+        let mut page = 1usize;
+        let mut total_pages = 1usize;
+        let mut ids = Vec::new();
+        while page <= total_pages {
+            let result = state
+                .run_history_db
+                .list_owner_registry_page(&crate::db::OwnerRegistryQuery {
+                    page,
+                    page_size: 200,
+                    search: filters.search.clone().filter(|value| !value.trim().is_empty()),
+                    state: filters.state.clone().filter(|value| !value.trim().is_empty()),
+                    has_slots: filters.has_slots,
+                    has_banned_member: filters.has_banned_member,
+                    sort_by: Some("updated_at".to_string()),
+                    sort_order: Some("desc".to_string()),
+                })
+                .map_err(|e| {
+                    error_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &format!("查询筛选结果失败: {e}"),
+                    )
+                })?;
+            total_pages = result.total_pages.max(1);
+            ids.extend(result.items.into_iter().map(|item| item.account_id));
+            page += 1;
+        }
+        return Ok(ids);
+    }
+    Ok(explicit_ids.to_vec())
+}
+
+async fn team_manage_persist_health_result(state: &AppState, result: &OwnerHealthResult) {
+    let now = crate::util::beijing_now();
+    let expires_at = (now + chrono::Duration::minutes(TEAM_MANAGE_CACHE_FRESH_MINS)).to_rfc3339();
+    let checked_at = result.checked_at.clone();
+    let members_json = serde_json::to_string(&result.members).unwrap_or_default();
+    let max_members = {
+        let cfg = state.config.read().await;
+        team_manage_max_members(&cfg)
+    };
+    let _ = state
+        .run_history_db
+        .enqueue_upsert_owner_health_record(crate::db::OwnerHealthUpsert {
+            account_id: result.account_id.clone(),
+            owner_status: result.owner_status.clone(),
+            members_json,
+            checked_at: checked_at.clone(),
+            expires_at: Some(expires_at),
+            cache_status: Some("fresh".to_string()),
+            source: Some("live".to_string()),
+            last_error: None,
+        });
+    let _ = state.run_history_db.update_owner_registry_health_summary(
+        &result.account_id,
+        Some(&checked_at),
+        Some(&result.owner_status),
+        result.members.len(),
+        max_members.saturating_sub(result.members.len()),
+        &now.to_rfc3339(),
+    );
+    if result.owner_status == "banned" {
+        let _ = state.run_history_db.batch_update_owner_registry_state(
+            &[result.account_id.clone()],
+            "banned",
+            Some("health_check_banned"),
+            &now.to_rfc3339(),
+        );
+    }
+    team_manage_cache_health_result_in_redis(state, result).await;
+}
+
+async fn team_manage_get_health_result_from_redis(
+    state: &AppState,
+    account_id: &str,
+) -> Option<OwnerHealthResult> {
+    let redis_cache = state.redis_cache.as_ref()?;
+    match redis_cache
+        .get_json::<OwnerHealthResult>(&redis_cache.owner_health_key(account_id))
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                "[TeamManage] 读取 Redis health cache 失败: account_id={}, error={}",
+                account_id,
+                error
+            );
+            None
+        }
+    }
+}
+
+async fn team_manage_cache_health_result_in_redis(
+    state: &AppState,
+    result: &OwnerHealthResult,
+) {
+    let Some(redis_cache) = state.redis_cache.as_ref() else {
+        return;
+    };
+    if let Err(error) = redis_cache
+        .set_json(
+            &redis_cache.owner_health_key(&result.account_id),
+            result,
+            redis_cache.default_ttl_secs(),
+        )
+        .await
+    {
+        tracing::warn!(
+            "[TeamManage] 写入 Redis health cache 失败: account_id={}, error={}",
+            result.account_id,
+            error
+        );
+    }
+}
+
+async fn team_manage_get_members_cache_from_redis(
+    state: &AppState,
+    account_id: &str,
+) -> Option<RedisOwnerMembersCacheEntry> {
+    let redis_cache = state.redis_cache.as_ref()?;
+    match redis_cache
+        .get_json::<RedisOwnerMembersCacheEntry>(&redis_cache.owner_members_key(account_id))
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                "[TeamManage] 读取 Redis members cache 失败: account_id={}, error={}",
+                account_id,
+                error
+            );
+            None
+        }
+    }
+}
+
+async fn team_manage_cache_members_in_redis(
+    state: &AppState,
+    account_id: &str,
+    members: &[TeamManageMember],
+    cached_at: &str,
+) {
+    let Some(redis_cache) = state.redis_cache.as_ref() else {
+        return;
+    };
+    let entry = RedisOwnerMembersCacheEntry {
+        members: members.to_vec(),
+        cached_at: cached_at.to_string(),
+    };
+    if let Err(error) = redis_cache
+        .set_json(
+            &redis_cache.owner_members_key(account_id),
+            &entry,
+            redis_cache.default_ttl_secs(),
+        )
+        .await
+    {
+        tracing::warn!(
+            "[TeamManage] 写入 Redis members cache 失败: account_id={}, error={}",
+            account_id,
+            error
+        );
+    }
+}
+
+async fn team_manage_try_acquire_health_lock(state: &AppState, account_id: &str) -> bool {
+    let mut locks = state.team_manage_health_locks.lock().await;
+    locks.retain(|_, instant| instant.elapsed().as_secs() < 120);
+    if locks.contains_key(account_id) {
+        return false;
+    }
+    locks.insert(account_id.to_string(), Instant::now());
+    drop(locks);
+    if let Some(redis_cache) = state.redis_cache.as_ref() {
+        match redis_cache
+            .try_acquire_lock(&redis_cache.health_lock_key(account_id))
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                state.team_manage_health_locks.lock().await.remove(account_id);
+                return false;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "[TeamManage] Redis 健康检查锁失败，回退进程内锁: account_id={}, error={}",
+                    account_id,
+                    error
+                );
+            }
+        }
+    }
+    true
+}
+
+async fn team_manage_release_health_lock(state: &AppState, account_id: &str) {
+    state
+        .team_manage_health_locks
+        .lock()
+        .await
+        .remove(account_id);
+}
+
 async fn team_manage_list_owners_handler(
     State(state): State<AppState>,
+    Query(query): Query<TeamManageOwnerListQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    tracing::info!("[TeamManage] 列出所有 owners");
-    let owners = state
+    let TeamManageOwnerListQuery {
+        page,
+        page_size,
+        search,
+        state: query_state,
+        has_slots,
+        has_banned_member,
+        sort,
+        order,
+    } = query;
+    let page = page.unwrap_or(1).max(1);
+    let page_size = page_size
+        .unwrap_or(TEAM_MANAGE_PAGE_SIZE_DEFAULT)
+        .clamp(1, TEAM_MANAGE_PAGE_SIZE_MAX);
+    let search = search.unwrap_or_default().trim().to_lowercase();
+    let state_filter = query_state.unwrap_or_default().trim().to_lowercase();
+    let sort = sort.unwrap_or_else(|| "email".to_string()).to_lowercase();
+    let order = order.unwrap_or_else(|| "asc".to_string()).to_lowercase();
+
+    tracing::info!(
+        "[TeamManage] 分页列出 owners: page={}, page_size={}, search='{}', state='{}'",
+        page,
+        page_size,
+        search,
+        state_filter
+    );
+
+    let _ = state
         .run_history_db
-        .list_all_owners_with_tokens()
-        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 owners 失败: {e}")))?;
-
-    let owner_list: Vec<TeamManageOwner> = owners
-        .into_iter()
-        .map(|(email, account_id, access_token)| TeamManageOwner {
-            email,
-            account_id,
-            access_token,
-            member_count: None,
+        .sync_owner_registry_from_invite_owners()
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("同步 owner_registry 失败: {e}"),
+            )
+        })?;
+    let registry_page = state
+        .run_history_db
+        .list_owner_registry_page(&crate::db::OwnerRegistryQuery {
+            page,
+            page_size,
+            search: if search.is_empty() { None } else { Some(search.clone()) },
+            state: if state_filter.is_empty() {
+                None
+            } else {
+                Some(state_filter.clone())
+            },
+            has_slots,
+            has_banned_member,
+            sort_by: Some(team_manage_sort_key(&sort)),
+            sort_order: Some(order),
         })
-        .collect();
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询 owner_registry 失败: {e}"),
+            )
+        })?;
 
-    tracing::info!("[TeamManage] 返回 {} 个 owners", owner_list.len());
-    Ok(Json(TeamManageOwnersResponse { owners: owner_list }))
+    let health_records = state
+        .run_history_db
+        .get_owner_health_by_account_ids(
+            &registry_page
+                .items
+                .iter()
+                .map(|item| item.account_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询健康缓存失败: {e}"),
+            )
+        })?;
+    let health_map = health_records
+        .into_iter()
+        .map(|record| (record.account_id.clone(), record))
+        .collect::<HashMap<_, _>>();
+
+    let paged = registry_page
+        .items
+        .iter()
+        .map(|record| {
+            let health = health_map.get(&record.account_id);
+            TeamManageOwnerListItem {
+                email: record.display_email.clone(),
+                account_id: record.account_id.clone(),
+                member_count: Some(record.member_count_cached),
+                state: Some(record.state.clone()),
+                disabled_reason: record.disabled_reason.clone(),
+                owner_status: health
+                    .map(|row| row.owner_status.clone())
+                    .or_else(|| record.last_health_status.clone()),
+                checked_at: record.last_health_checked_at.clone(),
+                cache_status: health
+                    .map(|row| row.cache_status.clone())
+                    .unwrap_or_else(|| {
+                        team_manage_cache_status(record.last_health_checked_at.as_deref())
+                    }),
+                has_banned_member: record.has_banned_member,
+                available_slots: Some(record.available_slots_cached),
+                available_slots_cached: Some(record.available_slots_cached),
+                last_health_checked_at: record.last_health_checked_at.clone(),
+                last_health_status: record.last_health_status.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let dashboard = state
+        .run_history_db
+        .get_team_manage_dashboard_summary()
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询 TeamManage 仪表盘失败: {e}"),
+            )
+        })?;
+    let summary = TeamManageOwnersSummary {
+        total_owners: dashboard.total_owners,
+        active_owners: dashboard.active_owners,
+        banned_owners: dashboard.banned_owners,
+        expired_owners: dashboard.expired_owners,
+        quarantined_owners: dashboard.quarantined_owners,
+        owners_with_slots: dashboard.owners_with_slots,
+        owners_with_banned_members: dashboard.owners_with_banned_members,
+        fresh_cache_owners: dashboard.health_cache_fresh,
+        stale_cache_owners: dashboard.health_cache_stale,
+        running_batch_jobs: dashboard.running_batch_jobs,
+    };
+
+    Ok(Json(TeamManageOwnersResponse {
+        owners: paged.clone(),
+        items: paged,
+        page: registry_page.page,
+        page_size: registry_page.page_size,
+        total: registry_page.total,
+        total_pages: registry_page.total_pages,
+        summary,
+    }))
 }
 
 async fn fetch_chatgpt_members(
@@ -3095,7 +3713,11 @@ async fn fetch_chatgpt_members(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        let preview = if body.len() > 300 { format!("{}...", &body[..300]) } else { body };
+        let preview = if body.len() > 300 {
+            format!("{}...", &body[..300])
+        } else {
+            body
+        };
         return Err(format!("HTTP {}: {}", status.as_u16(), preview));
     }
 
@@ -3113,35 +3735,171 @@ async fn fetch_chatgpt_members(
     let members: Vec<TeamManageMember> = items
         .into_iter()
         .map(|item| {
-            let user_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let email = item.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let name = item.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-            let created_at = item.get("created_time").and_then(|v| v.as_str()).map(|s| s.to_string());
-            TeamManageMember { user_id, email, name, role, created_at }
+            let user_id = item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let email = item
+                .get("email")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let role = item
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let created_at = item
+                .get("created_time")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            TeamManageMember {
+                user_id,
+                email,
+                name,
+                role,
+                created_at,
+            }
         })
         .collect();
 
     Ok(members)
 }
 
+async fn team_manage_fetch_members_live(
+    state: &AppState,
+    account_id: &str,
+) -> Result<Vec<TeamManageMember>, (StatusCode, Json<ErrorResponse>)> {
+    let access_token = state
+        .run_history_db
+        .get_owner_token_by_account_id(account_id)
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询 token 失败: {e}"),
+            )
+        })?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
+
+    let members = fetch_chatgpt_members(account_id, &access_token)
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("获取成员失败: {e}")))?;
+    let list = members
+        .into_iter()
+        .filter(|member| member.role != "account-owner")
+        .collect::<Vec<_>>();
+    let now = crate::util::beijing_now().to_rfc3339();
+    let member_count = list.len();
+    let max_members = {
+        let cfg = state.config.read().await;
+        team_manage_max_members(&cfg)
+    };
+    let members_json = serde_json::to_string(&list).unwrap_or_default();
+    let _ = state.run_history_db.upsert_owner_member_cache(
+        account_id,
+        Some(&members_json),
+        member_count,
+        &now,
+    );
+    let _ = state.run_history_db.update_owner_registry_member_cache_summary(
+        account_id,
+        member_count,
+        max_members.saturating_sub(member_count),
+        &now,
+    );
+    team_manage_cache_members_in_redis(state, account_id, &list, &now).await;
+    Ok(list)
+}
+
+fn team_manage_member_cache_status(cached_at: &str) -> String {
+    if let Ok(ts) = DateTime::parse_from_rfc3339(cached_at) {
+        let age = Utc::now()
+            .signed_duration_since(ts.with_timezone(&Utc))
+            .num_minutes();
+        if age <= TEAM_MANAGE_CACHE_FRESH_MINS {
+            return "fresh".to_string();
+        }
+        if age <= TEAM_MANAGE_CACHE_STALE_MINS {
+            return "stale".to_string();
+        }
+        return "expired".to_string();
+    }
+    "expired".to_string()
+}
+
 async fn team_manage_get_members_handler(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
+    Query(query): Query<TeamManageMembersQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    tracing::info!("[TeamManage] 获取成员列表: account_id={account_id}");
+    tracing::info!(
+        "[TeamManage] 获取成员列表: account_id={account_id}, force_refresh={}",
+        query.force_refresh
+    );
 
-    let access_token = state
-        .run_history_db
-        .get_owner_token_by_account_id(&account_id)
-        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 token 失败: {e}")))?
-        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
+    if !query.force_refresh {
+        if let Some(cache) = team_manage_get_members_cache_from_redis(&state, &account_id).await {
+            match team_manage_member_cache_status(&cache.cached_at).as_str() {
+                "fresh" if !cache.members.is_empty() => {
+                    return Ok(Json(TeamManageMembersResponse {
+                        members: cache.members,
+                    }));
+                }
+                "stale" if !cache.members.is_empty() => {
+                    let refresh_state = state.clone();
+                    let refresh_account_id = account_id.clone();
+                    tokio::spawn(async move {
+                        let _ = team_manage_fetch_members_live(&refresh_state, &refresh_account_id).await;
+                    });
+                    return Ok(Json(TeamManageMembersResponse {
+                        members: cache.members,
+                    }));
+                }
+                _ => {}
+            }
+        }
+        if let Some(cache) = state
+            .run_history_db
+            .get_owner_member_cache(&account_id)
+            .map_err(|e| {
+                error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("查询成员缓存失败: {e}"),
+                )
+            })?
+        {
+            let members = cache
+                .members_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<Vec<TeamManageMember>>(value).ok())
+                .unwrap_or_default();
+            match team_manage_member_cache_status(&cache.cached_at).as_str() {
+                "fresh" if !members.is_empty() => {
+                    return Ok(Json(TeamManageMembersResponse { members }));
+                }
+                "stale" if !members.is_empty() => {
+                    let refresh_state = state.clone();
+                    let refresh_account_id = account_id.clone();
+                    tokio::spawn(async move {
+                        let _ = team_manage_fetch_members_live(&refresh_state, &refresh_account_id).await;
+                    });
+                    return Ok(Json(TeamManageMembersResponse { members }));
+                }
+                _ => {}
+            }
+        }
+    }
 
-    let members = fetch_chatgpt_members(&account_id, &access_token)
-        .await
-        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("获取成员失败: {e}")))?;
+    let members = team_manage_fetch_members_live(&state, &account_id).await?;
 
-    tracing::info!("[TeamManage] account_id={account_id} 共 {} 个成员", members.len());
+    tracing::info!(
+        "[TeamManage] account_id={account_id} 共 {} 个成员",
+        members.len()
+    );
     Ok(Json(TeamManageMembersResponse { members }))
 }
 
@@ -3154,7 +3912,12 @@ async fn team_manage_kick_member_handler(
     let access_token = state
         .run_history_db
         .get_owner_token_by_account_id(&account_id)
-        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 token 失败: {e}")))?
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询 token 失败: {e}"),
+            )
+        })?
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
 
     let client = rquest::Client::builder()
@@ -3188,12 +3951,21 @@ async fn team_manage_kick_member_handler(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        let preview = if body.len() > 300 { format!("{}...", &body[..300]) } else { body };
-        return Err(error_json(StatusCode::BAD_GATEWAY, &format!("踢除失败 HTTP {}: {}", status.as_u16(), preview)));
+        let preview = if body.len() > 300 {
+            format!("{}...", &body[..300])
+        } else {
+            body
+        };
+        return Err(error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("踢除失败 HTTP {}: {}", status.as_u16(), preview),
+        ));
     }
 
     tracing::info!("[TeamManage] 踢除成功: account_id={account_id}, user_id={user_id}");
-    Ok(Json(serde_json::json!({ "success": true, "message": "成员已踢除" })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "message": "成员已踢除" }),
+    ))
 }
 
 async fn team_manage_refresh_members_handler(
@@ -3201,19 +3973,209 @@ async fn team_manage_refresh_members_handler(
     Path(account_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     tracing::info!("[TeamManage] 刷新成员列表: account_id={account_id}");
+    let members = team_manage_fetch_members_live(&state, &account_id).await?;
 
-    let access_token = state
-        .run_history_db
-        .get_owner_token_by_account_id(&account_id)
-        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 token 失败: {e}")))?
-        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
-
-    let members = fetch_chatgpt_members(&account_id, &access_token)
-        .await
-        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("获取成员失败: {e}")))?;
-
-    tracing::info!("[TeamManage] 刷新完成: account_id={account_id}, 共 {} 个成员", members.len());
+    tracing::info!(
+        "[TeamManage] 刷新完成: account_id={account_id}, 共 {} 个成员",
+        members.len()
+    );
     Ok(Json(TeamManageMembersResponse { members }))
+}
+
+#[derive(Deserialize)]
+struct BatchRefreshMembersRequest {
+    account_ids: Vec<String>,
+    #[serde(default = "default_concurrency")]
+    concurrency: usize,
+    scope: Option<String>,
+    #[serde(default)]
+    filters: TeamManageBatchFilters,
+}
+
+#[derive(Serialize)]
+struct BatchRefreshMembersResponse {
+    total: usize,
+    success: usize,
+    failed: usize,
+    refreshed: Vec<serde_json::Value>,
+}
+
+async fn team_manage_batch_refresh_members_handler(
+    State(state): State<AppState>,
+    Json(req): Json<BatchRefreshMembersRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let account_ids = team_manage_resolve_batch_account_ids(
+        &state,
+        &req.account_ids,
+        req.scope.as_deref(),
+        Some(&req.filters),
+    )
+    .await?;
+    if account_ids.is_empty() {
+        return Err(error_json(StatusCode::BAD_REQUEST, "account_ids 不能为空"));
+    }
+    let concurrency = req.concurrency.clamp(1, 20);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let mut handles = Vec::new();
+    for account_id in account_ids.clone() {
+        let sem = semaphore.clone();
+        let state = state.clone();
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire().await;
+            match team_manage_fetch_members_live(&state, &account_id).await {
+                Ok(members) => Ok((account_id, members.len())),
+                Err(error) => Err((account_id, error.1 .0.error)),
+            }
+        }));
+    }
+    let mut success = 0usize;
+    let mut failed = 0usize;
+    let mut refreshed = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(Ok((account_id, member_count))) => {
+                success += 1;
+                refreshed.push(serde_json::json!({
+                    "account_id": account_id,
+                    "member_count": member_count,
+                }));
+            }
+            Ok(Err((account_id, error))) => {
+                failed += 1;
+                refreshed.push(serde_json::json!({
+                    "account_id": account_id,
+                    "error": error,
+                }));
+            }
+            Err(_) => {
+                failed += 1;
+            }
+        }
+    }
+    Ok(Json(BatchRefreshMembersResponse {
+        total: account_ids.len(),
+        success,
+        failed,
+        refreshed,
+    }))
+}
+
+async fn team_manage_batch_update_owner_state(
+    state: &AppState,
+    req: &TeamManageBatchOwnerStateRequest,
+    next_state: &str,
+) -> Result<TeamManageBatchOwnerStateResponse, (StatusCode, Json<ErrorResponse>)> {
+    let account_ids = team_manage_resolve_batch_account_ids(
+        state,
+        &req.account_ids,
+        req.scope.as_deref(),
+        Some(&req.filters),
+    )
+    .await?;
+    if account_ids.is_empty() {
+        return Err(error_json(StatusCode::BAD_REQUEST, "account_ids 不能为空"));
+    }
+    let previous_states = state
+        .run_history_db
+        .get_owner_registry_states_by_account_ids(&account_ids)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let now = crate::util::beijing_now().to_rfc3339();
+    let affected = state
+        .run_history_db
+        .batch_update_owner_registry_state(
+            &account_ids,
+            next_state,
+            req.reason.as_deref(),
+            &now,
+        )
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    let _ = state.run_history_db.insert_team_manage_owner_audits(
+        account_ids
+            .iter()
+            .map(|account_id| crate::db::NewTeamManageOwnerAudit {
+                account_id: account_id.clone(),
+                action: format!("batch_{next_state}"),
+                from_state: previous_states.get(account_id).cloned(),
+                to_state: next_state.to_string(),
+                reason: req.reason.clone(),
+                scope: req.scope.clone(),
+                batch_job_id: None,
+                created_at: now.clone(),
+            })
+            .collect(),
+    );
+    Ok(TeamManageBatchOwnerStateResponse {
+        affected,
+        state: next_state.to_string(),
+        message: format!("已更新 {} 个 Owner 为 {}", affected, next_state),
+    })
+}
+
+async fn team_manage_batch_disable_owners_handler(
+    State(state): State<AppState>,
+    Json(req): Json<TeamManageBatchOwnerStateRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    Ok(Json(
+        team_manage_batch_update_owner_state(&state, &req, "quarantined").await?,
+    ))
+}
+
+async fn team_manage_batch_restore_owners_handler(
+    State(state): State<AppState>,
+    Json(req): Json<TeamManageBatchOwnerStateRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    Ok(Json(
+        team_manage_batch_update_owner_state(&state, &req, "active").await?,
+    ))
+}
+
+async fn team_manage_batch_archive_owners_handler(
+    State(state): State<AppState>,
+    Json(req): Json<TeamManageBatchOwnerStateRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    Ok(Json(
+        team_manage_batch_update_owner_state(&state, &req, "archived").await?,
+    ))
+}
+
+async fn team_manage_list_owner_audits_handler(
+    State(state): State<AppState>,
+    Query(query): Query<TeamManageOwnerAuditQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(10).clamp(1, 100);
+    let total = state
+        .run_history_db
+        .count_team_manage_owner_audits(
+            query.account_id.as_deref(),
+            query.action.as_deref(),
+            query.batch_job_id.as_deref(),
+        )
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    let records = state
+        .run_history_db
+        .list_team_manage_owner_audits(
+            query.account_id.as_deref(),
+            query.action.as_deref(),
+            query.batch_job_id.as_deref(),
+            page,
+            page_size,
+        )
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + page_size - 1) / page_size
+    };
+    Ok(Json(TeamManageOwnerAuditListResponse {
+        records,
+        page,
+        page_size,
+        total,
+        total_pages,
+    }))
 }
 
 // ─── Codex Quota ─────────────────────────────────────────────────────────────
@@ -3352,9 +4314,18 @@ async fn fetch_codex_quota(access_token: &str) -> CodexQuota {
         return CodexQuota {
             five_hour,
             seven_day,
-            status: if status_code >= 200 && status_code < 300 { "ok" } else { "error" }.to_string(),
+            status: if status_code >= 200 && status_code < 300 {
+                "ok"
+            } else {
+                "error"
+            }
+            .to_string(),
             model_used: Some(model.to_string()),
-            error: if status_code >= 200 && status_code < 300 { None } else { Some(format!("HTTP {status_code}")) },
+            error: if status_code >= 200 && status_code < 300 {
+                None
+            } else {
+                Some(format!("HTTP {status_code}"))
+            },
         };
     }
 
@@ -3376,7 +4347,12 @@ async fn team_manage_quota_handler(
     let access_token = state
         .run_history_db
         .get_owner_token_by_account_id(&account_id)
-        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 token 失败: {e}")))?
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询 token 失败: {e}"),
+            )
+        })?
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
 
     let quota = fetch_codex_quota(&access_token).await;
@@ -3406,12 +4382,18 @@ async fn refresh_rt_to_at(refresh_token: &str) -> Result<String, String> {
     let resp = client
         .post("https://auth.openai.com/oauth/token")
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
             ("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
-            ("redirect_uri", "com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback"),
+            (
+                "redirect_uri",
+                "com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback",
+            ),
         ])
         .send()
         .await
@@ -3420,11 +4402,21 @@ async fn refresh_rt_to_at(refresh_token: &str) -> Result<String, String> {
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        let preview = if body.len() > 200 { format!("{}...", &body[..200]) } else { body };
-        return Err(format!("刷新 token 失败 HTTP {}: {}", status.as_u16(), preview));
+        let preview = if body.len() > 200 {
+            format!("{}...", &body[..200])
+        } else {
+            body
+        };
+        return Err(format!(
+            "刷新 token 失败 HTTP {}: {}",
+            status.as_u16(),
+            preview
+        ));
     }
 
-    let body: serde_json::Value = resp.json().await
+    let body: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| format!("刷新 token JSON 解析失败: {e}"))?;
 
     body.get("access_token")
@@ -3434,10 +4426,7 @@ async fn refresh_rt_to_at(refresh_token: &str) -> Result<String, String> {
 }
 
 /// 从 S2A 号池中搜索邮箱对应的账号，返回 (access_token, refresh_token)
-async fn search_s2a_for_email(
-    config: &AppConfig,
-    email: &str,
-) -> Option<(String, Option<String>)> {
+async fn search_s2a_for_email(config: &AppConfig, email: &str) -> Option<(String, Option<String>)> {
     let client = shared_http_client_8s();
     let encoded_email = urlencoding::encode(email);
 
@@ -3514,7 +4503,10 @@ async fn team_manage_member_quota_handler(
         match refresh_rt_to_at(&rt).await {
             Ok(at) => {
                 let quota = fetch_codex_quota(&at).await;
-                tracing::info!("[TeamManage] 子号额度查询完成(本地RT): email={email}, status={}", quota.status);
+                tracing::info!(
+                    "[TeamManage] 子号额度查询完成(本地RT): email={email}, status={}",
+                    quota.status
+                );
                 return Ok(Json(quota));
             }
             Err(e) => {
@@ -3530,43 +4522,63 @@ async fn team_manage_member_quota_handler(
         if let Some(rt) = &rt_opt {
             if let Ok(fresh_at) = refresh_rt_to_at(rt).await {
                 let quota = fetch_codex_quota(&fresh_at).await;
-                tracing::info!("[TeamManage] 子号额度查询完成(号池RT刷新): email={email}, status={}", quota.status);
+                tracing::info!(
+                    "[TeamManage] 子号额度查询完成(号池RT刷新): email={email}, status={}",
+                    quota.status
+                );
                 return Ok(Json(quota));
             }
         }
         // 直接用号池 AT
         let quota = fetch_codex_quota(&at).await;
-        tracing::info!("[TeamManage] 子号额度查询完成(号池AT): email={email}, status={}", quota.status);
+        tracing::info!(
+            "[TeamManage] 子号额度查询完成(号池AT): email={email}, status={}",
+            quota.status
+        );
         return Ok(Json(quota));
     }
     drop(config);
 
-    Err(error_json(StatusCode::NOT_FOUND, &format!("找不到 {email} 的凭证，本地 DB 和号池均未找到")))
+    Err(error_json(
+        StatusCode::NOT_FOUND,
+        &format!("找不到 {email} 的凭证，本地 DB 和号池均未找到"),
+    ))
 }
 
 // ─── Team Manage: 邀请并入库 ─────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct TeamManageInviteRequest {
     s2a_team: String,
     invite_count: Option<usize>,
 }
 
-async fn team_manage_invite_handler(
-    State(state): State<AppState>,
-    Path(account_id): Path<String>,
-    Json(req): Json<TeamManageInviteRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+#[derive(Serialize, Clone)]
+struct TeamManageInviteCreated {
+    task_id: String,
+    invite_count: usize,
+    message: String,
+}
+
+async fn create_team_manage_invite_task(
+    state: &AppState,
+    account_id: &str,
+    req: TeamManageInviteRequest,
+) -> Result<TeamManageInviteCreated, (StatusCode, Json<ErrorResponse>)> {
     tracing::info!(
         "[TeamManage] 邀请并入库: account_id={account_id}, s2a_team={}",
         req.s2a_team
     );
 
-    // 获取 owner 信息
     let (owner_db_id, owner_email, access_token) = state
         .run_history_db
-        .get_owner_info_by_account_id(&account_id)
-        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 owner 失败: {e}")))?
+        .get_owner_info_by_account_id(account_id)
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询 owner 失败: {e}"),
+            )
+        })?
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
 
     let cfg = state.config.read().await;
@@ -3575,64 +4587,59 @@ async fn team_manage_invite_handler(
         .invite_count
         .unwrap_or(invite_runtime.default_invite_count)
         .clamp(1, 25);
-
-    // 查找号池配置
     let available_teams = cfg.effective_s2a_configs();
     let team = available_teams
         .iter()
-        .find(|t| t.name == req.s2a_team)
+        .find(|candidate| candidate.name == req.s2a_team)
         .cloned()
-        .ok_or_else(|| error_json(StatusCode::BAD_REQUEST, &format!("号池 '{}' 不存在", req.s2a_team)))?;
-
+        .ok_or_else(|| {
+            error_json(
+                StatusCode::BAD_REQUEST,
+                &format!("号池 '{}' 不存在", req.s2a_team),
+            )
+        })?;
     let config_snapshot = cfg.clone();
     drop(cfg);
 
-    // 生成任务 ID
     let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-
-    // 生成邮箱种子
     let seeds: Vec<crate::models::AccountSeed> = (0..invite_count)
         .map(|_| crate::util::generate_account_seed(&config_snapshot.email_domains))
         .collect();
 
-    // 写入任务记录
     let new_task = crate::db::NewInviteTask {
         id: task_id.clone(),
-        upload_id: format!("team-manage-{}", account_id),
+        upload_id: format!("team-manage-{account_id}"),
         owner_email: owner_email.clone(),
-        owner_account_id: account_id.clone(),
+        owner_account_id: account_id.to_string(),
         s2a_team: Some(team.name.clone()),
         invite_count,
         created_at: crate::util::beijing_now().to_rfc3339(),
     };
     let _ = state.run_history_db.enqueue_insert_invite_task(new_task);
 
-    // 写入邮箱记录
     let email_inserts: Vec<crate::db::InviteEmailInsert> = seeds
         .iter()
-        .map(|s| crate::db::InviteEmailInsert {
-            email: s.account.clone(),
-            password: s.password.clone(),
+        .map(|seed| crate::db::InviteEmailInsert {
+            email: seed.account.clone(),
+            password: seed.password.clone(),
         })
         .collect();
     let _ = state
         .run_history_db
         .enqueue_insert_invite_emails(task_id.clone(), email_inserts);
 
-    // 短暂等待 DB 写入
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let owner = crate::invite::TeamOwner {
         email: owner_email,
-        account_id: account_id.clone(),
+        account_id: account_id.to_string(),
         access_token,
         expires: None,
     };
-
     let progress = Arc::new(crate::models::InviteProgress::new());
     let db = state.run_history_db.clone();
     let invite_cfg = config_snapshot.invite_runtime();
-    let max_members = invite_cfg.default_invite_count; // team 最大成员数（如 4）
+    let max_members = invite_cfg.default_invite_count;
     let task_id_clone = task_id.clone();
 
     tokio::spawn(async move {
@@ -3656,14 +4663,900 @@ async fn team_manage_invite_handler(
         "[TeamManage] 邀请任务已创建: task_id={task_id}, invite_count={invite_count}, max_members={max_members}"
     );
 
+    Ok(TeamManageInviteCreated {
+        task_id,
+        invite_count,
+        message: format!(
+            "邀请任务已创建，将邀请 {} 个成员并入库到 {}",
+            invite_count, req.s2a_team
+        ),
+    })
+}
+
+async fn team_manage_invite_handler(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+    Json(req): Json<TeamManageInviteRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let created = create_team_manage_invite_task(&state, &account_id, req).await?;
+
+    Ok((StatusCode::CREATED, Json(serde_json::json!(created))))
+}
+
+async fn team_manage_dashboard_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let _ = state
+        .run_history_db
+        .sync_owner_registry_from_invite_owners()
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("同步 owner_registry 失败: {e}"),
+            )
+        })?;
+    let summary = state
+        .run_history_db
+        .get_team_manage_dashboard_summary()
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询 TeamManage 仪表盘失败: {e}"),
+            )
+        })?;
+
+    Ok(Json(TeamManageDashboardResponse {
+        total_owners: summary.total_owners,
+        active_owners: summary.active_owners,
+        banned_owners: summary.banned_owners,
+        expired_owners: summary.expired_owners,
+        quarantined_owners: summary.quarantined_owners,
+        owners_with_slots: summary.owners_with_slots,
+        owners_with_banned_members: summary.owners_with_banned_members,
+        fresh_cache_owners: summary.health_cache_fresh,
+        stale_cache_owners: summary.health_cache_stale,
+        running_batch_jobs: summary.running_batch_jobs,
+        checked_recently: summary.health_cache_fresh,
+    }))
+}
+
+fn team_manage_batch_request_fingerprint(req: &TeamManageBatchInviteRequest) -> String {
+    let mut ids = req.account_ids.clone();
+    ids.sort();
+    format!(
+        "{}|{}|{:?}|{:?}|{}|{}|{}|{}",
+        req.s2a_team,
+        ids.join(","),
+        req.strategy,
+        req.fixed_count,
+        req.skip_banned,
+        req.skip_expired,
+        req.skip_quarantined,
+        req.only_with_slots
+    )
+}
+
+fn team_manage_batch_job_s2a_team(payload_json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(payload_json)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("s2a_team")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string())
+        })
+}
+
+fn team_manage_batch_job_item_from_record(
+    item: &crate::db::TeamManageBatchItemRecord,
+) -> TeamManageBatchJobItem {
+    TeamManageBatchJobItem {
+        account_id: item.account_id.clone(),
+        status: item.status.clone(),
+        invite_count: item
+            .result_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            .and_then(|payload| payload.get("invite_count").and_then(|value| value.as_u64()))
+            .unwrap_or(0) as usize,
+        child_task_id: item.child_task_id.clone(),
+        message: item.result_json.as_deref().and_then(|value| {
+            serde_json::from_str::<serde_json::Value>(value)
+                .ok()
+                .and_then(|payload| {
+                    payload
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string())
+                })
+                .or_else(|| Some(value.to_string()))
+        }),
+        error: item.error.clone(),
+        updated_at: item
+            .finished_at
+            .clone()
+            .or_else(|| item.started_at.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn team_manage_batch_job_from_records(
+    job: &crate::db::TeamManageBatchJobRecord,
+    items: &[crate::db::TeamManageBatchItemRecord],
+) -> TeamManageBatchJob {
+    TeamManageBatchJob {
+        job_id: job.job_id.clone(),
+        job_type: job.job_type.clone(),
+        status: job.status.clone(),
+        scope: job.scope.clone().unwrap_or_else(|| "manual".to_string()),
+        s2a_team: team_manage_batch_job_s2a_team(&job.payload_json),
+        total_count: job.total_count,
+        success_count: job.success_count,
+        failed_count: job.failed_count,
+        skipped_count: job.skipped_count,
+        created_at: job.created_at.clone(),
+        started_at: job.started_at.clone(),
+        finished_at: job.finished_at.clone(),
+        items: items
+            .iter()
+            .map(team_manage_batch_job_item_from_record)
+            .collect(),
+    }
+}
+
+async fn team_manage_get_batch_job_from_db(
+    state: &AppState,
+    job_id: &str,
+) -> Result<Option<TeamManageBatchJob>, (StatusCode, Json<ErrorResponse>)> {
+    let job = state
+        .run_history_db
+        .get_team_manage_batch_job(job_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    let Some(job) = job else {
+        return Ok(None);
+    };
+    let items = state
+        .run_history_db
+        .get_team_manage_batch_job_items(job_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    Ok(Some(team_manage_batch_job_from_records(&job, &items)))
+}
+
+async fn team_manage_sync_batch_job_cache(state: &AppState, job_id: &str) {
+    let Some(redis_cache) = state.redis_cache.as_ref() else {
+        return;
+    };
+    match team_manage_get_batch_job_from_db(state, job_id).await {
+        Ok(Some(job)) => {
+            if let Err(error) = redis_cache
+                .set_json(
+                    &redis_cache.batch_job_key(job_id),
+                    &job,
+                    redis_cache.batch_progress_ttl_secs(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    "[TeamManage] 写入 Redis batch job cache 失败: job_id={}, error={}",
+                    job_id,
+                    error
+                );
+            }
+        }
+        Ok(None) => {
+            let _ = redis_cache.delete(&redis_cache.batch_job_key(job_id)).await;
+        }
+        Err(_) => {
+            tracing::warn!("[TeamManage] 同步 Redis batch job cache 失败: job_id={}", job_id);
+        }
+    }
+}
+
+async fn team_manage_live_member_count(
+    state: &AppState,
+    account_id: &str,
+) -> Result<usize, String> {
+    let access_token = state
+        .run_history_db
+        .get_owner_token_by_account_id(account_id)
+        .map_err(|e| format!("查询 token 失败: {e}"))?
+        .ok_or_else(|| "找不到对应的 Owner 或 access_token".to_string())?;
+    let members = fetch_chatgpt_members(account_id, &access_token).await?;
+    Ok(members
+        .into_iter()
+        .filter(|member| member.role != "account-owner")
+        .count())
+}
+
+async fn team_manage_get_batch_job(
+    state: &AppState,
+    job_id: &str,
+) -> Result<Option<TeamManageBatchJob>, (StatusCode, Json<ErrorResponse>)> {
+    if let Some(redis_cache) = state.redis_cache.as_ref() {
+        match redis_cache
+            .get_json::<TeamManageBatchJob>(&redis_cache.batch_job_key(job_id))
+            .await
+        {
+            Ok(Some(job)) => return Ok(Some(job)),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    "[TeamManage] 读取 Redis batch job cache 失败: job_id={}, error={}",
+                    job_id,
+                    error
+                );
+            }
+        }
+    }
+    let job = team_manage_get_batch_job_from_db(state, job_id).await?;
+    if job.is_some() {
+        team_manage_sync_batch_job_cache(state, job_id).await;
+    }
+    Ok(job)
+}
+
+async fn team_manage_update_batch_job_item(
+    state: &AppState,
+    job_id: &str,
+    account_id: &str,
+    status: &str,
+    invite_count: usize,
+    child_task_id: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
+) {
+    let items = match state.run_history_db.get_team_manage_batch_job_items(job_id) {
+        Ok(items) => items,
+        Err(_) => return,
+    };
+    let Some(item) = items.iter().find(|item| item.account_id == account_id) else {
+        return;
+    };
+    let now = crate::util::beijing_now().to_rfc3339();
+    let result_json = serde_json::json!({
+        "message": message,
+        "invite_count": invite_count,
+    })
+    .to_string();
+    let _ = state.run_history_db.update_team_manage_batch_item(
+        item.id,
+        crate::db::TeamManageBatchItemUpdate {
+            status: Some(status.to_string()),
+            child_task_id,
+            result_json: Some(result_json),
+            error,
+            started_at: if item.started_at.is_none() {
+                Some(now.clone())
+            } else {
+                None
+            },
+            finished_at: if matches!(status, "completed" | "failed" | "skipped") {
+                Some(now.clone())
+            } else {
+                None
+            },
+        },
+    );
+
+    let refreshed_items = match state.run_history_db.get_team_manage_batch_job_items(job_id) {
+        Ok(items) => items,
+        Err(_) => return,
+    };
+    let success_count = refreshed_items
+        .iter()
+        .filter(|item| item.status == "completed")
+        .count();
+    let failed_count = refreshed_items
+        .iter()
+        .filter(|item| item.status == "failed")
+        .count();
+    let skipped_count = refreshed_items
+        .iter()
+        .filter(|item| item.status == "skipped")
+        .count();
+    let all_finished = refreshed_items
+        .iter()
+        .all(|item| matches!(item.status.as_str(), "completed" | "failed" | "skipped"));
+    let next_status = if all_finished {
+        if failed_count > 0 && success_count > 0 {
+            "partial_success".to_string()
+        } else if failed_count > 0 {
+            "failed".to_string()
+        } else {
+            "completed".to_string()
+        }
+    } else {
+        "running".to_string()
+    };
+    let existing_job = state.run_history_db.get_team_manage_batch_job(job_id).ok().flatten();
+    let _ = state.run_history_db.update_team_manage_batch_job(
+        job_id.to_string(),
+        crate::db::TeamManageBatchJobUpdate {
+            status: Some(next_status),
+            total_count: Some(refreshed_items.len()),
+            success_count: Some(success_count),
+            failed_count: Some(failed_count),
+            skipped_count: Some(skipped_count),
+            started_at: if existing_job
+                .as_ref()
+                .and_then(|job| job.started_at.as_ref())
+                .is_none()
+            {
+                Some(now.clone())
+            } else {
+                None
+            },
+            finished_at: if all_finished { Some(now) } else { None },
+            error: None,
+        },
+    );
+    team_manage_sync_batch_job_cache(state, job_id).await;
+}
+
+async fn team_manage_create_or_reuse_batch_job(
+    state: &AppState,
+    req: &TeamManageBatchInviteRequest,
+) -> Result<(String, bool), (StatusCode, Json<ErrorResponse>)> {
+    let fingerprint = team_manage_batch_request_fingerprint(req);
+    if let Some(job) = state
+        .run_history_db
+        .get_team_manage_batch_job_by_fingerprint(&fingerprint)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?
+    {
+        return Ok((job.job_id, false));
+    }
+    let job_id = format!("batch-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    team_manage_insert_batch_job(state, req, &job_id, Some(fingerprint))?;
+    team_manage_sync_batch_job_cache(state, &job_id).await;
+    Ok((job_id, true))
+}
+
+fn team_manage_insert_batch_job(
+    state: &AppState,
+    req: &TeamManageBatchInviteRequest,
+    job_id: &str,
+    fingerprint: Option<String>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let now = crate::util::beijing_now().to_rfc3339();
+    let payload_json = serde_json::to_string(req).map_err(|e| {
+        error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("序列化批量任务失败: {e}"),
+        )
+    })?;
+    state
+        .run_history_db
+        .insert_team_manage_batch_job(crate::db::NewTeamManageBatchJob {
+            job_id: job_id.to_string(),
+            job_type: "batch_invite".to_string(),
+            scope: Some(req.scope.clone().unwrap_or_else(|| "manual".to_string())),
+            status: "pending".to_string(),
+            payload_json,
+            total_count: req.account_ids.len(),
+            success_count: 0,
+            failed_count: 0,
+            skipped_count: 0,
+            created_by: None,
+            created_at: now.clone(),
+            started_at: None,
+            finished_at: None,
+            error: None,
+            fingerprint,
+        })
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    state
+        .run_history_db
+        .insert_team_manage_batch_items(
+            req.account_ids
+                .iter()
+                .map(|account_id| crate::db::NewTeamManageBatchItem {
+                    job_id: job_id.to_string(),
+                    account_id: account_id.clone(),
+                    item_type: "invite".to_string(),
+                    status: "pending".to_string(),
+                    child_task_id: None,
+                    result_json: None,
+                    error: None,
+                    started_at: None,
+                    finished_at: None,
+                })
+                .collect(),
+        )
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    Ok(())
+}
+
+async fn team_manage_batch_invite_handler(
+    State(state): State<AppState>,
+    Json(req): Json<TeamManageBatchInviteRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut req = req;
+    req.account_ids = team_manage_resolve_batch_account_ids(
+        &state,
+        &req.account_ids,
+        req.scope.as_deref(),
+        Some(&req.filters),
+    )
+    .await?;
+    if req.account_ids.is_empty() {
+        return Err(error_json(StatusCode::BAD_REQUEST, "account_ids 不能为空"));
+    }
+
+    let (job_id, created) = team_manage_create_or_reuse_batch_job(&state, &req).await?;
+    if !created {
+        let existing = team_manage_get_batch_job(&state, &job_id)
+            .await?
+            .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "批量任务不存在"))?;
+        let accepted = existing
+            .items
+            .iter()
+            .filter(|item| item.status != "skipped")
+            .count();
+        let skipped = existing
+            .items
+            .iter()
+            .filter(|item| item.status == "skipped")
+            .count();
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!(TeamManageBatchInviteResponse {
+                job_id,
+                accepted,
+                skipped,
+                message: "复用已有批量任务".to_string(),
+            })),
+        ));
+    }
+
+    let accepted = req.account_ids.len();
+    let req_for_task = req.clone();
+    let state_clone = state.clone();
+    let job_id_clone = job_id.clone();
+    tokio::spawn(async move {
+        let max_members = {
+            let cfg = state_clone.config.read().await;
+            team_manage_max_members(&cfg)
+        };
+        let cached_map = state_clone
+            .run_history_db
+            .get_all_owner_health()
+            .map(team_manage_cached_results_map)
+            .unwrap_or_default();
+
+        for account_id in req_for_task.account_ids {
+            if req_for_task.skip_banned
+                && cached_map
+                    .get(&account_id)
+                    .map(|cached| cached.owner_status == "banned")
+                    .unwrap_or(false)
+            {
+                team_manage_update_batch_job_item(
+                    &state_clone,
+                    &job_id_clone,
+                    &account_id,
+                    "skipped",
+                    0,
+                    None,
+                    Some("已按规则跳过封禁 owner".to_string()),
+                    None,
+                )
+                .await;
+                continue;
+            }
+            if req_for_task.skip_expired || req_for_task.skip_quarantined {
+                team_manage_update_batch_job_item(
+                    &state_clone,
+                    &job_id_clone,
+                    &account_id,
+                    "skipped",
+                    0,
+                    None,
+                    Some("当前轮次未接入 owner_registry，已跳过过期/隔离判断".to_string()),
+                    None,
+                )
+                .await;
+                continue;
+            }
+
+            let strategy = req_for_task
+                .strategy
+                .clone()
+                .unwrap_or_else(|| "fill_to_limit".to_string());
+            let invite_count = if strategy == "fixed_count" {
+                req_for_task.fixed_count.unwrap_or(1).clamp(1, 25)
+            } else {
+                match team_manage_live_member_count(&state_clone, &account_id).await {
+                    Ok(member_count) => max_members.saturating_sub(member_count),
+                    Err(error) => {
+                        team_manage_update_batch_job_item(
+                            &state_clone,
+                            &job_id_clone,
+                            &account_id,
+                            "failed",
+                            0,
+                            None,
+                            None,
+                            Some(error),
+                        )
+                        .await;
+                        continue;
+                    }
+                }
+            };
+
+            if req_for_task.only_with_slots && invite_count == 0 {
+                team_manage_update_batch_job_item(
+                    &state_clone,
+                    &job_id_clone,
+                    &account_id,
+                    "skipped",
+                    0,
+                    None,
+                    Some("当前 owner 已无空位".to_string()),
+                    None,
+                )
+                .await;
+                continue;
+            }
+
+            if invite_count == 0 {
+                team_manage_update_batch_job_item(
+                    &state_clone,
+                    &job_id_clone,
+                    &account_id,
+                    "skipped",
+                    0,
+                    None,
+                    Some("未生成邀请任务".to_string()),
+                    None,
+                )
+                .await;
+                continue;
+            }
+
+            match create_team_manage_invite_task(
+                &state_clone,
+                &account_id,
+                TeamManageInviteRequest {
+                    s2a_team: req_for_task.s2a_team.clone(),
+                    invite_count: Some(invite_count),
+                },
+            )
+            .await
+            {
+                Ok(created) => {
+                    team_manage_update_batch_job_item(
+                        &state_clone,
+                        &job_id_clone,
+                        &account_id,
+                        "completed",
+                        created.invite_count,
+                        Some(created.task_id),
+                        Some(created.message),
+                        None,
+                    )
+                    .await;
+                }
+                Err((status, body)) => {
+                    team_manage_update_batch_job_item(
+                        &state_clone,
+                        &job_id_clone,
+                        &account_id,
+                        "failed",
+                        invite_count,
+                        None,
+                        None,
+                        Some(format!("{} {}", status.as_u16(), body.0.error)),
+                    )
+                    .await;
+                }
+            }
+        }
+    });
+
     Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({
-            "task_id": task_id,
-            "invite_count": invite_count,
-            "message": format!("邀请任务已创建，将邀请 {} 个成员并入库到 {}", invite_count, req.s2a_team)
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!(TeamManageBatchInviteResponse {
+            job_id,
+            accepted,
+            skipped: 0,
+            message: "批量邀请任务已创建".to_string(),
         })),
     ))
+}
+
+async fn team_manage_list_batch_jobs_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut jobs = state
+        .run_history_db
+        .list_team_manage_batch_jobs(None, Some(100))
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?
+        .iter()
+        .map(team_manage_batch_job_summary)
+        .collect::<Vec<_>>();
+    jobs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    Ok(Json(TeamManageBatchJobListResponse { jobs }))
+}
+
+async fn team_manage_get_batch_job_handler(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let job = team_manage_get_batch_job(&state, &job_id)
+        .await?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "批量任务不存在"))?;
+    Ok(Json(job))
+}
+
+async fn team_manage_get_batch_job_items_handler(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let job = team_manage_get_batch_job(&state, &job_id)
+        .await?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "批量任务不存在"))?;
+    Ok(Json(TeamManageBatchJobItemsResponse { items: job.items }))
+}
+
+fn team_manage_batch_retry_mode(mode: Option<&str>) -> &'static str {
+    match mode.unwrap_or("all").trim().to_ascii_lowercase().as_str() {
+        "network" => "network",
+        "recoverable" => "recoverable",
+        _ => "all",
+    }
+}
+
+fn team_manage_is_network_retryable_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    [
+        "timeout",
+        "timed out",
+        "connection",
+        "connect",
+        "refused",
+        "reset",
+        "broken pipe",
+        "dns",
+        "temporary failure",
+        "temporarily unavailable",
+        "service unavailable",
+        "gateway timeout",
+        "bad gateway",
+        "request timeout",
+        "请求超时",
+        "连接失败",
+        "连接超时",
+        "连接被拒绝",
+        "连接重置",
+        "服务不可用",
+        "网关超时",
+        "网络错误",
+        "502",
+        "503",
+        "504",
+        "408",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword))
+}
+
+fn team_manage_is_recoverable_error(error: &str) -> bool {
+    if team_manage_is_network_retryable_error(error) {
+        return true;
+    }
+    let normalized = error.to_ascii_lowercase();
+    [
+        "429",
+        "rate limit",
+        "too many requests",
+        "retry later",
+        "retryable",
+        "temporarily busy",
+        "temporarily blocked",
+        "conflict",
+        "concurrent",
+        "busy",
+        "稍后重试",
+        "稍后再试",
+        "限流",
+        "频率",
+        "并发",
+        "冲突",
+        "重试",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword))
+}
+
+fn team_manage_should_retry_batch_item(
+    item: &crate::db::TeamManageBatchItemRecord,
+    retry_mode: &str,
+) -> bool {
+    match retry_mode {
+        "network" => item
+            .error
+            .as_deref()
+            .map(team_manage_is_network_retryable_error)
+            .unwrap_or(false),
+        "recoverable" => item
+            .error
+            .as_deref()
+            .map(team_manage_is_recoverable_error)
+            .unwrap_or(false),
+        _ => true,
+    }
+}
+
+async fn team_manage_retry_failed_batch_items_handler(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+    Json(req): Json<TeamManageBatchRetryRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let job = state
+        .run_history_db
+        .get_team_manage_batch_job(&job_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "批量任务不存在"))?;
+    if job.job_type != "batch_invite" {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            "当前仅支持重试批量邀请任务",
+        ));
+    }
+    let retry_mode = team_manage_batch_retry_mode(req.retry_mode.as_deref());
+    let failed_items = state
+        .run_history_db
+        .get_team_manage_batch_items_by_status(&job_id, "failed")
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+    let failed_items = failed_items
+        .into_iter()
+        .filter(|item| team_manage_should_retry_batch_item(item, retry_mode))
+        .collect::<Vec<_>>();
+    if failed_items.is_empty() {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            &format!("当前重试模式 {retry_mode} 下没有可重试的失败子项"),
+        ));
+    }
+    let mut payload: TeamManageBatchInviteRequest = serde_json::from_str(&job.payload_json)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("解析任务 payload 失败: {e}")))?;
+    payload.account_ids = failed_items
+        .iter()
+        .map(|item| item.account_id.clone())
+        .collect();
+    payload.scope = Some("manual".to_string());
+    payload.filters = TeamManageBatchFilters::default();
+
+    let retry_job_id = format!("batch-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    team_manage_insert_batch_job(&state, &payload, &retry_job_id, None)?;
+    team_manage_sync_batch_job_cache(&state, &retry_job_id).await;
+
+    let retry_req = payload.clone();
+    let state_clone = state.clone();
+    let retry_job_id_clone = retry_job_id.clone();
+    tokio::spawn(async move {
+        let max_members = {
+            let cfg = state_clone.config.read().await;
+            team_manage_max_members(&cfg)
+        };
+        let cached_map = state_clone
+            .run_history_db
+            .get_all_owner_health()
+            .map(team_manage_cached_results_map)
+            .unwrap_or_default();
+
+        for account_id in retry_req.account_ids {
+            if retry_req.skip_banned
+                && cached_map
+                    .get(&account_id)
+                    .map(|cached| cached.owner_status == "banned")
+                    .unwrap_or(false)
+            {
+                team_manage_update_batch_job_item(
+                    &state_clone,
+                    &retry_job_id_clone,
+                    &account_id,
+                    "skipped",
+                    0,
+                    None,
+                    Some("已按规则跳过封禁 owner".to_string()),
+                    None,
+                )
+                .await;
+                continue;
+            }
+
+            let strategy = retry_req
+                .strategy
+                .clone()
+                .unwrap_or_else(|| "fill_to_limit".to_string());
+            let invite_count = if strategy == "fixed_count" {
+                retry_req.fixed_count.unwrap_or(1).clamp(1, 25)
+            } else {
+                match team_manage_live_member_count(&state_clone, &account_id).await {
+                    Ok(member_count) => max_members.saturating_sub(member_count),
+                    Err(error) => {
+                        team_manage_update_batch_job_item(
+                            &state_clone,
+                            &retry_job_id_clone,
+                            &account_id,
+                            "failed",
+                            0,
+                            None,
+                            None,
+                            Some(error),
+                        )
+                        .await;
+                        continue;
+                    }
+                }
+            };
+
+            if invite_count == 0 {
+                team_manage_update_batch_job_item(
+                    &state_clone,
+                    &retry_job_id_clone,
+                    &account_id,
+                    "skipped",
+                    0,
+                    None,
+                    Some("未生成邀请任务".to_string()),
+                    None,
+                )
+                .await;
+                continue;
+            }
+
+            match create_team_manage_invite_task(
+                &state_clone,
+                &account_id,
+                TeamManageInviteRequest {
+                    s2a_team: retry_req.s2a_team.clone(),
+                    invite_count: Some(invite_count),
+                },
+            )
+            .await
+            {
+                Ok(created) => {
+                    team_manage_update_batch_job_item(
+                        &state_clone,
+                        &retry_job_id_clone,
+                        &account_id,
+                        "completed",
+                        created.invite_count,
+                        Some(created.task_id),
+                        Some(created.message),
+                        None,
+                    )
+                    .await;
+                }
+                Err((status, body)) => {
+                    team_manage_update_batch_job_item(
+                        &state_clone,
+                        &retry_job_id_clone,
+                        &account_id,
+                        "failed",
+                        invite_count,
+                        None,
+                        None,
+                        Some(format!("{} {}", status.as_u16(), body.0.error)),
+                    )
+                    .await;
+                }
+            }
+        }
+    });
+
+    Ok(Json(TeamManageBatchRetryResponse {
+        job_id: retry_job_id,
+        retried: failed_items.len(),
+        retry_mode: retry_mode.to_string(),
+        message: format!(
+            "已创建重试任务，按 {retry_mode} 模式重试 {} 个失败子项",
+            failed_items.len()
+        ),
+    }))
 }
 
 // ─── Health cache: 读取持久化的检查结果 ─────────────────────────────────────
@@ -3701,13 +5594,34 @@ struct BatchCheckRequest {
     account_ids: Vec<String>,
     #[serde(default = "default_concurrency")]
     concurrency: usize,
+    #[serde(default)]
+    force_refresh: bool,
+    #[serde(default = "default_prefer_cache")]
+    prefer_cache: bool,
+    scope: Option<String>,
+    #[serde(default)]
+    filters: TeamManageBatchFilters,
 }
 
 fn default_concurrency() -> usize {
     5
 }
 
-#[derive(Serialize, Clone)]
+fn default_prefer_cache() -> bool {
+    true
+}
+
+#[derive(Serialize)]
+struct BatchCheckResponse {
+    results: Vec<OwnerHealthResult>,
+    cache_hits: usize,
+    cache_misses: usize,
+    stale_returns: usize,
+    scheduled_refreshes: usize,
+    scope: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct MemberHealthInfo {
     email: String,
     name: Option<String>,
@@ -3715,7 +5629,7 @@ struct MemberHealthInfo {
     seven_day_pct: Option<f64>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OwnerHealthResult {
     account_id: String,
     owner_status: String,
@@ -3723,55 +5637,295 @@ struct OwnerHealthResult {
     checked_at: String,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct TeamManageBatchJobItem {
+    account_id: String,
+    status: String,
+    invite_count: usize,
+    child_task_id: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
+    updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct TeamManageBatchJob {
+    job_id: String,
+    job_type: String,
+    status: String,
+    scope: String,
+    s2a_team: Option<String>,
+    total_count: usize,
+    success_count: usize,
+    failed_count: usize,
+    skipped_count: usize,
+    created_at: String,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    items: Vec<TeamManageBatchJobItem>,
+}
+
+#[derive(Serialize)]
+struct TeamManageBatchJobSummary {
+    job_id: String,
+    job_type: String,
+    status: String,
+    scope: String,
+    s2a_team: Option<String>,
+    total_count: usize,
+    success_count: usize,
+    failed_count: usize,
+    skipped_count: usize,
+    created_at: String,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TeamManageBatchJobListResponse {
+    jobs: Vec<TeamManageBatchJobSummary>,
+}
+
+#[derive(Serialize)]
+struct TeamManageBatchJobItemsResponse {
+    items: Vec<TeamManageBatchJobItem>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+struct TeamManageBatchInviteRequest {
+    account_ids: Vec<String>,
+    s2a_team: String,
+    strategy: Option<String>,
+    fixed_count: Option<usize>,
+    scope: Option<String>,
+    #[serde(default)]
+    filters: TeamManageBatchFilters,
+    #[serde(default)]
+    skip_banned: bool,
+    #[serde(default)]
+    skip_expired: bool,
+    #[serde(default)]
+    skip_quarantined: bool,
+    #[serde(default)]
+    only_with_slots: bool,
+}
+
+#[derive(Serialize)]
+struct TeamManageBatchInviteResponse {
+    job_id: String,
+    accepted: usize,
+    skipped: usize,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct TeamManageBatchOwnerStateRequest {
+    account_ids: Vec<String>,
+    scope: Option<String>,
+    #[serde(default)]
+    filters: TeamManageBatchFilters,
+    reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TeamManageBatchOwnerStateResponse {
+    affected: usize,
+    state: String,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct TeamManageOwnerAuditQuery {
+    account_id: Option<String>,
+    action: Option<String>,
+    batch_job_id: Option<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct TeamManageOwnerAuditListResponse {
+    records: Vec<crate::db::TeamManageOwnerAuditRecord>,
+    page: usize,
+    page_size: usize,
+    total: usize,
+    total_pages: usize,
+}
+
+#[derive(Deserialize, Default)]
+struct TeamManageBatchRetryRequest {
+    retry_mode: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TeamManageBatchRetryResponse {
+    job_id: String,
+    retried: usize,
+    retry_mode: String,
+    message: String,
+}
+
 async fn team_manage_batch_check_handler(
     State(state): State<AppState>,
     Json(req): Json<BatchCheckRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let concurrency = req.concurrency.clamp(1, 20);
+    let BatchCheckRequest {
+        account_ids,
+        concurrency,
+        force_refresh,
+        prefer_cache,
+        scope,
+        filters,
+    } = req;
+    let account_ids = team_manage_resolve_batch_account_ids(
+        &state,
+        &account_ids,
+        scope.as_deref(),
+        Some(&filters),
+    )
+    .await?;
+    let concurrency = concurrency.clamp(1, 20);
     tracing::info!(
         "[TeamManage] 批量检查: {} 个 owner, 并发={}",
-        req.account_ids.len(),
+        account_ids.len(),
         concurrency
     );
 
+    let _ = state
+        .run_history_db
+        .sync_owner_registry_from_invite_owners()
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("同步 owner_registry 失败: {e}"),
+            )
+        })?;
+    let cached_records = state
+        .run_history_db
+        .get_owner_health_by_account_ids(&account_ids)
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("查询健康缓存失败: {e}"),
+            )
+        })?;
+    let cached_map = cached_records
+        .into_iter()
+        .map(|record| (record.account_id.clone(), record))
+        .collect::<HashMap<_, _>>();
+
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let mut handles = Vec::new();
+    let mut results = Vec::new();
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
+    let mut stale_returns = 0usize;
+    let mut scheduled_refresh_ids = Vec::new();
 
-    for account_id in req.account_ids {
+    for account_id in account_ids {
+        if !force_refresh && prefer_cache {
+            if let Some(cached) = team_manage_get_health_result_from_redis(&state, &account_id).await
+            {
+                match team_manage_cache_status(Some(cached.checked_at.as_str())).as_str() {
+                    "fresh" => {
+                        cache_hits += 1;
+                        results.push(cached);
+                        continue;
+                    }
+                    "stale" => {
+                        stale_returns += 1;
+                        results.push(cached);
+                        scheduled_refresh_ids.push(account_id.clone());
+                        continue;
+                    }
+                    "expired" => {}
+                    _ => {}
+                }
+            }
+            if let Some(cached) = cached_map.get(&account_id) {
+                match team_manage_owner_health_cache_status(cached).as_str() {
+                    "fresh" => {
+                        cache_hits += 1;
+                        results.push(team_manage_owner_health_result_from_record(cached));
+                        continue;
+                    }
+                    "stale" => {
+                        stale_returns += 1;
+                        results.push(team_manage_owner_health_result_from_record(cached));
+                        scheduled_refresh_ids.push(account_id.clone());
+                        continue;
+                    }
+                    "expired" => {}
+                    _ => {}
+                }
+            }
+        }
+
+        cache_misses += 1;
         let sem = semaphore.clone();
         let state = state.clone();
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await;
-            check_single_owner(&state, &account_id).await
+            if !team_manage_try_acquire_health_lock(&state, &account_id).await {
+                return None;
+            }
+            let result = check_single_owner(&state, &account_id).await;
+            team_manage_release_health_lock(&state, &account_id).await;
+            result
         });
         handles.push(handle);
     }
 
-    let mut results = Vec::new();
     for handle in handles {
         if let Ok(result) = handle.await {
             if let Some(r) = result {
-                // 持久化到 DB
-                let members_json = serde_json::to_string(&r.members).unwrap_or_default();
-                let _ = state.run_history_db.enqueue_upsert_owner_health(
-                    r.account_id.clone(),
-                    r.owner_status.clone(),
-                    members_json,
-                    r.checked_at.clone(),
-                );
+                team_manage_persist_health_result(&state, &r).await;
                 results.push(r);
             }
         }
     }
 
+    if !scheduled_refresh_ids.is_empty() {
+        let refresh_state = state.clone();
+        let refresh_ids = scheduled_refresh_ids.clone();
+        tokio::spawn(async move {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+            let mut handles = Vec::new();
+            for account_id in refresh_ids {
+                let sem = semaphore.clone();
+                let state = refresh_state.clone();
+                let handle = tokio::spawn(async move {
+                    let _permit = sem.acquire().await;
+                    if !team_manage_try_acquire_health_lock(&state, &account_id).await {
+                        return None;
+                    }
+                    let result = check_single_owner(&state, &account_id).await;
+                    team_manage_release_health_lock(&state, &account_id).await;
+                    result
+                });
+                handles.push(handle);
+            }
+            for handle in handles {
+                if let Ok(Some(result)) = handle.await {
+                    team_manage_persist_health_result(&refresh_state, &result).await;
+                }
+            }
+        });
+    }
+
     tracing::info!("[TeamManage] 批量检查完成: {} 个结果", results.len());
-    Ok(Json(serde_json::json!({ "results": results })))
+    Ok(Json(BatchCheckResponse {
+        results,
+        cache_hits,
+        cache_misses,
+        stale_returns,
+        scheduled_refreshes: scheduled_refresh_ids.len(),
+        scope,
+    }))
 }
 
 async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerHealthResult> {
-    crate::log_broadcast::broadcast_log(&format!(
-        "[健康检查] 开始: {}", account_id
-    ));
+    crate::log_broadcast::broadcast_log(&format!("[健康检查] 开始: {}", account_id));
 
     let access_token = state
         .run_history_db
@@ -3783,7 +5937,8 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
     let owner_quota = fetch_codex_quota(&access_token).await;
     let owner_status = owner_quota.status.clone();
     crate::log_broadcast::broadcast_log(&format!(
-        "[健康检查] {} owner_status={}", account_id, owner_status
+        "[健康检查] {} owner_status={}",
+        account_id, owner_status
     ));
 
     // 2. 拉成员列表
@@ -3797,7 +5952,9 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
 
     // 3. 查每个成员额度
     crate::log_broadcast::broadcast_log(&format!(
-        "[健康检查] {} 成员数={}", account_id, members_filtered.len()
+        "[健康检查] {} 成员数={}",
+        account_id,
+        members_filtered.len()
     ));
 
     let config = state.config.read().await;
@@ -3845,9 +6002,16 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
             status = "no_credentials".to_string();
         }
 
-        let pct_str = seven_day_pct.map(|p| format!("{:.0}%", p)).unwrap_or("--".to_string());
+        let pct_str = seven_day_pct
+            .map(|p| format!("{:.0}%", p))
+            .unwrap_or("--".to_string());
         crate::log_broadcast::broadcast_log(&format!(
-            "[健康检查] {} #{} {} status={} 7d={}", account_id, idx + 1, email, status, pct_str
+            "[健康检查] {} #{} {} status={} 7d={}",
+            account_id,
+            idx + 1,
+            email,
+            status,
+            pct_str
         ));
 
         member_infos.push(MemberHealthInfo {
@@ -3859,7 +6023,9 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
     }
 
     crate::log_broadcast::broadcast_log(&format!(
-        "[健康检查] {} 完成: {} 个成员已检查", account_id, member_infos.len()
+        "[健康检查] {} 完成: {} 个成员已检查",
+        account_id,
+        member_infos.len()
     ));
 
     Some(OwnerHealthResult {
