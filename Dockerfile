@@ -1,4 +1,13 @@
-# ── Stage 1: Chef — 生成依赖配方 ──────────────────────────────
+# ── Stage 1: Frontend — 构建 React SPA ─────────────────────────
+FROM node:20-slim AS frontend
+
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 2: Chef — 生成依赖配方 ──────────────────────────────
 FROM rust:1.88-bookworm AS chef
 
 RUN cargo install cargo-chef
@@ -10,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# ── Stage 2: Planner — 分析依赖 ──────────────────────────────
+# ── Stage 3: Planner — 分析依赖 ──────────────────────────────
 FROM chef AS planner
 
 COPY Cargo.toml Cargo.lock ./
@@ -19,21 +28,20 @@ COPY src/ src/
 # 生成依赖配方（只包含依赖信息，不含业务代码）
 RUN cargo chef prepare --recipe-path recipe.json
 
-# ── Stage 3: Builder — 编译 ───────────────────────────────────
+# ── Stage 4: Builder — 编译 ───────────────────────────────────
 FROM chef AS builder
 
 # 先用配方只编译依赖（源码不变时完全命中缓存）
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
-# 再复制源码和静态资源，编译业务代码
+# 再复制源码，编译业务代码（不再需要 static/）
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
-COPY static/ static/
 
 RUN cargo build --release
 
-# ── Stage 4: Runtime ─────────────────────────────────────────
+# ── Stage 5: Runtime ─────────────────────────────────────────
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,6 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/autoteam2s2a /app/autoteam2s2a
+COPY --from=frontend /app/frontend/dist /app/frontend/dist
 
 RUN mkdir -p /app/config /app/data /app/accounts
 

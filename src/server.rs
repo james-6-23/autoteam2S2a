@@ -7,15 +7,16 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse};
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2aExtraConfig};
 use crate::db::RunHistoryDb;
@@ -25,13 +26,8 @@ use crate::proxy_pool::{ProxyPool, health_check, resolve_proxies};
 use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService};
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
 
-// ─── Embedded frontend ──────────────────────────────────────────────────────
+// ─── Frontend: served from frontend/dist/ via ServeDir ──────────────────────
 
-const INDEX_HTML: &str = include_str!("../static/index.html");
-const APP_CSS: &str = include_str!("../static/assets/css/app.css");
-const APP_JS: &str = include_str!("../static/assets/js/app.js");
-const INVITE_HTML: &str = include_str!("../static/invite.html");
-const INVITE_JS: &str = include_str!("../static/assets/js/invite.js");
 const TASK_FINISHED_KEEP: usize = 300;
 const TASK_PRUNE_THRESHOLD: usize = 600;
 const MAX_TARGET_COUNT: usize = 5000;
@@ -476,38 +472,6 @@ where
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
-
-async fn index_handler() -> impl IntoResponse {
-    Html(INDEX_HTML)
-}
-
-async fn app_css_handler() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS)
-}
-
-async fn app_js_handler() -> impl IntoResponse {
-    (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
-        APP_JS,
-    )
-}
-
-async fn invite_handler() -> impl IntoResponse {
-    Html(INVITE_HTML)
-}
-
-async fn invite_js_handler() -> impl IntoResponse {
-    (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
-        INVITE_JS,
-    )
-}
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(HealthResponse {
@@ -2565,13 +2529,11 @@ pub async fn start_server(
     // 启动后台调度器
     crate::scheduler::start_scheduler(state.clone(), db);
 
+    // SPA 静态文件服务：优先匹配 frontend/dist/ 中的文件，未命中则回退 index.html
+    let spa = ServeDir::new("frontend/dist")
+        .not_found_service(ServeFile::new("frontend/dist/index.html"));
+
     let app = Router::new()
-        // Frontend
-        .route("/", get(index_handler))
-        .route("/invite", get(invite_handler))
-        .route("/assets/css/app.css", get(app_css_handler))
-        .route("/assets/js/app.js", get(app_js_handler))
-        .route("/assets/js/invite.js", get(invite_js_handler))
         // Health
         .route("/health", get(health_handler))
         // Config management
@@ -2645,6 +2607,7 @@ pub async fn start_server(
             "/api/invite/config",
             get(get_invite_config_handler).put(update_invite_config_handler),
         )
+        .fallback_service(spa)
         .layer(CorsLayer::permissive())
         .with_state(state);
 
