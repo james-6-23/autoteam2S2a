@@ -1,14 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '../components/Toast';
 import * as api from '../lib/api';
-import { User, ChevronLeft, ChevronRight, Users, Trash2, X, Loader2, Zap, ShieldAlert } from 'lucide-react';
+import { User, ChevronLeft, ChevronRight, Users, Trash2, X, Loader2, Zap, ShieldAlert, UserPlus } from 'lucide-react';
 
 interface TeamOwner { email: string; account_id: string; access_token?: string; member_count?: number }
 interface TeamMember { user_id: string; email?: string; name?: string; role: string; created_at?: string }
 interface QuotaWindow { used_percent: number; remaining_percent: number; reset_after_seconds: number; window_minutes: number }
 interface CodexQuota { five_hour?: QuotaWindow; seven_day?: QuotaWindow; status: string; model_used?: string; error?: string }
+interface S2aTeam { name: string; api_base: string }
 
 const PAGE_SIZE = 10;
+const MAX_MEMBERS = 4;
 
 function fmtReset(secs: number) {
   if (secs <= 0) return '--';
@@ -136,6 +138,11 @@ export default function TeamManage() {
   const [memberQuotas, setMemberQuotas] = useState<Record<string, CodexQuota>>({});
   const [memberQuotaLoading, setMemberQuotaLoading] = useState<Record<string, boolean>>({});
 
+  const [s2aTeams, setS2aTeams] = useState<S2aTeam[]>([]);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [selectedS2aTeam, setSelectedS2aTeam] = useState('');
+
   const [ownerPage, setOwnerPage] = useState(1);
   const [memberPage, setMemberPage] = useState(1);
 
@@ -153,6 +160,15 @@ export default function TeamManage() {
   }, []);
 
   useEffect(() => { loadOwners(); }, [loadOwners]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await api.get<{ teams: S2aTeam[] }>('/api/config');
+        setS2aTeams((data as any).teams || []);
+      } catch {}
+    })();
+  }, []);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelected(null); };
@@ -258,8 +274,25 @@ export default function TeamManage() {
     } catch (e) { toast(`刷新失败: ${e}`, 'error'); }
   };
 
+  const inviteAndPush = async (s2aTeam: string) => {
+    if (!selected) return;
+    const availableSlots = MAX_MEMBERS - members.length;
+    if (availableSlots <= 0) { toast('已满员，无法邀请', 'error'); return; }
+    setInviteLoading(true);
+    try {
+      const res = await api.post<{ task_id: string; message: string }>(
+        `/api/team-manage/owners/${encodeURIComponent(selected)}/invite`,
+        { s2a_team: s2aTeam, invite_count: availableSlots }
+      );
+      toast(`${res.message} (任务ID: ${res.task_id})`, 'success');
+      setShowInviteModal(false);
+    } catch (e) { toast(`邀请失败: ${e}`, 'error'); }
+    finally { setInviteLoading(false); }
+  };
+
   const selectedOwner = owners.find(o => o.account_id === selected);
   const kickableCount = members.filter(m => m.role !== 'owner' && m.role !== 'account-owner').length;
+  const availableSlots = Math.max(0, MAX_MEMBERS - members.length);
   const selectedOwnerQuota = selected ? ownerQuotas[selected] : undefined;
 
   return (
@@ -343,6 +376,17 @@ export default function TeamManage() {
                 <div className="text-xs font-mono c-dim mt-0.5">{selected}</div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
+                {!membersLoading && availableSlots > 0 && (
+                  <button
+                    onClick={() => setShowInviteModal(true)}
+                    disabled={inviteLoading}
+                    className="btn text-[.65rem] py-1 px-2 flex items-center gap-1"
+                    style={{ background: 'linear-gradient(135deg, rgba(20,184,166,0.8), rgba(59,130,246,0.8))', color: '#fff' }}
+                  >
+                    {inviteLoading ? <Loader2 size={11} className="animate-spin" /> : <UserPlus size={11} />}
+                    邀请并入库 ({availableSlots})
+                  </button>
+                )}
                 {!membersLoading && members.length > 0 && (
                   <button onClick={loadAllMemberQuotas} className="btn btn-ghost text-[.65rem] py-1 px-2 flex items-center gap-1">
                     <Zap size={11} /> 刷新额度
@@ -367,6 +411,7 @@ export default function TeamManage() {
                 <>
                   <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 个成员</span>
                   <span className="c-dim">可踢除 <span className="font-mono text-red-400">{kickableCount}</span></span>
+                  <span className="c-dim">可邀请 <span className="font-mono" style={{ color: availableSlots > 0 ? '#2dd4bf' : '#f87171' }}>{availableSlots}</span></span>
                 </>
               )}
               <span className="w-px h-3" style={{ background: 'var(--border)' }} />
@@ -459,6 +504,49 @@ export default function TeamManage() {
             {members.length > PAGE_SIZE && (
               <div className="pt-2 border-t mt-2" style={{ borderColor: 'var(--border)' }}>
                 <Pagination page={memberPage} total={members.length} onChange={setMemberPage} />
+              </div>
+            )}
+
+            {/* ─── Invite S2A Pool Selector ─── */}
+            {showInviteModal && (
+              <div className="absolute inset-0 flex items-center justify-center rounded-2xl" style={{ background: 'rgba(0,0,0,.6)', zIndex: 50 }} onClick={() => !inviteLoading && setShowInviteModal(false)}>
+                <div className="p-4 rounded-xl" style={{ background: 'var(--card)', border: '1px solid var(--border)', minWidth: 320, maxWidth: 420 }} onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm c-heading font-medium">选择号池</span>
+                    <button onClick={() => setShowInviteModal(false)} disabled={inviteLoading} className="btn btn-ghost p-1"><X size={14} /></button>
+                  </div>
+                  <p className="text-xs c-dim mb-3">将为该 Owner 邀请 <span className="font-mono text-teal-400">{availableSlots}</span> 个成员并入库到选定号池</p>
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto mb-3">
+                    {s2aTeams.length === 0 ? (
+                      <div className="text-center c-dim text-xs py-4">暂无号池配置</div>
+                    ) : s2aTeams.map(t => (
+                      <div
+                        key={t.name}
+                        className="px-3 py-2 rounded-lg cursor-pointer transition-all"
+                        style={{
+                          background: selectedS2aTeam === t.name ? 'rgba(20,184,166,.15)' : 'var(--ghost)',
+                          border: `1px solid ${selectedS2aTeam === t.name ? 'rgba(20,184,166,.5)' : 'var(--border)'}`,
+                        }}
+                        onClick={() => setSelectedS2aTeam(t.name)}
+                      >
+                        <div className="text-sm c-heading font-medium">{t.name}</div>
+                        <div className="text-[.6rem] font-mono c-dim truncate">{t.api_base}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => inviteAndPush(selectedS2aTeam)}
+                    disabled={!selectedS2aTeam || inviteLoading}
+                    className="w-full py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-40"
+                    style={{ background: 'linear-gradient(135deg, rgba(20,184,166,0.85), rgba(59,130,246,0.85))', color: '#fff' }}
+                  >
+                    {inviteLoading ? (
+                      <span className="flex items-center justify-center gap-1.5"><Loader2 size={14} className="animate-spin" /> 邀请中...</span>
+                    ) : (
+                      `确认邀请 ${availableSlots} 个到 ${selectedS2aTeam || '...'}`
+                    )}
+                  </button>
+                </div>
               </div>
             )}
           </div>

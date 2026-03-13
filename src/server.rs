@@ -2629,6 +2629,10 @@ pub async fn start_server(
             "/api/team-manage/member-quota",
             post(team_manage_member_quota_handler),
         )
+        .route(
+            "/api/team-manage/owners/{accountId}/invite",
+            post(team_manage_invite_handler),
+        )
         .fallback_service(spa)
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -3535,6 +3539,126 @@ async fn team_manage_member_quota_handler(
     drop(config);
 
     Err(error_json(StatusCode::NOT_FOUND, &format!("找不到 {email} 的凭证，本地 DB 和号池均未找到")))
+}
+
+// ─── Team Manage: 邀请并入库 ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct TeamManageInviteRequest {
+    s2a_team: String,
+    invite_count: Option<usize>,
+}
+
+async fn team_manage_invite_handler(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+    Json(req): Json<TeamManageInviteRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tracing::info!(
+        "[TeamManage] 邀请并入库: account_id={account_id}, s2a_team={}",
+        req.s2a_team
+    );
+
+    // 获取 owner 信息
+    let (owner_db_id, owner_email, access_token) = state
+        .run_history_db
+        .get_owner_info_by_account_id(&account_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 owner 失败: {e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
+
+    let cfg = state.config.read().await;
+    let invite_runtime = cfg.invite_runtime();
+    let invite_count = req
+        .invite_count
+        .unwrap_or(invite_runtime.default_invite_count)
+        .clamp(1, 25);
+
+    // 查找号池配置
+    let available_teams = cfg.effective_s2a_configs();
+    let team = available_teams
+        .iter()
+        .find(|t| t.name == req.s2a_team)
+        .cloned()
+        .ok_or_else(|| error_json(StatusCode::BAD_REQUEST, &format!("号池 '{}' 不存在", req.s2a_team)))?;
+
+    let config_snapshot = cfg.clone();
+    drop(cfg);
+
+    // 生成任务 ID
+    let task_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+
+    // 生成邮箱种子
+    let seeds: Vec<crate::models::AccountSeed> = (0..invite_count)
+        .map(|_| crate::util::generate_account_seed(&config_snapshot.email_domains))
+        .collect();
+
+    // 写入任务记录
+    let new_task = crate::db::NewInviteTask {
+        id: task_id.clone(),
+        upload_id: format!("team-manage-{}", account_id),
+        owner_email: owner_email.clone(),
+        owner_account_id: account_id.clone(),
+        s2a_team: Some(team.name.clone()),
+        invite_count,
+        created_at: crate::util::beijing_now().to_rfc3339(),
+    };
+    let _ = state.run_history_db.enqueue_insert_invite_task(new_task);
+
+    // 写入邮箱记录
+    let email_inserts: Vec<crate::db::InviteEmailInsert> = seeds
+        .iter()
+        .map(|s| crate::db::InviteEmailInsert {
+            email: s.account.clone(),
+            password: s.password.clone(),
+        })
+        .collect();
+    let _ = state
+        .run_history_db
+        .enqueue_insert_invite_emails(task_id.clone(), email_inserts);
+
+    // 短暂等待 DB 写入
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let owner = crate::invite::TeamOwner {
+        email: owner_email,
+        account_id: account_id.clone(),
+        access_token,
+        expires: None,
+    };
+
+    let progress = Arc::new(crate::models::InviteProgress::new());
+    let db = state.run_history_db.clone();
+    let invite_cfg = config_snapshot.invite_runtime();
+    let task_id_clone = task_id.clone();
+
+    tokio::spawn(async move {
+        crate::invite::run_invite_workflow(
+            task_id_clone,
+            owner_db_id,
+            owner,
+            seeds,
+            invite_cfg,
+            config_snapshot,
+            Some(team),
+            true,
+            db,
+            progress,
+        )
+        .await;
+    });
+
+    tracing::info!(
+        "[TeamManage] 邀请任务已创建: task_id={task_id}, invite_count={invite_count}"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "task_id": task_id,
+            "invite_count": invite_count,
+            "message": format!("邀请任务已创建，将邀请 {} 个成员并入库到 {}", invite_count, req.s2a_team)
+        })),
+    ))
 }
 
 async fn shutdown_signal() {

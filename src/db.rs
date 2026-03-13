@@ -1322,6 +1322,21 @@ impl RunHistoryDb {
         }
     }
 
+    /// 根据 account_id 获取 owner 的 (id, email, access_token)
+    pub fn get_owner_info_by_account_id(&self, account_id: &str) -> Result<Option<(i64, String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT id, email, access_token FROM invite_owners WHERE account_id = ?1 AND access_token IS NOT NULL AND access_token != '' ORDER BY id DESC LIMIT 1",
+            params![account_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        );
+        match result {
+            Ok(info) => Ok(Some(info)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// 根据邮箱获取 refresh_token（从 invite_emails 表）
     pub fn get_email_refresh_token(&self, email: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
