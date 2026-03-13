@@ -67,13 +67,13 @@ export default function Layout() {
           <div className="relative group cursor-pointer">
             <div className="absolute -inset-1 bg-gradient-to-tr from-teal-400/40 to-primary/40 rounded-xl blur-md opacity-0 group-hover:opacity-100 transition-all duration-500" />
             <div className="relative w-8 h-8 rounded-xl bg-gradient-to-br from-teal-500 to-primary flex items-center justify-center shadow-lg">
-              <span className="text-white font-bold text-sm font-display tracking-tighter">AT</span>
+              <span className="text-white font-bold text-sm font-display tracking-tighter">GC</span>
             </div>
           </div>
           {/* Brand */}
           <div className="flex items-center gap-2">
             <span className="text-[.95rem] font-bold tracking-tight c-heading font-display">
-              Auto<span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 via-teal-300 to-primary">Team</span>
+              GMN-<span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 via-teal-300 to-primary">codex</span>自动上号系统
             </span>
             <span
               className="text-[.6rem] font-mono px-2 py-0.5 rounded-md font-semibold"
