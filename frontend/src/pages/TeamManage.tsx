@@ -1,16 +1,27 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '../components/Toast';
 import * as api from '../lib/api';
-import { User, ChevronLeft, ChevronRight, Users, Trash2, X, Loader2, Zap, ShieldAlert, UserPlus } from 'lucide-react';
+import { User, ChevronLeft, ChevronRight, Users, Trash2, X, Loader2, Zap, ShieldAlert, UserPlus, Search } from 'lucide-react';
 
 interface TeamOwner { email: string; account_id: string; access_token?: string; member_count?: number }
 interface TeamMember { user_id: string; email?: string; name?: string; role: string; created_at?: string }
 interface QuotaWindow { used_percent: number; remaining_percent: number; reset_after_seconds: number; window_minutes: number }
 interface CodexQuota { five_hour?: QuotaWindow; seven_day?: QuotaWindow; status: string; model_used?: string; error?: string }
 interface S2aTeam { name: string; api_base: string }
+interface MemberHealth { email: string; name?: string; status: string; seven_day_pct: number | null }
+interface OwnerHealth { account_id: string; owner_status: string; members: MemberHealth[]; checked_at: string }
 
 const PAGE_SIZE = 10;
 const MAX_MEMBERS = 4;
+
+function MiniBar({ percent }: { percent: number }) {
+  const color = quotaColor(percent);
+  return (
+    <div className="h-1 w-12 rounded-full overflow-hidden" style={{ background: 'var(--ghost)' }}>
+      <div className="h-full rounded-full transition-all" style={{ width: `${percent}%`, background: color }} />
+    </div>
+  );
+}
 
 function fmtReset(secs: number) {
   if (secs <= 0) return '--';
@@ -143,6 +154,13 @@ export default function TeamManage() {
   const [inviteLoading, setInviteLoading] = useState(false);
   const [selectedS2aTeam, setSelectedS2aTeam] = useState('');
 
+  const [healthMap, setHealthMap] = useState<Record<string, OwnerHealth>>({});
+  const [batchCheckLoading, setBatchCheckLoading] = useState(false);
+  const [batchCheckProgress, setBatchCheckProgress] = useState({ done: 0, total: 0 });
+  const [checkConcurrency, setCheckConcurrency] = useState(() =>
+    parseInt(localStorage.getItem('team-check-concurrency') || '5', 10)
+  );
+
   const [ownerPage, setOwnerPage] = useState(1);
   const [memberPage, setMemberPage] = useState(1);
 
@@ -166,6 +184,17 @@ export default function TeamManage() {
       try {
         const data = await api.get<{ teams: S2aTeam[] }>('/api/config');
         setS2aTeams((data as any).teams || []);
+      } catch {}
+    })();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await api.get<{ records: OwnerHealth[] }>('/api/team-manage/health');
+        const map: Record<string, OwnerHealth> = {};
+        for (const r of data.records || []) map[r.account_id] = r;
+        setHealthMap(map);
       } catch {}
     })();
   }, []);
@@ -290,6 +319,28 @@ export default function TeamManage() {
     finally { setInviteLoading(false); }
   };
 
+  const batchCheck = async () => {
+    const ids = pagedOwners.map(o => o.account_id);
+    if (ids.length === 0) return;
+    setBatchCheckLoading(true);
+    setBatchCheckProgress({ done: 0, total: ids.length });
+    try {
+      const res = await api.post<{ results: OwnerHealth[] }>('/api/team-manage/batch-check', {
+        account_ids: ids,
+        concurrency: checkConcurrency,
+      });
+      const newMap = { ...healthMap };
+      for (const r of res.results || []) {
+        newMap[r.account_id] = r;
+        setMemberCounts(prev => ({ ...prev, [r.account_id]: r.members.length }));
+      }
+      setHealthMap(newMap);
+      setBatchCheckProgress({ done: ids.length, total: ids.length });
+      toast('检查完成', 'success');
+    } catch (e) { toast(`检查失败: ${e}`, 'error'); }
+    finally { setBatchCheckLoading(false); }
+  };
+
   const selectedOwner = owners.find(o => o.account_id === selected);
   const kickableCount = members.filter(m => m.role !== 'owner' && m.role !== 'account-owner').length;
   const availableSlots = Math.max(0, MAX_MEMBERS - members.length);
@@ -300,9 +351,31 @@ export default function TeamManage() {
       <div className="card p-5">
         <div className="flex items-center justify-between mb-4">
           <div className="section-title mb-0">Team 管理</div>
-          <button onClick={loadOwners} disabled={loading} className="btn btn-ghost text-xs py-1.5">
-            {loading ? '加载中...' : '刷新'}
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
+              <span className="text-[.65rem] c-dim">并发:</span>
+              <input
+                type="number" min={1} max={20} value={checkConcurrency}
+                onChange={e => {
+                  const v = Math.max(1, Math.min(20, Number(e.target.value) || 1));
+                  setCheckConcurrency(v);
+                  localStorage.setItem('team-check-concurrency', String(v));
+                }}
+                className="field-input w-10 text-center text-xs py-1 px-1"
+                onClick={e => e.stopPropagation()}
+              />
+            </div>
+            <button onClick={batchCheck} disabled={batchCheckLoading || loading} className="btn btn-ghost text-xs py-1.5 flex items-center gap-1">
+              {batchCheckLoading ? (
+                <><Loader2 size={12} className="animate-spin" /> 检查中 {batchCheckProgress.done}/{batchCheckProgress.total}</>
+              ) : (
+                <><Search size={12} /> 一键检查</>
+              )}
+            </button>
+            <button onClick={loadOwners} disabled={loading} className="btn btn-ghost text-xs py-1.5">
+              {loading ? '加载中...' : '刷新'}
+            </button>
+          </div>
         </div>
         <p className="text-xs c-dim mb-4">管理所有 Owner 下的 Team 成员。点击 Owner 查看成员列表，可以踢除成员。</p>
 
@@ -320,14 +393,19 @@ export default function TeamManage() {
                 const count = memberCounts[o.account_id] ?? o.member_count;
                 const q = ownerQuotas[o.account_id];
                 const qLoading = ownerQuotaLoading[o.account_id];
+                const health = healthMap[o.account_id];
+                const isBanned = health?.owner_status === 'banned' ||
+                  health?.members.some(m => m.status === 'banned');
                 return (
                   <div
                     key={o.account_id}
                     className="row-item cursor-pointer transition-all duration-150 hover:scale-[1.005]"
+                    style={isBanned ? { border: '2px solid rgba(248,113,113,0.6)', background: 'rgba(248,113,113,0.05)' } : undefined}
                     onClick={() => loadMembers(o.account_id)}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-3 min-w-0">
+                      {/* 左侧: 头像 + 邮箱 */}
+                      <div className="flex items-center gap-3 min-w-0 shrink-0" style={{ maxWidth: '30%' }}>
                         <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
                           <User size={16} className="c-dim" />
                         </div>
@@ -336,6 +414,37 @@ export default function TeamManage() {
                           <div className="text-xs font-mono c-dim">{o.account_id.substring(0, 12)}...</div>
                         </div>
                       </div>
+
+                      {/* 中间: 成员额度概览 */}
+                      <div className="flex flex-wrap gap-1.5 flex-1 min-w-0 mx-2">
+                        {health ? (
+                          health.members.length > 0 ? health.members.map(m => {
+                            const prefix = m.email.split('@')[0].substring(0, 7);
+                            if (m.status === 'banned') return (
+                              <span key={m.email} className="inline-flex items-center gap-0.5 text-[.55rem] px-1.5 py-0.5 rounded"
+                                style={{ background: 'rgba(248,113,113,.12)', color: '#f87171' }}>
+                                <ShieldAlert size={9} /> {prefix}..
+                              </span>
+                            );
+                            const pct = m.seven_day_pct;
+                            const color = pct != null ? quotaColor(pct) : 'var(--text-dim)';
+                            return (
+                              <div key={m.email} className="inline-flex flex-col gap-0.5">
+                                <span className="text-[.55rem] font-mono" style={{ color }}>
+                                  {prefix}.. {pct != null ? `${Math.round(pct)}%` : '--'}
+                                </span>
+                                {pct != null && <MiniBar percent={pct} />}
+                              </div>
+                            );
+                          }) : (
+                            <span className="text-[.6rem] c-dim">无成员</span>
+                          )
+                        ) : (
+                          <span className="text-[.6rem] c-dim">未检查</span>
+                        )}
+                      </div>
+
+                      {/* 右侧: 操作按钮 */}
                       <div className="flex items-center gap-2 shrink-0">
                         <QuotaBadge quota={q} />
                         {count != null && (
@@ -354,6 +463,9 @@ export default function TeamManage() {
                         </button>
                       </div>
                     </div>
+                    {health?.checked_at && (
+                      <div className="text-[.5rem] c-dim mt-1 text-right">{new Date(health.checked_at).toLocaleString('zh-CN')}</div>
+                    )}
                   </div>
                 );
               })}

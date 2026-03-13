@@ -2633,6 +2633,8 @@ pub async fn start_server(
             "/api/team-manage/owners/{accountId}/invite",
             post(team_manage_invite_handler),
         )
+        .route("/api/team-manage/health", get(team_manage_health_handler))
+        .route("/api/team-manage/batch-check", post(team_manage_batch_check_handler))
         .fallback_service(spa)
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -3662,6 +3664,190 @@ async fn team_manage_invite_handler(
             "message": format!("邀请任务已创建，将邀请 {} 个成员并入库到 {}", invite_count, req.s2a_team)
         })),
     ))
+}
+
+// ─── Health cache: 读取持久化的检查结果 ─────────────────────────────────────
+
+async fn team_manage_health_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let rows = state
+        .run_history_db
+        .get_all_owner_health()
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
+
+    let records: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(account_id, owner_status, members_json, checked_at)| {
+            let members: serde_json::Value = members_json
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::json!([]));
+            serde_json::json!({
+                "account_id": account_id,
+                "owner_status": owner_status,
+                "members": members,
+                "checked_at": checked_at,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "records": records })))
+}
+
+// ─── Batch check: 并发检查当前页 Owner ───────────────────────────────────────
+
+#[derive(Deserialize)]
+struct BatchCheckRequest {
+    account_ids: Vec<String>,
+    #[serde(default = "default_concurrency")]
+    concurrency: usize,
+}
+
+fn default_concurrency() -> usize {
+    5
+}
+
+#[derive(Serialize, Clone)]
+struct MemberHealthInfo {
+    email: String,
+    name: Option<String>,
+    status: String,
+    seven_day_pct: Option<f64>,
+}
+
+#[derive(Serialize, Clone)]
+struct OwnerHealthResult {
+    account_id: String,
+    owner_status: String,
+    members: Vec<MemberHealthInfo>,
+    checked_at: String,
+}
+
+async fn team_manage_batch_check_handler(
+    State(state): State<AppState>,
+    Json(req): Json<BatchCheckRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let concurrency = req.concurrency.clamp(1, 20);
+    tracing::info!(
+        "[TeamManage] 批量检查: {} 个 owner, 并发={}",
+        req.account_ids.len(),
+        concurrency
+    );
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let mut handles = Vec::new();
+
+    for account_id in req.account_ids {
+        let sem = semaphore.clone();
+        let state = state.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await;
+            check_single_owner(&state, &account_id).await
+        });
+        handles.push(handle);
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        if let Ok(result) = handle.await {
+            if let Some(r) = result {
+                // 持久化到 DB
+                let members_json = serde_json::to_string(&r.members).unwrap_or_default();
+                let _ = state.run_history_db.enqueue_upsert_owner_health(
+                    r.account_id.clone(),
+                    r.owner_status.clone(),
+                    members_json,
+                    r.checked_at.clone(),
+                );
+                results.push(r);
+            }
+        }
+    }
+
+    tracing::info!("[TeamManage] 批量检查完成: {} 个结果", results.len());
+    Ok(Json(serde_json::json!({ "results": results })))
+}
+
+async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerHealthResult> {
+    let access_token = state
+        .run_history_db
+        .get_owner_token_by_account_id(account_id)
+        .ok()
+        .flatten()?;
+
+    // 1. 查 owner 额度
+    let owner_quota = fetch_codex_quota(&access_token).await;
+    let owner_status = owner_quota.status.clone();
+
+    // 2. 拉成员列表
+    let members_raw = fetch_chatgpt_members(account_id, &access_token)
+        .await
+        .unwrap_or_default();
+    let members_filtered: Vec<_> = members_raw
+        .into_iter()
+        .filter(|m| m.role != "account-owner")
+        .collect();
+
+    // 3. 查每个成员额度
+    let config = state.config.read().await;
+    let config_clone = config.clone();
+    drop(config);
+
+    let mut member_infos = Vec::new();
+    for m in &members_filtered {
+        let email = match &m.email {
+            Some(e) => e.clone(),
+            None => continue,
+        };
+
+        let mut status = "unknown".to_string();
+        let mut seven_day_pct: Option<f64> = None;
+
+        // 尝试查成员额度
+        // 策略1: 本地 DB refresh_token
+        let mut got_quota = false;
+        if let Ok(Some(rt)) = state.run_history_db.get_email_refresh_token(&email) {
+            if let Ok(at) = refresh_rt_to_at(&rt).await {
+                let quota = fetch_codex_quota(&at).await;
+                status = quota.status.clone();
+                seven_day_pct = quota.seven_day.as_ref().map(|w| w.remaining_percent);
+                got_quota = true;
+            }
+        }
+
+        // 策略2: S2A 号池搜索
+        if !got_quota {
+            if let Some((at, rt_opt)) = search_s2a_for_email(&config_clone, &email).await {
+                let effective_at = if let Some(rt) = &rt_opt {
+                    refresh_rt_to_at(rt).await.unwrap_or(at.clone())
+                } else {
+                    at
+                };
+                let quota = fetch_codex_quota(&effective_at).await;
+                status = quota.status.clone();
+                seven_day_pct = quota.seven_day.as_ref().map(|w| w.remaining_percent);
+                got_quota = true;
+            }
+        }
+
+        if !got_quota {
+            status = "no_credentials".to_string();
+        }
+
+        member_infos.push(MemberHealthInfo {
+            email,
+            name: m.name.clone(),
+            status,
+            seven_day_pct: seven_day_pct.map(|p| (p * 10.0).round() / 10.0),
+        });
+    }
+
+    Some(OwnerHealthResult {
+        account_id: account_id.to_string(),
+        owner_status,
+        members: member_infos,
+        checked_at: crate::util::beijing_now().to_rfc3339(),
+    })
 }
 
 async fn shutdown_signal() {

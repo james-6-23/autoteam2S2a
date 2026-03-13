@@ -92,6 +92,12 @@ enum WriteCommand {
     ResetOwnerUsed {
         owner_id: i64,
     },
+    UpsertOwnerHealth {
+        account_id: String,
+        owner_status: String,
+        members_json: String,
+        checked_at: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -425,6 +431,16 @@ impl RunHistoryDb {
             "ALTER TABLE invite_emails ADD COLUMN refresh_token TEXT;",
         );
 
+        // owner_health 表：缓存 Owner 健康检查结果
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS owner_health (
+                account_id   TEXT PRIMARY KEY,
+                owner_status TEXT NOT NULL DEFAULT 'unknown',
+                members_json TEXT,
+                checked_at   TEXT NOT NULL
+            );",
+        )?;
+
         Ok(())
     }
 
@@ -711,6 +727,17 @@ impl RunHistoryDb {
                 conn.execute(
                     "UPDATE invite_owners SET used = 0 WHERE id = ?1",
                     params![owner_id],
+                )?;
+            }
+            WriteCommand::UpsertOwnerHealth { account_id, owner_status, members_json, checked_at } => {
+                conn.execute(
+                    "INSERT INTO owner_health (account_id, owner_status, members_json, checked_at)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(account_id) DO UPDATE SET
+                     owner_status = excluded.owner_status,
+                     members_json = excluded.members_json,
+                     checked_at = excluded.checked_at",
+                    params![account_id, owner_status, members_json, checked_at],
                 )?;
             }
         }
@@ -1155,6 +1182,39 @@ impl RunHistoryDb {
 
     pub fn enqueue_reset_owner_used(&self, owner_id: i64) -> Result<()> {
         self.send_write_command(WriteCommand::ResetOwnerUsed { owner_id })
+    }
+
+    pub fn enqueue_upsert_owner_health(
+        &self,
+        account_id: String,
+        owner_status: String,
+        members_json: String,
+        checked_at: String,
+    ) -> Result<()> {
+        self.send_write_command(WriteCommand::UpsertOwnerHealth {
+            account_id,
+            owner_status,
+            members_json,
+            checked_at,
+        })
+    }
+
+    pub fn get_all_owner_health(&self) -> Result<Vec<(String, String, Option<String>, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT account_id, owner_status, members_json, checked_at FROM owner_health ORDER BY checked_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// 同步插入上传记录和 owners（用于上传接口立即返回结果）
