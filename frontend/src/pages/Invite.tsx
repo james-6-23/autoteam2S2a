@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useToast } from '../components/Toast';
 import * as api from '../lib/api';
 import { Select } from '../components/Select';
-import { FileUp, ClipboardPaste, Type, Trash2, Info, Check, Loader2 } from 'lucide-react';
+import { FileUp, ClipboardPaste, Type, Trash2, Info, Check, Loader2, ArrowDown } from 'lucide-react';
 
 interface OwnerPreview { email: string; account_id: string; expires?: string }
 interface InviteTaskItem { id: string; status: string; owner_email: string; s2a_team?: string; created_at: string; invited_ok: number; invited_failed: number; reg_ok: number; reg_failed: number; rt_ok: number; rt_failed: number; s2a_ok: number; s2a_failed: number; error?: string }
@@ -71,17 +71,22 @@ export default function Invite() {
   const [logLines, setLogLines] = useState<string[]>([]);
   const [logConnected, setLogConnected] = useState(false);
   const [logAutoScroll, setLogAutoScroll] = useState(true);
+  const [logShowBottom, setLogShowBottom] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const logAutoScrollRef = useRef(true);
   const esRef = useRef<EventSource | null>(null);
+
+  const uploadIdRef = useRef(uploadId);
+  useEffect(() => { uploadIdRef.current = uploadId; }, [uploadId]);
 
   const loadUploads = useCallback(async () => {
     try {
       const data = await api.get<UploadItem[]>('/api/invite/uploads');
       setUploads(Array.isArray(data) ? data : []);
       const available = (Array.isArray(data) ? data : []).filter(u => u.unused_count > 0);
-      if (available.length && !uploadId) setUploadId(available[0].id);
+      if (available.length && !uploadIdRef.current) setUploadId(available[0].id);
     } catch {}
-  }, [uploadId]);
+  }, []);
 
   const loadTasks = useCallback(async () => {
     try {
@@ -136,7 +141,26 @@ export default function Invite() {
     connect();
     return () => { esRef.current?.close(); };
   }, []);
-  useEffect(() => { if (logAutoScroll && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logLines, logAutoScroll]);
+  useEffect(() => { logAutoScrollRef.current = logAutoScroll; }, [logAutoScroll]);
+  useEffect(() => {
+    if (logAutoScrollRef.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [logLines]);
+
+  const isLogNearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  const handleLogScroll = useCallback(() => {
+    const el = logRef.current;
+    if (!el) return;
+    setLogShowBottom(!isLogNearBottom(el) && !logAutoScrollRef.current);
+  }, []);
+  const toggleLogAutoScroll = () => {
+    const next = !logAutoScroll;
+    setLogAutoScroll(next);
+    logAutoScrollRef.current = next;
+    if (next && logRef.current) { logRef.current.scrollTop = logRef.current.scrollHeight; setLogShowBottom(false); }
+  };
+  const scrollLogToBottom = () => {
+    if (logRef.current) { logRef.current.scrollTop = logRef.current.scrollHeight; setLogShowBottom(false); }
+  };
 
   const doUpload = async (filename: string, accounts: unknown[]) => {
     setUploading(true);
@@ -342,7 +366,14 @@ export default function Invite() {
               onChange={setUploadId}
               options={available.length === 0
                 ? [{ label: '-- 无 --', value: '' }]
-                : available.map(u => ({ label: `${u.filename} (${u.unused_count}/${u.owner_count})`, value: u.id }))
+                : available.map(u => {
+                    const emailShort = u.owner_emails ? u.owner_emails.split(',')[0].trim().substring(0, 18) : u.id.substring(0, 8);
+                    return {
+                      label: `${u.filename} — ${emailShort}`,
+                      value: u.id,
+                      meta: `${u.unused_count}/${u.owner_count} 可用 · ${fmt(u.created_at)}`,
+                    };
+                  })
               }
             />
           </div>
@@ -460,12 +491,24 @@ export default function Invite() {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono c-dim">{logLines.length} 条</span>
-            <button onClick={() => setLogAutoScroll(!logAutoScroll)} className="btn btn-ghost text-xs py-1">自动滚动: {logAutoScroll ? '开' : '关'}</button>
+            <button onClick={toggleLogAutoScroll} className="btn btn-ghost text-xs py-1">自动滚动: {logAutoScroll ? '开' : '关'}</button>
             <button onClick={() => setLogLines([])} className="btn btn-ghost text-xs py-1">清空</button>
           </div>
         </div>
-        <div ref={logRef} className="font-mono text-xs leading-relaxed p-4 rounded-lg overflow-y-auto" style={{ background: 'var(--bg-inner)', border: '1px solid var(--border)', height: '40vh', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-          {logLines.map((line, i) => <span key={i} className="log-line">{line}{'\n'}</span>)}
+        <div className="relative">
+          <div ref={logRef} onScroll={handleLogScroll} className="font-mono text-xs leading-relaxed p-4 rounded-lg overflow-y-auto" style={{ background: 'var(--bg-inner)', border: '1px solid var(--border)', height: '40vh', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {logLines.map((line, i) => <span key={i} className="log-line">{line}{'\n'}</span>)}
+          </div>
+          {logShowBottom && (
+            <button
+              onClick={scrollLogToBottom}
+              className="absolute bottom-4 right-4 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium shadow-lg transition-all duration-200 hover:scale-105"
+              style={{ background: 'var(--ghost-hover)', border: '1px solid var(--border-hover)', color: 'var(--text-heading)', backdropFilter: 'blur(8px)' }}
+            >
+              <ArrowDown size={13} />
+              回到底部
+            </button>
+          )}
         </div>
       </div>
     </div>

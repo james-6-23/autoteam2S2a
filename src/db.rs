@@ -1286,6 +1286,39 @@ impl RunHistoryDb {
         Ok(rows)
     }
 
+    /// 列出所有有 access_token 的 owners（用于 Team 管理模块）
+    /// 返回 (email, account_id, access_token) 的列表，每个 account_id 只取最新一条
+    pub fn list_all_owners_with_tokens(&self) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT email, account_id, access_token FROM invite_owners \
+             WHERE access_token IS NOT NULL AND access_token != '' \
+             GROUP BY account_id \
+             ORDER BY id DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// 根据 account_id 获取 access_token
+    pub fn get_owner_token_by_account_id(&self, account_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT access_token FROM invite_owners WHERE account_id = ?1 LIMIT 1",
+            params![account_id],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(token) => Ok(Some(token)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn list_invite_tasks(&self, upload_id: Option<&str>) -> Result<Vec<InviteTaskRecord>> {
         let conn = self.conn.lock().unwrap();
         let (sql, has_filter) = match upload_id {

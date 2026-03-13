@@ -773,6 +773,9 @@ header .c-heading {
 }
 .log-line-success { color: #2dd4bf; }
 .log-line-error { color: #f87171; }
+html.light .log-line { color: #334155; }
+html.light .log-line-success { color: #0d9488; }
+html.light .log-line-error { color: #dc2626; }
 
 /* ═══════════════════════════════════════════
    滚动条
@@ -926,12 +929,19 @@ html.light .team-modal-card {
 .refresh-btn svg {
   width: 14px;
   height: 14px;
+  transition: transform .3s ease;
 }
 .refresh-btn:hover {
   background: var(--ghost-hover);
   color: var(--text-heading);
   border-color: var(--border-hover);
-  transform: rotate(90deg);
+}
+.refresh-btn.spinning svg {
+  animation: refresh-spin .6s linear infinite;
+}
+@keyframes refresh-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* ═══════════════════════════════════════════

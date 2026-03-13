@@ -2607,6 +2607,20 @@ pub async fn start_server(
             "/api/invite/config",
             get(get_invite_config_handler).put(update_invite_config_handler),
         )
+        // Team Manage module
+        .route("/api/team-manage/owners", get(team_manage_list_owners_handler))
+        .route(
+            "/api/team-manage/owners/{accountId}/members",
+            get(team_manage_get_members_handler),
+        )
+        .route(
+            "/api/team-manage/owners/{accountId}/members/{userId}/kick",
+            post(team_manage_kick_member_handler),
+        )
+        .route(
+            "/api/team-manage/owners/{accountId}/refresh",
+            post(team_manage_refresh_members_handler),
+        )
         .fallback_service(spa)
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -2657,6 +2671,10 @@ async fn invite_upload_handler(
     State(state): State<AppState>,
     Json(req): Json<InviteUploadRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let account_count = req.accounts.as_array().map_or(0, |a| a.len());
+    let filename_preview = req.filename.as_deref().unwrap_or("upload.json");
+    tracing::info!("[邀请上传] 开始处理: filename={filename_preview}, accounts={account_count}");
+
     let owners = crate::invite::parse_owners_json(&req.accounts)
         .map_err(|e| error_json(StatusCode::BAD_REQUEST, &format!("JSON 解析失败: {e}")))?;
 
@@ -2668,6 +2686,9 @@ async fn invite_upload_handler(
         .run_history_db
         .insert_invite_upload_sync(&upload_id, &filename, &db_owners)
         .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("保存失败: {e}")))?;
+
+    let owner_count = owners.len();
+    tracing::info!("[邀请上传] 成功: upload_id={upload_id}, owner_count={owner_count}");
 
     let briefs: Vec<InviteOwnerBrief> = owners
         .iter()
@@ -2682,7 +2703,7 @@ async fn invite_upload_handler(
         StatusCode::CREATED,
         Json(InviteUploadResponse {
             upload_id,
-            owner_count: owners.len(),
+            owner_count,
             owners: briefs,
         }),
     ))
@@ -2737,6 +2758,10 @@ async fn execute_invite_handler(
         .unwrap_or(invite_runtime.default_invite_count)
         .clamp(1, 25);
     let push_s2a = req.push_s2a.unwrap_or(true);
+    tracing::info!(
+        "[邀请执行] 开始: upload_id={}, invite_count={invite_count}, push_s2a={push_s2a}",
+        req.upload_id
+    );
 
     // 构建号池分配方案：Vec<(S2aConfig, 百分比)>
     let team_assignments: Vec<(crate::config::S2aConfig, u8)> = if push_s2a {
@@ -2885,10 +2910,13 @@ async fn execute_invite_handler(
         task_ids.push(task_id);
     }
 
+    let created_count = task_ids.len();
+    tracing::info!("[邀请执行] 任务已创建: task_count={created_count}");
+
     Ok((
         StatusCode::CREATED,
         Json(ExecuteInviteResponse {
-            task_count: task_ids.len(),
+            task_count: created_count,
             task_ids,
             message: "邀请任务已创建".to_string(),
         }),
@@ -2963,6 +2991,214 @@ async fn update_invite_config_handler(
         default_invite_count: rt.default_invite_count,
         request_timeout_sec: rt.request_timeout_sec,
     }))
+}
+
+// ─── Team Manage handlers ────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct TeamManageOwner {
+    email: String,
+    account_id: String,
+    access_token: String,
+    member_count: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct TeamManageOwnersResponse {
+    owners: Vec<TeamManageOwner>,
+}
+
+#[derive(Serialize)]
+struct TeamManageMember {
+    user_id: String,
+    email: Option<String>,
+    name: Option<String>,
+    role: String,
+    created_at: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TeamManageMembersResponse {
+    members: Vec<TeamManageMember>,
+}
+
+async fn team_manage_list_owners_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tracing::info!("[TeamManage] 列出所有 owners");
+    let owners = state
+        .run_history_db
+        .list_all_owners_with_tokens()
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 owners 失败: {e}")))?;
+
+    let owner_list: Vec<TeamManageOwner> = owners
+        .into_iter()
+        .map(|(email, account_id, access_token)| TeamManageOwner {
+            email,
+            account_id,
+            access_token,
+            member_count: None,
+        })
+        .collect();
+
+    tracing::info!("[TeamManage] 返回 {} 个 owners", owner_list.len());
+    Ok(Json(TeamManageOwnersResponse { owners: owner_list }))
+}
+
+async fn fetch_chatgpt_members(
+    account_id: &str,
+    access_token: &str,
+) -> Result<Vec<TeamManageMember>, String> {
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let url = format!(
+        "https://chatgpt.com/backend-api/accounts/{}/users?offset=0&limit=100&query=",
+        account_id
+    );
+
+    let device_id = uuid::Uuid::new_v4().to_string();
+
+    let resp = client
+        .get(&url)
+        .header("Accept", "*/*")
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Chatgpt-Account-Id", account_id)
+        .header("Oai-Language", "zh-CN")
+        .header("Oai-Device-Id", &device_id)
+        .header("Referer", "https://chatgpt.com/admin/members")
+        .header("Origin", "https://chatgpt.com")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let preview = if body.len() > 300 { format!("{}...", &body[..300]) } else { body };
+        return Err(format!("HTTP {}: {}", status.as_u16(), preview));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON 解析失败: {e}"))?;
+
+    let items = body
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let members: Vec<TeamManageMember> = items
+        .into_iter()
+        .map(|item| {
+            let user_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let email = item.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let name = item.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+            let created_at = item.get("created_time").and_then(|v| v.as_str()).map(|s| s.to_string());
+            TeamManageMember { user_id, email, name, role, created_at }
+        })
+        .collect();
+
+    Ok(members)
+}
+
+async fn team_manage_get_members_handler(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tracing::info!("[TeamManage] 获取成员列表: account_id={account_id}");
+
+    let access_token = state
+        .run_history_db
+        .get_owner_token_by_account_id(&account_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 token 失败: {e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
+
+    let members = fetch_chatgpt_members(&account_id, &access_token)
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("获取成员失败: {e}")))?;
+
+    tracing::info!("[TeamManage] account_id={account_id} 共 {} 个成员", members.len());
+    Ok(Json(TeamManageMembersResponse { members }))
+}
+
+async fn team_manage_kick_member_handler(
+    State(state): State<AppState>,
+    Path((account_id, user_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tracing::info!("[TeamManage] 踢除成员: account_id={account_id}, user_id={user_id}");
+
+    let access_token = state
+        .run_history_db
+        .get_owner_token_by_account_id(&account_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 token 失败: {e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
+
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let url = format!(
+        "https://chatgpt.com/backend-api/accounts/{}/users/{}",
+        account_id, user_id
+    );
+
+    let device_id = uuid::Uuid::new_v4().to_string();
+
+    let resp = client
+        .delete(&url)
+        .header("Accept", "*/*")
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Chatgpt-Account-Id", &account_id)
+        .header("Oai-Language", "zh-CN")
+        .header("Oai-Device-Id", &device_id)
+        .header("Referer", "https://chatgpt.com/admin/members")
+        .header("Origin", "https://chatgpt.com")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
+        .send()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("请求失败: {e}")))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let preview = if body.len() > 300 { format!("{}...", &body[..300]) } else { body };
+        return Err(error_json(StatusCode::BAD_GATEWAY, &format!("踢除失败 HTTP {}: {}", status.as_u16(), preview)));
+    }
+
+    tracing::info!("[TeamManage] 踢除成功: account_id={account_id}, user_id={user_id}");
+    Ok(Json(serde_json::json!({ "success": true, "message": "成员已踢除" })))
+}
+
+async fn team_manage_refresh_members_handler(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tracing::info!("[TeamManage] 刷新成员列表: account_id={account_id}");
+
+    let access_token = state
+        .run_history_db
+        .get_owner_token_by_account_id(&account_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 token 失败: {e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
+
+    let members = fetch_chatgpt_members(&account_id, &access_token)
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("获取成员失败: {e}")))?;
+
+    tracing::info!("[TeamManage] 刷新完成: account_id={account_id}, 共 {} 个成员", members.len());
+    Ok(Json(TeamManageMembersResponse { members }))
 }
 
 async fn shutdown_signal() {

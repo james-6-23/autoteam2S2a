@@ -17,6 +17,7 @@ export default function Teams() {
   const [addModal, setAddModal] = useState(false);
   const [editModal, setEditModal] = useState<string | null>(null);
   const [groupsModal, setGroupsModal] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
 
   // Add form
   const [atName, setAtName] = useState(''); const [atApi, setAtApi] = useState(''); const [atKey, setAtKey] = useState('');
@@ -51,11 +52,14 @@ export default function Teams() {
   }, []);
 
   const loadTeamStats = async (name: string) => {
+    setRefreshing(prev => ({ ...prev, [name]: true }));
     try {
       const s = await api.get<TeamStats>(`/api/config/s2a/${encodeURIComponent(name)}/stats`);
       setStats(prev => ({ ...prev, [name]: s }));
     } catch {
       setStats(prev => ({ ...prev, [name]: { available: -1, active: -1, rate_limited: -1 } }));
+    } finally {
+      setTimeout(() => setRefreshing(prev => ({ ...prev, [name]: false })), 400);
     }
   };
 
@@ -156,17 +160,34 @@ export default function Teams() {
 
   const renderGroupCheckboxes = (groups: GroupInfo[], checked: number[], setter: (v: number[]) => void, color: string) => (
     groups.length === 0 ? <span className="text-xs c-dim">点击获取分组</span> :
-    groups.map(g => (
-      <label key={g.id} className="flex items-center gap-2 py-1 cursor-pointer text-xs" style={{ borderBottom: '1px solid var(--border)' }}>
-        <input type="checkbox" checked={checked.includes(g.id)} onChange={() => toggleCheck(checked, g.id, setter)} style={{ accentColor: color }} />
-        <span className="c-heading font-medium">{g.name}</span>
-        <span className="c-dim font-mono">#{g.id}</span>
-        <span className="c-dim">{g.account_count} 账号</span>
-        <span className="text-[.6rem] px-1.5 py-0.5 rounded" style={{ background: g.status === 'active' ? 'rgba(45,212,191,.12)' : 'var(--ghost)', color: g.status === 'active' ? '#2dd4bf' : 'var(--text-dim)' }}>
-          {g.status}
-        </span>
-      </label>
-    ))
+    <div className="flex flex-wrap gap-1.5">
+      {groups.map(g => {
+        const isChecked = checked.includes(g.id);
+        return (
+          <label
+            key={g.id}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg cursor-pointer text-xs transition-all duration-150 select-none"
+            style={{
+              background: isChecked ? `${color}18` : 'var(--ghost)',
+              border: `1px solid ${isChecked ? `${color}50` : 'var(--border)'}`,
+              color: isChecked ? color : 'var(--text-dim)',
+            }}
+          >
+            <input
+              type="checkbox" checked={isChecked}
+              onChange={() => toggleCheck(checked, g.id, setter)}
+              className="hidden"
+            />
+            <span className="font-medium" style={{ color: isChecked ? color : 'var(--text-heading)' }}>{g.name}</span>
+            <span className="font-mono opacity-50">#{g.id}</span>
+            <span className="opacity-60">{g.account_count}号</span>
+            {g.status === 'active' && (
+              <span className="text-[.55rem] px-1 py-px rounded" style={{ background: 'rgba(45,212,191,.15)', color: '#2dd4bf' }}>active</span>
+            )}
+          </label>
+        );
+      })}
+    </div>
   );
 
   const statDisplay = (v: number | undefined) => v === undefined ? '-' : v === -1 ? '?' : String(v);
@@ -206,11 +227,11 @@ export default function Teams() {
                   {/* Stats */}
                   <div className="flex flex-col gap-1 text-xs c-dim pt-1 border-t mt-2" style={{ borderColor: 'var(--border)' }}>
                     <div className="flex items-center gap-4">
-                      <span className="c-dim">账号统计</span>
+                      <span className="c-dim">Team 统计</span>
                       <span>可用 <span className="font-mono text-teal-400">{statDisplay(s?.available)}</span></span>
                       <span>活跃 <span className="font-mono c-dim2">{statDisplay(s?.active)}</span></span>
                       <span>限流 <span className="font-mono text-red-400">{statDisplay(s?.rate_limited)}</span></span>
-                      <button onClick={() => loadTeamStats(t.name)} className="refresh-btn ml-auto" title="刷新">
+                      <button onClick={() => loadTeamStats(t.name)} className={`refresh-btn ml-auto${refreshing[t.name] ? ' spinning' : ''}`} disabled={!!refreshing[t.name]} title="刷新">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
                         </svg>
@@ -243,21 +264,27 @@ export default function Teams() {
               <div><label className="field-label">Admin Key *</label><input className="field-input" placeholder="admin-xxx" value={atKey} onChange={e => setAtKey(e.target.value)} /></div>
               <div><label className="field-label">并发</label><input type="number" min={1} step={25} className="field-input" value={atConc} onChange={e => setAtConc(Number(e.target.value))} /></div>
               <div><label className="field-label">优先级</label><input type="number" className="field-input" value={atPri} onChange={e => setAtPri(Number(e.target.value))} /></div>
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <label className="field-label mb-0">分组</label>
-                  <button onClick={() => doFetchGroups(atApi, atKey, setAtGroups)} disabled={fetchingGroups} className="text-[.65rem] px-2 py-0.5 rounded" style={{ background: 'var(--ghost)', color: 'var(--text-dim)', cursor: 'pointer' }}>
-                    {fetchingGroups ? '获取中...' : '获取分组'}
-                  </button>
+              <div className="md:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="card-inner p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <label className="field-label mb-0">分组</label>
+                    <button onClick={() => doFetchGroups(atApi, atKey, setAtGroups)} disabled={fetchingGroups} className="text-[.65rem] px-2 py-0.5 rounded" style={{ background: 'var(--ghost)', color: 'var(--text-dim)', cursor: 'pointer' }}>
+                      {fetchingGroups ? '获取中...' : '获取分组'}
+                    </button>
+                    {atChecked.length > 0 && <span className="text-[.6rem] font-mono ml-auto" style={{ color: '#14b8a6' }}>已选 {atChecked.length}</span>}
+                  </div>
+                  <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+                    {renderGroupCheckboxes(atGroups, atChecked, setAtChecked, '#14b8a6')}
+                  </div>
                 </div>
-                <div className="field-input" style={{ minHeight: 38, maxHeight: 160, overflowY: 'auto', padding: '6px 8px' }}>
-                  {renderGroupCheckboxes(atGroups, atChecked, setAtChecked, '#14b8a6')}
-                </div>
-              </div>
-              <div>
-                <label className="field-label">Free 分组 <span className="c-dim">(可选)</span></label>
-                <div className="field-input" style={{ minHeight: 38, maxHeight: 120, overflowY: 'auto', padding: '6px 8px' }}>
-                  {atGroups.length ? renderGroupCheckboxes(atGroups, atFreeChecked, setAtFreeChecked, '#f59e0b') : <span className="text-xs c-dim">获取分组后可选</span>}
+                <div className="card-inner p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <label className="field-label mb-0">Free 分组 <span className="c-dim">(可选)</span></label>
+                    {atFreeChecked.length > 0 && <span className="text-[.6rem] font-mono ml-auto" style={{ color: '#f59e0b' }}>已选 {atFreeChecked.length}</span>}
+                  </div>
+                  <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+                    {atGroups.length ? renderGroupCheckboxes(atGroups, atFreeChecked, setAtFreeChecked, '#f59e0b') : <span className="text-xs c-dim">获取分组后可选</span>}
+                  </div>
                 </div>
               </div>
               <div><label className="field-label">Free 优先级 <span className="c-dim">(可选)</span></label><input type="number" className="field-input" placeholder="默认同 team" value={atFreePri} onChange={e => setAtFreePri(e.target.value)} /></div>
@@ -291,21 +318,27 @@ export default function Teams() {
               <div><label className="field-label">Admin Key</label><input className="field-input" value={etKey} onChange={e => setEtKey(e.target.value)} /></div>
               <div><label className="field-label">并发</label><input type="number" min={1} step={25} className="field-input" value={etConc} onChange={e => setEtConc(Number(e.target.value))} /></div>
               <div><label className="field-label">优先级</label><input type="number" className="field-input" value={etPri} onChange={e => setEtPri(Number(e.target.value))} /></div>
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <label className="field-label mb-0">分组</label>
-                  <button onClick={() => doFetchGroups(etApi, etKey, setEtGroups)} disabled={fetchingGroups} className="text-[.65rem] px-2 py-0.5 rounded" style={{ background: 'var(--ghost)', color: 'var(--text-dim)', cursor: 'pointer' }}>
-                    {fetchingGroups ? '获取中...' : '获取分组'}
-                  </button>
+              <div className="md:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="card-inner p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <label className="field-label mb-0">分组</label>
+                    <button onClick={() => doFetchGroups(etApi, etKey, setEtGroups)} disabled={fetchingGroups} className="text-[.65rem] px-2 py-0.5 rounded" style={{ background: 'var(--ghost)', color: 'var(--text-dim)', cursor: 'pointer' }}>
+                      {fetchingGroups ? '获取中...' : '获取分组'}
+                    </button>
+                    {etChecked.length > 0 && <span className="text-[.6rem] font-mono ml-auto" style={{ color: '#14b8a6' }}>已选 {etChecked.length}</span>}
+                  </div>
+                  <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+                    {renderGroupCheckboxes(etGroups, etChecked, setEtChecked, '#14b8a6')}
+                  </div>
                 </div>
-                <div className="field-input" style={{ minHeight: 38, maxHeight: 160, overflowY: 'auto', padding: '6px 8px' }}>
-                  {renderGroupCheckboxes(etGroups, etChecked, setEtChecked, '#14b8a6')}
-                </div>
-              </div>
-              <div>
-                <label className="field-label">Free 分组 <span className="c-dim">(可选)</span></label>
-                <div className="field-input" style={{ minHeight: 38, maxHeight: 120, overflowY: 'auto', padding: '6px 8px' }}>
-                  {etGroups.length ? renderGroupCheckboxes(etGroups, etFreeChecked, setEtFreeChecked, '#f59e0b') : <span className="text-xs c-dim">获取分组后可选</span>}
+                <div className="card-inner p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <label className="field-label mb-0">Free 分组 <span className="c-dim">(可选)</span></label>
+                    {etFreeChecked.length > 0 && <span className="text-[.6rem] font-mono ml-auto" style={{ color: '#f59e0b' }}>已选 {etFreeChecked.length}</span>}
+                  </div>
+                  <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+                    {etGroups.length ? renderGroupCheckboxes(etGroups, etFreeChecked, setEtFreeChecked, '#f59e0b') : <span className="text-xs c-dim">获取分组后可选</span>}
+                  </div>
                 </div>
               </div>
               <div><label className="field-label">Free 优先级 <span className="c-dim">(可选)</span></label><input type="number" className="field-input" placeholder="默认同 team" value={etFreePri} onChange={e => setEtFreePri(e.target.value)} /></div>

@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { ArrowDown } from 'lucide-react';
 
 export default function Logs() {
   const [lines, setLines] = useState<string[]>([]);
   const [connected, setConnected] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [count, setCount] = useState(0);
+  const [showBottom, setShowBottom] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
   const esRef = useRef<EventSource | null>(null);
   const pendingRef = useRef<string[]>([]);
   const rafRef = useRef<number | null>(null);
@@ -49,12 +52,41 @@ export default function Logs() {
     return () => { esRef.current?.close(); if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [flush]);
 
-  // Auto scroll
+  // Sync ref with state
+  useEffect(() => { autoScrollRef.current = autoScroll; }, [autoScroll]);
+
+  // Auto scroll — read ref to avoid stale closure
   useEffect(() => {
-    if (autoScroll && containerRef.current) {
+    if (autoScrollRef.current && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [lines, autoScroll]);
+  }, [lines]);
+
+  const isNearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+
+  const handleScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const nearBottom = isNearBottom(el);
+    setShowBottom(!nearBottom && !autoScrollRef.current);
+  }, []);
+
+  const toggleAutoScroll = () => {
+    const next = !autoScroll;
+    setAutoScroll(next);
+    autoScrollRef.current = next;
+    if (next && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      setShowBottom(false);
+    }
+  };
+
+  const scrollToBottom = () => {
+    if (containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      setShowBottom(false);
+    }
+  };
 
   const clearLogs = () => { setLines([]); setCount(0); pendingRef.current = []; };
 
@@ -68,18 +100,36 @@ export default function Logs() {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs font-mono c-dim">{count} 条</span>
-          <button onClick={() => setAutoScroll(!autoScroll)} className="btn btn-ghost text-xs py-1">自动滚动: {autoScroll ? '开' : '关'}</button>
+          <button onClick={toggleAutoScroll} className="btn btn-ghost text-xs py-1">自动滚动: {autoScroll ? '开' : '关'}</button>
           <button onClick={clearLogs} className="btn btn-ghost text-xs py-1">清空</button>
         </div>
       </div>
-      <div
-        ref={containerRef}
-        className="font-mono text-xs leading-relaxed p-4 rounded-lg overflow-y-auto"
-        style={{ background: 'var(--bg-inner)', border: '1px solid var(--border)', height: '60vh', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-      >
-        {lines.map((line, i) => (
-          <span key={i} className={`log-line ${detectLevel(line)}`}>{line}{'\n'}</span>
-        ))}
+      <div className="relative">
+        <div
+          ref={containerRef}
+          onScroll={handleScroll}
+          className="font-mono text-xs leading-relaxed p-4 rounded-lg overflow-y-auto"
+          style={{ background: 'var(--bg-inner)', border: '1px solid var(--border)', height: '60vh', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+        >
+          {lines.map((line, i) => (
+            <span key={i} className={`log-line ${detectLevel(line)}`}>{line}{'\n'}</span>
+          ))}
+        </div>
+        {showBottom && (
+          <button
+            onClick={scrollToBottom}
+            className="absolute bottom-4 right-4 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium shadow-lg transition-all duration-200 hover:scale-105"
+            style={{
+              background: 'var(--ghost-hover)',
+              border: '1px solid var(--border-hover)',
+              color: 'var(--text-heading)',
+              backdropFilter: 'blur(8px)',
+            }}
+          >
+            <ArrowDown size={13} />
+            回到底部
+          </button>
+        )}
       </div>
     </div>
   );

@@ -2,10 +2,16 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown } from 'lucide-react';
 
+interface SelectOption {
+  label: string;
+  value: string;
+  meta?: string;
+}
+
 interface SelectProps {
   value: string;
   onChange: (value: string) => void;
-  options: { label: string; value: string }[];
+  options: SelectOption[];
   className?: string;
 }
 
@@ -33,7 +39,10 @@ export function Select({ value, onChange, options, className = '' }: SelectProps
         setOpen(false);
       }
     };
-    const handleScroll = () => setOpen(false);
+    const handleScroll = (e: Event) => {
+      if (dropdownRef.current && dropdownRef.current.contains(e.target as Node)) return;
+      setOpen(false);
+    };
     document.addEventListener('mousedown', handleClickOutside);
     window.addEventListener('scroll', handleScroll, true);
     return () => {
@@ -81,11 +90,11 @@ export function Select({ value, onChange, options, className = '' }: SelectProps
                 }}
                 onMouseEnter={e => {
                   if (String(value) !== opt.value) {
-                    (e.target as HTMLElement).style.background = 'var(--ghost-hover)';
+                    (e.currentTarget as HTMLElement).style.background = 'var(--ghost-hover)';
                   }
                 }}
                 onMouseLeave={e => {
-                  (e.target as HTMLElement).style.background =
+                  (e.currentTarget as HTMLElement).style.background =
                     String(value) === opt.value ? 'rgba(45,212,191,0.1)' : 'transparent';
                 }}
                 onClick={() => {
@@ -93,7 +102,12 @@ export function Select({ value, onChange, options, className = '' }: SelectProps
                   setOpen(false);
                 }}
               >
-                {opt.label}
+                <div className="truncate">{opt.label}</div>
+                {opt.meta && (
+                  <div className="text-xs truncate" style={{ color: 'var(--text-dim)', opacity: 0.65, marginTop: 1 }}>
+                    {opt.meta}
+                  </div>
+                )}
               </div>
             ))}
           </div>
