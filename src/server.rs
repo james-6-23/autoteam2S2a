@@ -3769,6 +3769,10 @@ async fn team_manage_batch_check_handler(
 }
 
 async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerHealthResult> {
+    crate::log_broadcast::broadcast_log(&format!(
+        "[健康检查] 开始: {}", account_id
+    ));
+
     let access_token = state
         .run_history_db
         .get_owner_token_by_account_id(account_id)
@@ -3778,6 +3782,9 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
     // 1. 查 owner 额度
     let owner_quota = fetch_codex_quota(&access_token).await;
     let owner_status = owner_quota.status.clone();
+    crate::log_broadcast::broadcast_log(&format!(
+        "[健康检查] {} owner_status={}", account_id, owner_status
+    ));
 
     // 2. 拉成员列表
     let members_raw = fetch_chatgpt_members(account_id, &access_token)
@@ -3789,12 +3796,16 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
         .collect();
 
     // 3. 查每个成员额度
+    crate::log_broadcast::broadcast_log(&format!(
+        "[健康检查] {} 成员数={}", account_id, members_filtered.len()
+    ));
+
     let config = state.config.read().await;
     let config_clone = config.clone();
     drop(config);
 
     let mut member_infos = Vec::new();
-    for m in &members_filtered {
+    for (idx, m) in members_filtered.iter().enumerate() {
         let email = match &m.email {
             Some(e) => e.clone(),
             None => continue,
@@ -3834,6 +3845,11 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
             status = "no_credentials".to_string();
         }
 
+        let pct_str = seven_day_pct.map(|p| format!("{:.0}%", p)).unwrap_or("--".to_string());
+        crate::log_broadcast::broadcast_log(&format!(
+            "[健康检查] {} #{} {} status={} 7d={}", account_id, idx + 1, email, status, pct_str
+        ));
+
         member_infos.push(MemberHealthInfo {
             email,
             name: m.name.clone(),
@@ -3841,6 +3857,10 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
             seven_day_pct: seven_day_pct.map(|p| (p * 10.0).round() / 10.0),
         });
     }
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[健康检查] {} 完成: {} 个成员已检查", account_id, member_infos.len()
+    ));
 
     Some(OwnerHealthResult {
         account_id: account_id.to_string(),

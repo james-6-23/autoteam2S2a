@@ -416,24 +416,25 @@ export default function TeamManage() {
                       </div>
 
                       {/* 中间: 成员额度概览 */}
-                      <div className="flex flex-wrap gap-1.5 flex-1 min-w-0 mx-2">
+                      <div className="flex gap-3 flex-1 min-w-0 mx-3">
                         {health ? (
-                          health.members.length > 0 ? health.members.map(m => {
-                            const prefix = m.email.split('@')[0].substring(0, 7);
-                            if (m.status === 'banned') return (
-                              <span key={m.email} className="inline-flex items-center gap-0.5 text-[.55rem] px-1.5 py-0.5 rounded"
-                                style={{ background: 'rgba(248,113,113,.12)', color: '#f87171' }}>
-                                <ShieldAlert size={9} /> {prefix}..
-                              </span>
-                            );
+                          health.members.length > 0 ? health.members.map((m, i) => {
                             const pct = m.seven_day_pct;
-                            const color = pct != null ? quotaColor(pct) : 'var(--text-dim)';
+                            const isBan = m.status === 'banned';
+                            const color = isBan ? '#f87171' : pct != null ? quotaColor(pct) : 'var(--text-dim)';
                             return (
-                              <div key={m.email} className="inline-flex flex-col gap-0.5">
-                                <span className="text-[.55rem] font-mono" style={{ color }}>
-                                  {prefix}.. {pct != null ? `${Math.round(pct)}%` : '--'}
-                                </span>
-                                {pct != null && <MiniBar percent={pct} />}
+                              <div key={m.email} className="flex items-center gap-1.5" style={{ width: 90 }} title={m.email}>
+                                <span className="text-[.6rem] font-mono shrink-0" style={{ color, width: 14 }}>#{i + 1}</span>
+                                {isBan ? (
+                                  <span className="inline-flex items-center gap-0.5 text-[.55rem] px-1 py-0.5 rounded" style={{ background: 'rgba(248,113,113,.12)', color: '#f87171' }}>
+                                    <ShieldAlert size={8} /> 封禁
+                                  </span>
+                                ) : (
+                                  <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                                    <span className="text-[.6rem] font-mono text-right" style={{ color }}>{pct != null ? `${Math.round(pct)}%` : '--'}</span>
+                                    {pct != null && <MiniBar percent={pct} />}
+                                  </div>
+                                )}
                               </div>
                             );
                           }) : (
