@@ -2625,6 +2625,10 @@ pub async fn start_server(
             "/api/team-manage/owners/{accountId}/quota",
             get(team_manage_quota_handler),
         )
+        .route(
+            "/api/team-manage/member-quota",
+            post(team_manage_member_quota_handler),
+        )
         .fallback_service(spa)
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -3376,6 +3380,161 @@ async fn team_manage_quota_handler(
         quota.model_used
     );
     Ok(Json(quota))
+}
+
+// ─── Member Quota (子号额度查询) ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct MemberQuotaRequest {
+    email: String,
+}
+
+/// 用 refresh_token 换 access_token
+async fn refresh_rt_to_at(refresh_token: &str) -> Result<String, String> {
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let resp = client
+        .post("https://auth.openai.com/oauth/token")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
+            ("redirect_uri", "com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback"),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("刷新 token 请求失败: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let preview = if body.len() > 200 { format!("{}...", &body[..200]) } else { body };
+        return Err(format!("刷新 token 失败 HTTP {}: {}", status.as_u16(), preview));
+    }
+
+    let body: serde_json::Value = resp.json().await
+        .map_err(|e| format!("刷新 token JSON 解析失败: {e}"))?;
+
+    body.get("access_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "刷新 token 响应缺少 access_token".to_string())
+}
+
+/// 从 S2A 号池中搜索邮箱对应的账号，返回 (access_token, refresh_token)
+async fn search_s2a_for_email(
+    config: &AppConfig,
+    email: &str,
+) -> Option<(String, Option<String>)> {
+    let client = shared_http_client_8s();
+    let encoded_email = urlencoding::encode(email);
+
+    for team in &config.s2a {
+        let base = crate::services::S2aHttpService::normalized_api_base(&team.api_base);
+        let url = format!(
+            "{base}/admin/accounts?page=1&page_size=1&search={encoded_email}&timezone=Asia%2FShanghai"
+        );
+
+        let key = team.admin_key.trim();
+        let bearer = if key.to_ascii_lowercase().starts_with("bearer ") {
+            key.to_string()
+        } else {
+            format!("Bearer {key}")
+        };
+
+        let resp = match client
+            .get(&url)
+            .header("Accept", "application/json")
+            .header("Authorization", &bearer)
+            .header("X-API-Key", key)
+            .header("X-Admin-Key", key)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        if !resp.status().is_success() {
+            continue;
+        }
+
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(_) => continue,
+        };
+
+        let items = json
+            .pointer("/data/items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for item in items {
+            let creds = item.get("credentials");
+            let at = creds
+                .and_then(|c| c.get("access_token"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let rt = creds
+                .and_then(|c| c.get("refresh_token"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            if let Some(at) = at {
+                return Some((at, rt));
+            }
+        }
+    }
+    None
+}
+
+async fn team_manage_member_quota_handler(
+    State(state): State<AppState>,
+    Json(req): Json<MemberQuotaRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let email = req.email.trim().to_string();
+    tracing::info!("[TeamManage] 子号额度查询: email={email}");
+
+    // 策略1: 本地 DB 中的 refresh_token → 刷新 AT → 查额度
+    if let Ok(Some(rt)) = state.run_history_db.get_email_refresh_token(&email) {
+        tracing::info!("[TeamManage] 从本地 DB 获取到 RT，刷新 AT...");
+        match refresh_rt_to_at(&rt).await {
+            Ok(at) => {
+                let quota = fetch_codex_quota(&at).await;
+                tracing::info!("[TeamManage] 子号额度查询完成(本地RT): email={email}, status={}", quota.status);
+                return Ok(Json(quota));
+            }
+            Err(e) => {
+                tracing::warn!("[TeamManage] 本地 RT 刷新失败: {e}，尝试号池兜底");
+            }
+        }
+    }
+
+    // 策略2: 从 S2A 号池搜索
+    let config = state.config.read().await;
+    if let Some((at, rt_opt)) = search_s2a_for_email(&config, &email).await {
+        // 优先用 RT 刷新 AT（号池中的 AT 可能过期）
+        if let Some(rt) = &rt_opt {
+            if let Ok(fresh_at) = refresh_rt_to_at(rt).await {
+                let quota = fetch_codex_quota(&fresh_at).await;
+                tracing::info!("[TeamManage] 子号额度查询完成(号池RT刷新): email={email}, status={}", quota.status);
+                return Ok(Json(quota));
+            }
+        }
+        // 直接用号池 AT
+        let quota = fetch_codex_quota(&at).await;
+        tracing::info!("[TeamManage] 子号额度查询完成(号池AT): email={email}, status={}", quota.status);
+        return Ok(Json(quota));
+    }
+    drop(config);
+
+    Err(error_json(StatusCode::NOT_FOUND, &format!("找不到 {email} 的凭证，本地 DB 和号池均未找到")))
 }
 
 async fn shutdown_signal() {

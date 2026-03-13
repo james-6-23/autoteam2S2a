@@ -218,6 +218,7 @@ pub struct InviteEmailUpdate {
     pub reg_status: Option<String>,
     pub rt_status: Option<String>,
     pub s2a_status: Option<String>,
+    pub refresh_token: Option<String>,
     pub error: Option<String>,
 }
 
@@ -407,6 +408,7 @@ impl RunHistoryDb {
                 reg_status      TEXT DEFAULT 'pending',
                 rt_status       TEXT DEFAULT 'pending',
                 s2a_status      TEXT DEFAULT 'pending',
+                refresh_token   TEXT,
                 error           TEXT
             );
 
@@ -684,6 +686,7 @@ impl RunHistoryDb {
                 if let Some(ref s) = update.reg_status { sets.push("reg_status = ?"); values.push(Box::new(s.clone())); }
                 if let Some(ref s) = update.rt_status { sets.push("rt_status = ?"); values.push(Box::new(s.clone())); }
                 if let Some(ref s) = update.s2a_status { sets.push("s2a_status = ?"); values.push(Box::new(s.clone())); }
+                if let Some(ref s) = update.refresh_token { sets.push("refresh_token = ?"); values.push(Box::new(s.clone())); }
                 if let Some(ref e) = update.error { sets.push("error = ?"); values.push(Box::new(e.clone())); }
                 if !sets.is_empty() {
                     values.push(Box::new(email_id));
@@ -1310,6 +1313,21 @@ impl RunHistoryDb {
         let result = conn.query_row(
             "SELECT access_token FROM invite_owners WHERE account_id = ?1 LIMIT 1",
             params![account_id],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(token) => Ok(Some(token)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 根据邮箱获取 refresh_token（从 invite_emails 表）
+    pub fn get_email_refresh_token(&self, email: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT refresh_token FROM invite_emails WHERE email = ?1 AND refresh_token IS NOT NULL AND refresh_token != '' ORDER BY id DESC LIMIT 1",
+            params![email],
             |row| row.get::<_, String>(0),
         );
         match result {

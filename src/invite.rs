@@ -805,6 +805,7 @@ pub async fn run_invite_workflow(
                                 email_db_id,
                                 InviteEmailUpdate {
                                     rt_status: Some("ok".to_string()),
+                                    refresh_token: Some(rt.clone()),
                                     ..Default::default()
                                 },
                             );
