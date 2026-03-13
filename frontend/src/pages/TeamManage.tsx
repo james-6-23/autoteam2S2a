@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '../components/Toast';
 import * as api from '../lib/api';
-import { User, ChevronLeft, ChevronRight } from 'lucide-react';
+import { User, ChevronLeft, ChevronRight, Users, Trash2, X, Loader2 } from 'lucide-react';
 
 interface TeamOwner { email: string; account_id: string; access_token?: string; member_count?: number }
 interface TeamMember { user_id: string; email?: string; name?: string; role: string; created_at?: string }
@@ -55,6 +55,9 @@ export default function TeamManage() {
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [kickLoading, setKickLoading] = useState<string | null>(null);
+  const [kickAllLoading, setKickAllLoading] = useState(false);
+  const [kickAllProgress, setKickAllProgress] = useState({ done: 0, total: 0 });
+  const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
 
   const [ownerPage, setOwnerPage] = useState(1);
   const [memberPage, setMemberPage] = useState(1);
@@ -74,37 +77,76 @@ export default function TeamManage() {
 
   useEffect(() => { loadOwners(); }, [loadOwners]);
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelected(null); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
   const loadMembers = async (accountId: string) => {
     setSelected(accountId); setMembers([]); setMembersLoading(true); setMemberPage(1);
     try {
       const data = await api.get<{ members: TeamMember[] }>(`/api/team-manage/owners/${encodeURIComponent(accountId)}/members`);
-      setMembers(data.members || []);
+      const list = data.members || [];
+      setMembers(list);
+      setMemberCounts(prev => ({ ...prev, [accountId]: list.length }));
     } catch { toast('获取成员失败', 'error'); }
     finally { setMembersLoading(false); }
   };
 
   const kickMember = async (userId: string) => {
     if (!selected) return;
-    if (!confirm(`确定要踢除该成员？`)) return;
+    if (!confirm('确定要踢除该成员？')) return;
     setKickLoading(userId);
     try {
       await api.post(`/api/team-manage/owners/${encodeURIComponent(selected)}/members/${encodeURIComponent(userId)}/kick`);
       toast('已踢除成员', 'success');
-      setMembers(prev => prev.filter(m => m.user_id !== userId));
+      setMembers(prev => {
+        const next = prev.filter(m => m.user_id !== userId);
+        setMemberCounts(c => ({ ...c, [selected!]: next.length }));
+        return next;
+      });
     } catch (e) { toast(`踢除失败: ${e}`, 'error'); }
     finally { setKickLoading(null); }
+  };
+
+  const kickAll = async () => {
+    if (!selected) return;
+    const toKick = members.filter(m => m.role !== 'owner');
+    if (toKick.length === 0) { toast('没有可踢除的成员', 'error'); return; }
+    if (!confirm(`确定要踢除全部 ${toKick.length} 个非 Owner 成员？`)) return;
+
+    setKickAllLoading(true);
+    setKickAllProgress({ done: 0, total: toKick.length });
+    let success = 0;
+    let failed = 0;
+
+    for (const m of toKick) {
+      try {
+        await api.post(`/api/team-manage/owners/${encodeURIComponent(selected)}/members/${encodeURIComponent(m.user_id)}/kick`);
+        success++;
+        setMembers(prev => prev.filter(x => x.user_id !== m.user_id));
+      } catch { failed++; }
+      setKickAllProgress({ done: success + failed, total: toKick.length });
+    }
+
+    setKickAllLoading(false);
+    setMemberCounts(prev => ({ ...prev, [selected!]: members.length - success }));
+    toast(`踢除完成: 成功 ${success}，失败 ${failed}`, failed > 0 ? 'error' : 'success');
   };
 
   const refreshMembers = async (accountId: string) => {
     try {
       const data = await api.post<{ members: TeamMember[] }>(`/api/team-manage/owners/${encodeURIComponent(accountId)}/refresh`);
       toast('已刷新成员列表', 'success');
-      if (selected === accountId) { setMembers(data.members || []); setMemberPage(1); }
-      loadOwners();
+      const list = data.members || [];
+      setMemberCounts(prev => ({ ...prev, [accountId]: list.length }));
+      if (selected === accountId) { setMembers(list); setMemberPage(1); }
     } catch (e) { toast(`刷新失败: ${e}`, 'error'); }
   };
 
   const selectedOwner = owners.find(o => o.account_id === selected);
+  const kickableCount = members.filter(m => m.role !== 'owner').length;
 
   return (
     <div className="space-y-4">
@@ -127,91 +169,134 @@ export default function TeamManage() {
         ) : (
           <>
             <div className="grid gap-2">
-              {pagedOwners.map(o => (
-                <div
-                  key={o.account_id}
-                  className={`row-item cursor-pointer ${selected === o.account_id ? 'ring-1' : ''}`}
-                  style={selected === o.account_id ? { borderColor: 'var(--teal)', boxShadow: '0 0 0 1px rgba(45,212,191,.3)' } : {}}
-                  onClick={() => loadMembers(o.account_id)}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
-                        <User size={18} className="c-dim" />
+              {pagedOwners.map(o => {
+                const count = memberCounts[o.account_id] ?? o.member_count;
+                return (
+                  <div
+                    key={o.account_id}
+                    className="row-item cursor-pointer transition-all duration-150 hover:scale-[1.005]"
+                    onClick={() => loadMembers(o.account_id)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
+                          <User size={16} className="c-dim" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm c-heading font-medium truncate">{o.email || '未知邮箱'}</div>
+                          <div className="text-xs font-mono c-dim">{o.account_id.substring(0, 12)}...</div>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <div className="text-sm c-heading font-medium truncate">{o.email || '未知邮箱'}</div>
-                        <div className="text-xs font-mono c-dim">{o.account_id.substring(0, 12)}...</div>
+                      <div className="flex items-center gap-2.5">
+                        {count != null && (
+                          <span className="flex items-center gap-1 text-xs font-mono px-2 py-0.5 rounded-md" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
+                            <Users size={12} className="c-dim" />
+                            <span className="c-heading">{count}</span>
+                          </span>
+                        )}
+                        <button onClick={e => { e.stopPropagation(); refreshMembers(o.account_id); }} className="btn btn-ghost text-xs py-1 px-2" title="刷新成员">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
+                          </svg>
+                        </button>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      {o.member_count != null && (
-                        <span className="text-xs font-mono c-dim2">{o.member_count} 成员</span>
-                      )}
-                      <button onClick={e => { e.stopPropagation(); refreshMembers(o.account_id); }} className="btn btn-ghost text-xs py-1 px-2" title="刷新成员">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
-                        </svg>
-                      </button>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <Pagination page={ownerPage} total={owners.length} onChange={setOwnerPage} />
           </>
         )}
       </div>
 
-      {/* Members Panel */}
+      {/* ─── Members Modal ─── */}
       {selected && (
-        <div className="card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="section-title mb-0">
-              成员列表 <span className="text-amber-400">{selectedOwner?.email || selected.substring(0, 12)}</span>
+        <div className="team-modal" onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
+          <div className="team-modal-card p-5" style={{ maxWidth: 640, width: '95vw', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="min-w-0">
+                <div className="section-title mb-0 truncate">
+                  成员管理 <span className="text-amber-400">{selectedOwner?.email || selected.substring(0, 12)}</span>
+                </div>
+                <div className="text-xs font-mono c-dim mt-0.5">{selected}</div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {!membersLoading && kickableCount > 0 && (
+                  <button
+                    onClick={kickAll}
+                    disabled={kickAllLoading}
+                    className="btn btn-danger text-xs py-1.5 px-3 flex items-center gap-1.5"
+                  >
+                    {kickAllLoading ? (
+                      <><Loader2 size={13} className="animate-spin" /> 踢除中 {kickAllProgress.done}/{kickAllProgress.total}</>
+                    ) : (
+                      <><Trash2 size={13} /> 一键全踢 ({kickableCount})</>
+                    )}
+                  </button>
+                )}
+                <button onClick={() => setSelected(null)} className="btn btn-ghost p-1.5" title="关闭">
+                  <X size={16} />
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono c-dim">{members.length} 个成员</span>
-              <button onClick={() => setSelected(null)} className="btn btn-ghost text-xs py-1">关闭</button>
-            </div>
-          </div>
 
-          {membersLoading ? (
-            <div className="text-center c-dim py-4">加载中...</div>
-          ) : members.length === 0 ? (
-            <div className="text-center c-dim py-4">无成员数据</div>
-          ) : (
-            <>
-              <div className="space-y-2">
-                {pagedMembers.map(m => (
-                  <div key={m.user_id} className="card-inner px-4 py-3 flex items-center justify-between">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="min-w-0">
-                        <div className="text-sm c-heading font-medium">{m.name || m.email || '未知'}</div>
-                        <div className="flex items-center gap-2 text-xs c-dim">
-                          <span className="font-mono">{m.user_id.substring(0, 12)}...</span>
-                          <span className={`px-1.5 py-0.5 rounded text-[.6rem] ${m.role === 'owner' ? 'text-amber-400' : 'c-dim'}`} style={{ background: 'var(--ghost)' }}>
-                            {m.role}
-                          </span>
-                          {m.created_at && <span>{new Date(m.created_at).toLocaleDateString('zh-CN')}</span>}
+            {/* Stats bar */}
+            {!membersLoading && members.length > 0 && (
+              <div className="flex items-center gap-3 mb-3 text-xs">
+                <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 个成员</span>
+                <span className="c-dim">Owner <span className="font-mono text-amber-400">{members.filter(m => m.role === 'owner').length}</span></span>
+                <span className="c-dim">可踢除 <span className="font-mono text-red-400">{kickableCount}</span></span>
+              </div>
+            )}
+
+            {/* Members list */}
+            <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
+              {membersLoading ? (
+                <div className="flex items-center justify-center gap-2 c-dim py-12">
+                  <Loader2 size={16} className="animate-spin" /> 加载中...
+                </div>
+              ) : members.length === 0 ? (
+                <div className="text-center c-dim py-12">无成员数据</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {pagedMembers.map(m => (
+                    <div key={m.user_id} className="card-inner px-4 py-2.5 flex items-center justify-between">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="min-w-0">
+                          <div className="text-sm c-heading font-medium">{m.name || m.email || '未知'}</div>
+                          <div className="flex items-center gap-2 text-xs c-dim">
+                            <span className="font-mono">{m.user_id.substring(0, 16)}...</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[.6rem] font-medium ${m.role === 'owner' ? 'text-amber-400' : 'c-dim'}`} style={{ background: 'var(--ghost)' }}>
+                              {m.role}
+                            </span>
+                            {m.created_at && <span>{new Date(m.created_at).toLocaleDateString('zh-CN')}</span>}
+                          </div>
                         </div>
                       </div>
+                      {m.role !== 'owner' && (
+                        <button
+                          onClick={() => kickMember(m.user_id)}
+                          disabled={kickLoading === m.user_id || kickAllLoading}
+                          className="btn btn-danger text-xs py-1 px-3"
+                        >
+                          {kickLoading === m.user_id ? '处理中...' : '踢除'}
+                        </button>
+                      )}
                     </div>
-                    {m.role !== 'owner' && (
-                      <button
-                        onClick={() => kickMember(m.user_id)}
-                        disabled={kickLoading === m.user_id}
-                        className="btn btn-danger text-xs py-1 px-3"
-                      >
-                        {kickLoading === m.user_id ? '处理中...' : '踢除'}
-                      </button>
-                    )}
-                  </div>
-                ))}
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Pagination */}
+            {members.length > PAGE_SIZE && (
+              <div className="pt-2 border-t mt-2" style={{ borderColor: 'var(--border)' }}>
+                <Pagination page={memberPage} total={members.length} onChange={setMemberPage} />
               </div>
-              <Pagination page={memberPage} total={members.length} onChange={setMemberPage} />
-            </>
-          )}
+            )}
+          </div>
         </div>
       )}
     </div>
