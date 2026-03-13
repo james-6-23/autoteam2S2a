@@ -61,7 +61,10 @@ export default function Invite() {
   const [dragOver, setDragOver] = useState(false);
   const [fileName, setFileName] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [executing, setExecuting] = useState(false);  const fileRef = useRef<HTMLInputElement>(null);
+  const [executing, setExecuting] = useState(false);
+  const [taskPage, setTaskPage] = useState(1);
+  const TASKS_PER_PAGE = 5;
+  const fileRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // SSE log
@@ -85,6 +88,7 @@ export default function Invite() {
       const data = await api.get<InviteTaskItem[]>('/api/invite/tasks');
       const arr = Array.isArray(data) ? data : [];
       setTasks(arr);
+      setTaskPage(1);
       if (arr.some(t => t.status === 'running' || t.status === 'pending')) {
         if (!pollRef.current) pollRef.current = setInterval(loadTasks, 3000);
       } else { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } }
@@ -398,10 +402,13 @@ export default function Invite() {
 
       {/* Tasks */}
       <div className="card p-5">
-        <div className="section-title">邀请任务</div>
+        <div className="flex items-center justify-between mb-3">
+          <div className="section-title mb-0">邀请任务</div>
+          {tasks.length > 0 && <span className="text-xs c-dim font-mono">共 {tasks.length} 条</span>}
+        </div>
         <div className="space-y-2">
           {tasks.length === 0 ? <span className="c-dim text-sm">暂无邀请任务</span> :
-            tasks.map(t => {
+            tasks.slice((taskPage - 1) * TASKS_PER_PAGE, taskPage * TASKS_PER_PAGE).map(t => {
               const sc = t.status === 'completed' ? 'text-teal-400' : t.status === 'running' ? 'text-amber-400' : t.status === 'failed' ? 'text-red-400' : 'c-dim';
               return (
                 <div key={t.id} className="py-2.5 px-3 rounded" style={{ background: 'var(--ghost)' }}>
@@ -423,6 +430,24 @@ export default function Invite() {
               );
             })}
         </div>
+        {/* Pagination */}
+        {tasks.length > TASKS_PER_PAGE && (
+          <div className="flex items-center justify-between mt-4 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+            <button
+              onClick={() => setTaskPage(p => Math.max(1, p - 1))}
+              disabled={taskPage <= 1}
+              className="btn btn-ghost text-xs py-1.5 px-3"
+              style={{ opacity: taskPage <= 1 ? 0.4 : 1 }}
+            >← 上一页</button>
+            <span className="text-xs c-dim font-mono">{taskPage} / {Math.ceil(tasks.length / TASKS_PER_PAGE)}</span>
+            <button
+              onClick={() => setTaskPage(p => Math.min(Math.ceil(tasks.length / TASKS_PER_PAGE), p + 1))}
+              disabled={taskPage >= Math.ceil(tasks.length / TASKS_PER_PAGE)}
+              className="btn btn-ghost text-xs py-1.5 px-3"
+              style={{ opacity: taskPage >= Math.ceil(tasks.length / TASKS_PER_PAGE) ? 0.4 : 1 }}
+            >下一页 →</button>
+          </div>
+        )}
       </div>
 
       {/* Log */}
