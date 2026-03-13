@@ -1,12 +1,55 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '../components/Toast';
 import * as api from '../lib/api';
-import { User, ChevronLeft, ChevronRight, Users, Trash2, X, Loader2 } from 'lucide-react';
+import { User, ChevronLeft, ChevronRight, Users, Trash2, X, Loader2, Zap, ShieldAlert } from 'lucide-react';
 
 interface TeamOwner { email: string; account_id: string; access_token?: string; member_count?: number }
 interface TeamMember { user_id: string; email?: string; name?: string; role: string; created_at?: string }
+interface QuotaWindow { used_percent: number; remaining_percent: number; reset_after_seconds: number; window_minutes: number }
+interface CodexQuota { five_hour?: QuotaWindow; seven_day?: QuotaWindow; status: string; model_used?: string; error?: string }
 
 const PAGE_SIZE = 10;
+
+function fmtReset(secs: number) {
+  if (secs <= 0) return '--';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h > 24) { const d = Math.floor(h / 24); return `${d}天${h % 24}h`; }
+  if (h > 0) return `${h}h${m}m`;
+  return `${m}m`;
+}
+
+function quotaColor(remaining: number) {
+  if (remaining >= 60) return '#2dd4bf';
+  if (remaining >= 30) return '#f59e0b';
+  return '#f87171';
+}
+
+function QuotaBadge({ quota }: { quota?: CodexQuota }) {
+  if (!quota) return <span className="text-[.6rem] c-dim">--</span>;
+  if (quota.status === 'banned') return (
+    <span className="flex items-center gap-1 text-[.6rem] font-medium px-1.5 py-0.5 rounded" style={{ background: 'rgba(248,113,113,.15)', color: '#f87171' }}>
+      <ShieldAlert size={10} /> 封禁
+    </span>
+  );
+  if (quota.status === 'error') return (
+    <span className="text-[.6rem] c-dim" title={quota.error || ''}>错误</span>
+  );
+  return (
+    <div className="flex items-center gap-1.5">
+      {quota.five_hour && (
+        <span className="text-[.6rem] font-mono px-1.5 py-0.5 rounded" style={{ background: `${quotaColor(quota.five_hour.remaining_percent)}15`, color: quotaColor(quota.five_hour.remaining_percent), border: `1px solid ${quotaColor(quota.five_hour.remaining_percent)}30` }}>
+          5h {Math.round(quota.five_hour.remaining_percent)}%
+        </span>
+      )}
+      {quota.seven_day && (
+        <span className="text-[.6rem] font-mono px-1.5 py-0.5 rounded" style={{ background: `${quotaColor(quota.seven_day.remaining_percent)}15`, color: quotaColor(quota.seven_day.remaining_percent), border: `1px solid ${quotaColor(quota.seven_day.remaining_percent)}30` }}>
+          7d {Math.round(quota.seven_day.remaining_percent)}%
+        </span>
+      )}
+    </div>
+  );
+}
 
 function Pagination({ page, total, onChange }: { page: number; total: number; onChange: (p: number) => void }) {
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -15,10 +58,7 @@ function Pagination({ page, total, onChange }: { page: number; total: number; on
     <div className="flex items-center justify-between mt-3 px-1">
       <span className="text-xs c-dim">第 {page} / {totalPages} 页，共 {total} 条</span>
       <div className="flex items-center gap-1">
-        <button
-          onClick={() => onChange(page - 1)} disabled={page <= 1}
-          className="btn btn-ghost p-1.5 disabled:opacity-30"
-        ><ChevronLeft size={14} /></button>
+        <button onClick={() => onChange(page - 1)} disabled={page <= 1} className="btn btn-ghost p-1.5 disabled:opacity-30"><ChevronLeft size={14} /></button>
         {Array.from({ length: totalPages }, (_, i) => i + 1)
           .filter(p => p === 1 || p === totalPages || Math.abs(p - page) <= 1)
           .reduce<(number | '…')[]>((acc, p, idx, arr) => {
@@ -38,10 +78,7 @@ function Pagination({ page, total, onChange }: { page: number; total: number; on
               >{p}</button>
             )
           )}
-        <button
-          onClick={() => onChange(page + 1)} disabled={page >= totalPages}
-          className="btn btn-ghost p-1.5 disabled:opacity-30"
-        ><ChevronRight size={14} /></button>
+        <button onClick={() => onChange(page + 1)} disabled={page >= totalPages} className="btn btn-ghost p-1.5 disabled:opacity-30"><ChevronRight size={14} /></button>
       </div>
     </div>
   );
@@ -58,6 +95,8 @@ export default function TeamManage() {
   const [kickAllLoading, setKickAllLoading] = useState(false);
   const [kickAllProgress, setKickAllProgress] = useState({ done: 0, total: 0 });
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
+  const [quotas, setQuotas] = useState<Record<string, CodexQuota>>({});
+  const [quotaLoading, setQuotaLoading] = useState<Record<string, boolean>>({});
 
   const [ownerPage, setOwnerPage] = useState(1);
   const [memberPage, setMemberPage] = useState(1);
@@ -92,6 +131,15 @@ export default function TeamManage() {
       setMemberCounts(prev => ({ ...prev, [accountId]: list.length }));
     } catch { toast('获取成员失败', 'error'); }
     finally { setMembersLoading(false); }
+  };
+
+  const loadQuota = async (accountId: string) => {
+    setQuotaLoading(prev => ({ ...prev, [accountId]: true }));
+    try {
+      const data = await api.get<CodexQuota>(`/api/team-manage/owners/${encodeURIComponent(accountId)}/quota`);
+      setQuotas(prev => ({ ...prev, [accountId]: data }));
+    } catch { toast('额度查询失败', 'error'); }
+    finally { setQuotaLoading(prev => ({ ...prev, [accountId]: false })); }
   };
 
   const kickMember = async (userId: string) => {
@@ -147,6 +195,7 @@ export default function TeamManage() {
 
   const selectedOwner = owners.find(o => o.account_id === selected);
   const kickableCount = members.filter(m => m.role !== 'owner').length;
+  const selectedQuota = selected ? quotas[selected] : undefined;
 
   return (
     <div className="space-y-4">
@@ -171,13 +220,15 @@ export default function TeamManage() {
             <div className="grid gap-2">
               {pagedOwners.map(o => {
                 const count = memberCounts[o.account_id] ?? o.member_count;
+                const q = quotas[o.account_id];
+                const qLoading = quotaLoading[o.account_id];
                 return (
                   <div
                     key={o.account_id}
                     className="row-item cursor-pointer transition-all duration-150 hover:scale-[1.005]"
                     onClick={() => loadMembers(o.account_id)}
                   >
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
                           <User size={16} className="c-dim" />
@@ -187,13 +238,22 @@ export default function TeamManage() {
                           <div className="text-xs font-mono c-dim">{o.account_id.substring(0, 12)}...</div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2.5">
+                      <div className="flex items-center gap-2 shrink-0">
+                        <QuotaBadge quota={q} />
                         {count != null && (
                           <span className="flex items-center gap-1 text-xs font-mono px-2 py-0.5 rounded-md" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
                             <Users size={12} className="c-dim" />
                             <span className="c-heading">{count}</span>
                           </span>
                         )}
+                        <button
+                          onClick={e => { e.stopPropagation(); loadQuota(o.account_id); }}
+                          disabled={qLoading}
+                          className="btn btn-ghost text-xs py-1 px-2"
+                          title="查额度"
+                        >
+                          {qLoading ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+                        </button>
                         <button onClick={e => { e.stopPropagation(); refreshMembers(o.account_id); }} className="btn btn-ghost text-xs py-1 px-2" title="刷新成员">
                           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
                             <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
@@ -213,9 +273,9 @@ export default function TeamManage() {
       {/* ─── Members Modal ─── */}
       {selected && (
         <div className="team-modal" onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
-          <div className="team-modal-card p-5" style={{ maxWidth: 640, width: '95vw', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+          <div className="team-modal-card p-5" style={{ maxWidth: 680, width: '95vw', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
             {/* Header */}
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3">
               <div className="min-w-0">
                 <div className="section-title mb-0 truncate">
                   成员管理 <span className="text-amber-400">{selectedOwner?.email || selected.substring(0, 12)}</span>
@@ -224,11 +284,7 @@ export default function TeamManage() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {!membersLoading && kickableCount > 0 && (
-                  <button
-                    onClick={kickAll}
-                    disabled={kickAllLoading}
-                    className="btn btn-danger text-xs py-1.5 px-3 flex items-center gap-1.5"
-                  >
+                  <button onClick={kickAll} disabled={kickAllLoading} className="btn btn-danger text-xs py-1.5 px-3 flex items-center gap-1.5">
                     {kickAllLoading ? (
                       <><Loader2 size={13} className="animate-spin" /> 踢除中 {kickAllProgress.done}/{kickAllProgress.total}</>
                     ) : (
@@ -236,20 +292,53 @@ export default function TeamManage() {
                     )}
                   </button>
                 )}
-                <button onClick={() => setSelected(null)} className="btn btn-ghost p-1.5" title="关闭">
-                  <X size={16} />
-                </button>
+                <button onClick={() => setSelected(null)} className="btn btn-ghost p-1.5" title="关闭"><X size={16} /></button>
               </div>
             </div>
 
-            {/* Stats bar */}
-            {!membersLoading && members.length > 0 && (
-              <div className="flex items-center gap-3 mb-3 text-xs">
-                <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 个成员</span>
-                <span className="c-dim">Owner <span className="font-mono text-amber-400">{members.filter(m => m.role === 'owner').length}</span></span>
-                <span className="c-dim">可踢除 <span className="font-mono text-red-400">{kickableCount}</span></span>
-              </div>
-            )}
+            {/* Quota detail bar */}
+            <div className="flex items-center gap-3 mb-3 flex-wrap text-xs" style={{ borderBottom: '1px solid var(--border)', paddingBottom: 10 }}>
+              {!membersLoading && (
+                <>
+                  <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 成员</span>
+                  <span className="c-dim">Owner <span className="font-mono text-amber-400">{members.filter(m => m.role === 'owner').length}</span></span>
+                  <span className="c-dim">可踢 <span className="font-mono text-red-400">{kickableCount}</span></span>
+                </>
+              )}
+              <span className="w-px h-3 mx-1" style={{ background: 'var(--border)' }} />
+              {selectedQuota ? (
+                selectedQuota.status === 'banned' ? (
+                  <span className="flex items-center gap-1 font-medium" style={{ color: '#f87171' }}><ShieldAlert size={12} /> 账号已封禁</span>
+                ) : selectedQuota.status === 'error' ? (
+                  <span className="c-dim" title={selectedQuota.error || ''}>额度查询失败</span>
+                ) : (
+                  <>
+                    {selectedQuota.five_hour && (
+                      <span style={{ color: quotaColor(selectedQuota.five_hour.remaining_percent) }}>
+                        5h: 剩余 <span className="font-mono font-medium">{Math.round(selectedQuota.five_hour.remaining_percent)}%</span>
+                        <span className="c-dim ml-1">({fmtReset(selectedQuota.five_hour.reset_after_seconds)} 后重置)</span>
+                      </span>
+                    )}
+                    {selectedQuota.seven_day && (
+                      <span style={{ color: quotaColor(selectedQuota.seven_day.remaining_percent) }}>
+                        7d: 剩余 <span className="font-mono font-medium">{Math.round(selectedQuota.seven_day.remaining_percent)}%</span>
+                        <span className="c-dim ml-1">({fmtReset(selectedQuota.seven_day.reset_after_seconds)} 后重置)</span>
+                      </span>
+                    )}
+                    {selectedQuota.model_used && <span className="c-dim font-mono">via {selectedQuota.model_used}</span>}
+                  </>
+                )
+              ) : (
+                <button
+                  onClick={() => loadQuota(selected)}
+                  disabled={quotaLoading[selected] || false}
+                  className="btn btn-ghost text-xs py-0.5 px-2 flex items-center gap-1"
+                >
+                  {quotaLoading[selected] ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+                  查额度
+                </button>
+              )}
+            </div>
 
             {/* Members list */}
             <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
@@ -290,7 +379,6 @@ export default function TeamManage() {
               )}
             </div>
 
-            {/* Pagination */}
             {members.length > PAGE_SIZE && (
               <div className="pt-2 border-t mt-2" style={{ borderColor: 'var(--border)' }}>
                 <Pagination page={memberPage} total={members.length} onChange={setMemberPage} />

@@ -2621,6 +2621,10 @@ pub async fn start_server(
             "/api/team-manage/owners/{accountId}/refresh",
             post(team_manage_refresh_members_handler),
         )
+        .route(
+            "/api/team-manage/owners/{accountId}/quota",
+            get(team_manage_quota_handler),
+        )
         .fallback_service(spa)
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -3199,6 +3203,179 @@ async fn team_manage_refresh_members_handler(
 
     tracing::info!("[TeamManage] 刷新完成: account_id={account_id}, 共 {} 个成员", members.len());
     Ok(Json(TeamManageMembersResponse { members }))
+}
+
+// ─── Codex Quota ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Clone)]
+struct QuotaWindow {
+    used_percent: f64,
+    remaining_percent: f64,
+    reset_after_seconds: u64,
+    window_minutes: u64,
+}
+
+#[derive(Serialize, Clone)]
+struct CodexQuota {
+    five_hour: Option<QuotaWindow>,
+    seven_day: Option<QuotaWindow>,
+    status: String,
+    model_used: Option<String>,
+    error: Option<String>,
+}
+
+const CODEX_MODELS: &[&str] = &[
+    "gpt-5.3-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex",
+    "gpt-5.2-codex",
+    "gpt-5",
+];
+
+async fn fetch_codex_quota(access_token: &str) -> CodexQuota {
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let device_id = uuid::Uuid::new_v4().to_string();
+
+    for model in CODEX_MODELS {
+        let body = serde_json::json!({
+            "model": model,
+            "instructions": "Reply with a single short token.",
+            "input": [{"role": "user", "content": "hi"}],
+            "store": false,
+            "stream": true
+        });
+
+        let resp = match client
+            .post("https://chatgpt.com/backend-api/codex/responses")
+            .header("Accept", "*/*")
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "codex-cli/0.104.0")
+            .header("Oai-Device-Id", &device_id)
+            .body(body.to_string())
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return CodexQuota {
+                    five_hour: None,
+                    seven_day: None,
+                    status: "error".to_string(),
+                    model_used: Some(model.to_string()),
+                    error: Some(format!("请求失败: {e}")),
+                };
+            }
+        };
+
+        let status_code = resp.status().as_u16();
+
+        // 封禁检测
+        if matches!(status_code, 401 | 402 | 403) {
+            return CodexQuota {
+                five_hour: None,
+                seven_day: None,
+                status: "banned".to_string(),
+                model_used: Some(model.to_string()),
+                error: Some(format!("HTTP {status_code}")),
+            };
+        }
+
+        // 先克隆 headers 再消费 body
+        let headers = resp.headers().clone();
+
+        // 模型不支持 → 降级
+        if matches!(status_code, 400 | 404 | 422) {
+            let body_text = resp.text().await.unwrap_or_default().to_lowercase();
+            if body_text.contains("model not supported")
+                || body_text.contains("invalid model")
+                || body_text.contains("model_not_found")
+            {
+                tracing::debug!("[Codex Quota] 模型 {model} 不支持，尝试下一个");
+                continue;
+            }
+        }
+
+        // 解析响应头
+        let headers = &headers;
+        let parse_header = |name: &str| -> Option<f64> {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<f64>().ok())
+        };
+
+        let primary_used = parse_header("x-codex-primary-used-percent");
+        let primary_reset = parse_header("x-codex-primary-reset-after-seconds");
+        let primary_window = parse_header("x-codex-primary-window-minutes");
+
+        let secondary_used = parse_header("x-codex-secondary-used-percent");
+        let secondary_reset = parse_header("x-codex-secondary-reset-after-seconds");
+        let secondary_window = parse_header("x-codex-secondary-window-minutes");
+
+        let five_hour = match (primary_used, primary_window) {
+            (Some(used), Some(win)) if win <= 360.0 => Some(QuotaWindow {
+                used_percent: used,
+                remaining_percent: 100.0 - used,
+                reset_after_seconds: primary_reset.unwrap_or(0.0) as u64,
+                window_minutes: win as u64,
+            }),
+            _ => None,
+        };
+
+        let seven_day = match (secondary_used, secondary_window) {
+            (Some(used), Some(win)) if win >= 10000.0 => Some(QuotaWindow {
+                used_percent: used,
+                remaining_percent: 100.0 - used,
+                reset_after_seconds: secondary_reset.unwrap_or(0.0) as u64,
+                window_minutes: win as u64,
+            }),
+            _ => None,
+        };
+
+        return CodexQuota {
+            five_hour,
+            seven_day,
+            status: if status_code >= 200 && status_code < 300 { "ok" } else { "error" }.to_string(),
+            model_used: Some(model.to_string()),
+            error: if status_code >= 200 && status_code < 300 { None } else { Some(format!("HTTP {status_code}")) },
+        };
+    }
+
+    CodexQuota {
+        five_hour: None,
+        seven_day: None,
+        status: "error".to_string(),
+        model_used: None,
+        error: Some("所有模型均不可用".to_string()),
+    }
+}
+
+async fn team_manage_quota_handler(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tracing::info!("[TeamManage] 查询额度: account_id={account_id}");
+
+    let access_token = state
+        .run_history_db
+        .get_owner_token_by_account_id(&account_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询 token 失败: {e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
+
+    let quota = fetch_codex_quota(&access_token).await;
+
+    tracing::info!(
+        "[TeamManage] 额度查询完成: account_id={account_id}, status={}, model={:?}",
+        quota.status,
+        quota.model_used
+    );
+    Ok(Json(quota))
 }
 
 async fn shutdown_signal() {
