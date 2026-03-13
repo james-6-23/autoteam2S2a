@@ -1,4 +1,4 @@
-import { Loader2, ShieldAlert, User, Users, Zap } from "lucide-react";
+import { Loader2, ShieldAlert, Users, Zap } from "lucide-react";
 
 import type { CodexQuota, OwnerHealth, TeamOwner } from "../../lib/team-manage-types";
 import { quotaColor } from "../../lib/team-manage-types";
@@ -69,6 +69,17 @@ function QuotaBadge({ quota }: { quota?: CodexQuota }) {
   );
 }
 
+function stateToLabel(state: string): string {
+  switch (state) {
+    case "active": return "活跃";
+    case "banned": return "封禁";
+    case "expired": return "过期";
+    case "quarantined": return "隔离";
+    case "archived": return "归档";
+    default: return state;
+  }
+}
+
 export function OwnerRow({
   owner,
   memberCount,
@@ -81,12 +92,13 @@ export function OwnerRow({
   onLoadOwnerQuota,
   onRefreshMembers,
 }: OwnerRowProps) {
-  const isBanned = health?.owner_status === "banned" || health?.members.some(member => member.status === "banned");
+  const isOwnerBanned = health?.owner_status === "banned";
+  const hasBannedMember = health?.members.some(member => member.status === "banned");
   const stateLabel = owner.state ?? "active";
 
   return (
     <div
-      className={`row-item team-manage-owner-row cursor-pointer transition-all duration-150 hover:scale-[1.005] ${isBanned ? "team-manage-owner-row--alert" : ""}`}
+      className={`row-item team-manage-owner-row cursor-pointer transition-all duration-150 hover:scale-[1.005] ${isOwnerBanned ? "team-manage-owner-row--owner-banned" : hasBannedMember ? "team-manage-owner-row--alert" : ""}`}
       onClick={() => onOpenMembers(owner.account_id)}
     >
       <div className="flex items-center justify-between gap-3">
@@ -103,21 +115,19 @@ export function OwnerRow({
           <span className="team-manage-owner-row__check-dot" />
         </button>
 
-        <div className="flex min-w-0 shrink-0 items-center gap-3 team-manage-owner-row__identity">
-          <div
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-            style={{ background: "var(--ghost)", border: "1px solid var(--border)" }}
-          >
-            <User size={16} className="c-dim" />
+        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 team-manage-owner-row__identity">
+          <div className="text-sm font-medium c-heading" style={{ fontFamily: "'FiraCode Nerd Font Mono', 'FiraCode Nerd Font', 'Fira Code', var(--font-mono)", letterSpacing: "-0.02em" }}>
+            {owner.email || "未知邮箱"}
           </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium c-heading">{owner.email || "未知邮箱"}</div>
-            <div className="text-xs font-mono c-dim">{owner.account_id.substring(0, 12)}...</div>
+          <div className="text-[.68rem] c-dim" style={{ fontFamily: "'FiraCode Nerd Font Mono', 'FiraCode Nerd Font', 'Fira Code', var(--font-mono)" }}>
+            {owner.account_id}
           </div>
         </div>
 
         <div className="team-manage-owner-row__status">
-          <span className={`badge ${isBanned ? "badge-err" : "badge-off"}`}>{isBanned ? "封禁风险" : stateLabel}</span>
+          <span className={`badge ${isOwnerBanned ? "badge-err" : hasBannedMember ? "badge-warn" : "badge-off"}`}>
+            {isOwnerBanned ? "Owner封禁" : hasBannedMember ? "成员封禁" : stateToLabel(stateLabel)}
+          </span>
           {health?.checked_at && (
             <span className="text-[.55rem] c-dim">
               {new Date(health.checked_at).toLocaleString("zh-CN")}

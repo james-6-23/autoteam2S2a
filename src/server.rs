@@ -2509,7 +2509,7 @@ pub async fn start_server(
     let max_concurrent = cfg.server.max_concurrent_tasks.unwrap_or(3).max(1);
     let task_manager = Arc::new(TaskManager::new(max_concurrent));
     let redis_cache = if let Some(redis_runtime) = cfg.redis_runtime() {
-        match RedisCache::new(redis_runtime.clone()) {
+        match RedisCache::new(redis_runtime.clone()).await {
             Ok(cache) => {
                 if let Err(error) = cache.ping().await {
                     tracing::warn!("Redis 已配置，但当前不可达；将自动回退 SQLite: {error}");
@@ -3401,6 +3401,7 @@ async fn team_manage_persist_health_result(state: &AppState, result: &OwnerHealt
     team_manage_cache_health_result_in_redis(state, result).await;
 }
 
+#[allow(dead_code)]
 async fn team_manage_get_health_result_from_redis(
     state: &AppState,
     account_id: &str,
@@ -3495,23 +3496,25 @@ async fn team_manage_cache_members_in_redis(
     }
 }
 
-async fn team_manage_try_acquire_health_lock(state: &AppState, account_id: &str) -> bool {
+async fn team_manage_try_acquire_health_lock(state: &AppState, account_id: &str) -> Option<String> {
     let mut locks = state.team_manage_health_locks.lock().await;
     locks.retain(|_, instant| instant.elapsed().as_secs() < 120);
     if locks.contains_key(account_id) {
-        return false;
+        return None;
     }
     locks.insert(account_id.to_string(), Instant::now());
     drop(locks);
+
+    let lock_owner = uuid::Uuid::new_v4().to_string();
     if let Some(redis_cache) = state.redis_cache.as_ref() {
         match redis_cache
-            .try_acquire_lock(&redis_cache.health_lock_key(account_id))
+            .try_acquire_lock(&redis_cache.health_lock_key(account_id), &lock_owner)
             .await
         {
             Ok(true) => {}
             Ok(false) => {
                 state.team_manage_health_locks.lock().await.remove(account_id);
-                return false;
+                return None;
             }
             Err(error) => {
                 tracing::warn!(
@@ -3522,15 +3525,28 @@ async fn team_manage_try_acquire_health_lock(state: &AppState, account_id: &str)
             }
         }
     }
-    true
+    Some(lock_owner)
 }
 
-async fn team_manage_release_health_lock(state: &AppState, account_id: &str) {
+async fn team_manage_release_health_lock(state: &AppState, account_id: &str, lock_owner: &str) {
     state
         .team_manage_health_locks
         .lock()
         .await
         .remove(account_id);
+
+    if let Some(redis_cache) = state.redis_cache.as_ref() {
+        if let Err(error) = redis_cache
+            .release_lock(&redis_cache.health_lock_key(account_id), lock_owner)
+            .await
+        {
+            tracing::warn!(
+                "[TeamManage] Redis 释放健康检查锁失败: account_id={}, error={}",
+                account_id,
+                error
+            );
+        }
+    }
 }
 
 async fn team_manage_list_owners_handler(
@@ -5874,19 +5890,44 @@ async fn team_manage_batch_check_handler(
     let mut stale_returns = 0usize;
     let mut scheduled_refresh_ids = Vec::new();
 
+    // 批量从 Redis MGET 读取健康缓存
+    let redis_cache_map: HashMap<String, OwnerHealthResult> =
+        if !force_refresh && prefer_cache {
+            if let Some(redis_cache) = state.redis_cache.as_ref() {
+                let keys: Vec<String> = account_ids
+                    .iter()
+                    .map(|id| redis_cache.owner_health_key(id))
+                    .collect();
+                match redis_cache.mget_json::<OwnerHealthResult>(&keys).await {
+                    Ok(values) => account_ids
+                        .iter()
+                        .zip(values)
+                        .filter_map(|(id, v)| v.map(|val| (id.clone(), val)))
+                        .collect(),
+                    Err(error) => {
+                        tracing::warn!("[TeamManage] Redis MGET 批量读取失败: {error}");
+                        HashMap::new()
+                    }
+                }
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
+
     for account_id in account_ids {
         if !force_refresh && prefer_cache {
-            if let Some(cached) = team_manage_get_health_result_from_redis(&state, &account_id).await
-            {
+            if let Some(cached) = redis_cache_map.get(&account_id) {
                 match team_manage_cache_status(Some(cached.checked_at.as_str())).as_str() {
                     "fresh" => {
                         cache_hits += 1;
-                        results.push(cached);
+                        results.push(cached.clone());
                         continue;
                     }
                     "stale" => {
                         stale_returns += 1;
-                        results.push(cached);
+                        results.push(cached.clone());
                         scheduled_refresh_ids.push(account_id.clone());
                         continue;
                     }
@@ -5918,11 +5959,12 @@ async fn team_manage_batch_check_handler(
         let state = state.clone();
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await;
-            if !team_manage_try_acquire_health_lock(&state, &account_id).await {
+            let Some(lock_owner) = team_manage_try_acquire_health_lock(&state, &account_id).await
+            else {
                 return None;
-            }
+            };
             let result = check_single_owner(&state, &account_id).await;
-            team_manage_release_health_lock(&state, &account_id).await;
+            team_manage_release_health_lock(&state, &account_id, &lock_owner).await;
             result
         });
         handles.push(handle);
@@ -5948,11 +5990,13 @@ async fn team_manage_batch_check_handler(
                 let state = refresh_state.clone();
                 let handle = tokio::spawn(async move {
                     let _permit = sem.acquire().await;
-                    if !team_manage_try_acquire_health_lock(&state, &account_id).await {
+                    let Some(lock_owner) =
+                        team_manage_try_acquire_health_lock(&state, &account_id).await
+                    else {
                         return None;
-                    }
+                    };
                     let result = check_single_owner(&state, &account_id).await;
-                    team_manage_release_health_lock(&state, &account_id).await;
+                    team_manage_release_health_lock(&state, &account_id, &lock_owner).await;
                     result
                 });
                 handles.push(handle);

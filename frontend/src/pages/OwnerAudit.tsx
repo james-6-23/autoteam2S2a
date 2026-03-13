@@ -2,10 +2,35 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useToast } from "../components/Toast";
 import { TeamManagePagination } from "../components/team-manage/TeamManagePagination";
+import { HSelect } from "../components/ui/HSelect";
 import { fetchTeamManageOwnerAudits } from "../lib/api";
 import type { TeamManageOwnerAuditRecord } from "../lib/team-manage-types";
 
 const OWNER_AUDIT_PAGE_SIZE = 8;
+
+function actionToLabel(action: string): string {
+  switch (action) {
+    case "batch_quarantined": return "批量下线";
+    case "batch_active": return "批量恢复";
+    case "batch_archived": return "批量归档";
+    case "manual_quarantined": return "手动下线";
+    case "manual_active": return "手动恢复";
+    case "manual_archived": return "手动归档";
+    default: return action;
+  }
+}
+
+function stateToLabel(state: string): string {
+  switch (state) {
+    case "active": return "活跃";
+    case "banned": return "封禁";
+    case "expired": return "过期";
+    case "quarantined": return "隔离";
+    case "archived": return "归档";
+    case "unknown": return "未知";
+    default: return state;
+  }
+}
 
 export default function OwnerAudit() {
   const { toast } = useToast();
@@ -117,19 +142,20 @@ export default function OwnerAudit() {
             placeholder="按 account_id 查询审计"
             className="input team-manage-audit__search"
           />
-          <select
+          <HSelect
             value={auditActionFilter}
-            onChange={event => {
-              setAuditActionFilter(event.target.value);
+            onChange={value => {
+              setAuditActionFilter(value);
               setAuditPage(1);
             }}
-            className="input team-manage-audit__select"
-          >
-            <option value="">全部动作</option>
-            <option value="batch_quarantined">批量下线</option>
-            <option value="batch_active">批量恢复</option>
-            <option value="batch_archived">批量归档</option>
-          </select>
+            className="team-manage-audit__select"
+            options={[
+              { value: "", label: "全部动作" },
+              { value: "batch_quarantined", label: "批量下线" },
+              { value: "batch_active", label: "批量恢复" },
+              { value: "batch_archived", label: "批量归档" },
+            ]}
+          />
           <input
             value={auditBatchJobInput}
             onChange={event => setAuditBatchJobInput(event.target.value)}
@@ -167,10 +193,10 @@ export default function OwnerAudit() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs c-heading">{record.account_id}</span>
-                    <span className="badge badge-off">{record.action}</span>
+                    <span className="badge badge-off">{actionToLabel(record.action)}</span>
                   </div>
                   <div className="mt-1 text-[.72rem] c-dim">
-                    {record.from_state || "unknown"} → {record.to_state}
+                    {stateToLabel(record.from_state || "unknown")} → {stateToLabel(record.to_state)}
                     {record.reason ? ` · ${record.reason}` : ""}
                   </div>
                   <div className="mt-1 text-[.72rem] c-dim">

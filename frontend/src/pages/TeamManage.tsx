@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Search, ShieldAlert, Trash2, UserPlus, X, Zap } from "lucide-react";
 
 import { useToast } from "../components/Toast";
+import { HSelect } from "../components/ui/HSelect";
+import { HSwitch } from "../components/ui/HSwitch";
 import { OwnerDashboard } from "../components/team-manage/OwnerDashboard";
 import { OwnerList } from "../components/team-manage/OwnerList";
 import { TeamManagePagination } from "../components/team-manage/TeamManagePagination";
@@ -80,6 +82,7 @@ function MemberQuotaInline({ quota, loading, onLoad }: { quota?: CodexQuota; loa
 }
 
 const INVITE_TASK_EMAIL_PREVIEW = 12;
+const BATCH_CHECK_CHUNK_SIZE = 20;
 
 export default function TeamManage() {
   const { toast } = useToast();
@@ -140,6 +143,7 @@ export default function TeamManage() {
 
   const [batchCheckLoading, setBatchCheckLoading] = useState(false);
   const [batchCheckProgress, setBatchCheckProgress] = useState({ done: 0, total: 0 });
+  const batchCheckCancelledRef = useRef(false);
   const [checkConcurrency, setCheckConcurrency] = useState(() =>
     parseInt(localStorage.getItem("team-check-concurrency") || "5", 10),
   );
@@ -167,17 +171,16 @@ export default function TeamManage() {
 
   const ownerQuery = useMemo(
     () => ({
-      page: ownerPage,
       page_size: TEAM_MANAGE_PAGE_SIZE,
       search: searchInput.trim() || undefined,
       state: stateFilter || undefined,
       has_slots: onlyWithSlots ? true : undefined,
       has_banned_member: onlyWithBannedMembers ? true : undefined,
     }),
-    [onlyWithBannedMembers, onlyWithSlots, ownerPage, searchInput, stateFilter],
+    [onlyWithBannedMembers, onlyWithSlots, searchInput, stateFilter],
   );
 
-  const loadOwners = useCallback(async (page = ownerPage) => {
+  const loadOwners = useCallback(async (page: number) => {
     setLoading(true);
     try {
       const data = await api.fetchTeamManageOwnersPage({
@@ -185,7 +188,6 @@ export default function TeamManage() {
         page,
       });
       setOwners(data.items || []);
-      setOwnerPage(data.page);
       setOwnerTotal(data.total);
       setOwnerTotalPages(data.total_pages);
     } catch (error) {
@@ -194,7 +196,7 @@ export default function TeamManage() {
     } finally {
       setLoading(false);
     }
-  }, [ownerPage, ownerQuery, toast]);
+  }, [ownerQuery, toast]);
 
   const loadDashboard = useCallback(async () => {
     setDashboardLoading(true);
@@ -336,6 +338,7 @@ export default function TeamManage() {
       const list = (data.members || []).filter(member => member.role !== "account-owner");
       setMembers(list);
       setMemberCounts(prev => ({ ...prev, [accountId]: list.length }));
+      void loadOwnerQuota(accountId);
       setTimeout(() => {
         for (const member of list) {
           if (member.email) void loadMemberQuota(member.email);
@@ -470,46 +473,108 @@ export default function TeamManage() {
   };
 
   const batchCheck = async () => {
-    const accountIds = selectionScope === "filtered"
-      ? []
-      : selectedOwnerIds.length > 0
+    let accountIds: string[];
+    if (selectionScope === "filtered") {
+      const allIds: string[] = [];
+      let page = 1;
+      const pageSize = 200;
+      setBatchCheckLoading(true);
+      setBatchCheckProgress({ done: 0, total: 0 });
+      try {
+        while (true) {
+          const data = await api.fetchTeamManageOwnersPage({
+            ...ownerQuery,
+            page,
+            page_size: pageSize,
+          });
+          for (const owner of data.items || []) {
+            allIds.push(owner.account_id);
+          }
+          if (page >= data.total_pages) break;
+          page += 1;
+        }
+      } catch (error) {
+        toast(`获取 Owner 列表失败: ${error}`, "error");
+        setBatchCheckLoading(false);
+        return;
+      }
+      accountIds = allIds;
+    } else {
+      accountIds = selectedOwnerIds.length > 0
         ? selectedOwnerIds
         : owners.map(owner => owner.account_id);
-    const targetTotal = selectionScope === "filtered" ? ownerTotal : accountIds.length;
-    if (targetTotal === 0) return;
-    setBatchCheckLoading(true);
-    setBatchCheckProgress({ done: 0, total: targetTotal });
-    try {
-      const res = await api.batchCheckTeamManageOwners({
-        account_ids: accountIds,
-        concurrency: checkConcurrency,
-        force_refresh: forceRefreshHealth,
-        prefer_cache: !forceRefreshHealth,
-        scope: selectionScope === "filtered" ? "filtered" : (selectedOwnerIds.length > 0 ? "manual" : "page"),
-        filters: selectionScope === "filtered" ? {
-          search: ownerQuery.search,
-          state: ownerQuery.state,
-          has_slots: ownerQuery.has_slots,
-          has_banned_member: ownerQuery.has_banned_member,
-        } : undefined,
-      });
-      const nextMap = { ...healthMap };
-      for (const record of res.results || []) {
-        nextMap[record.account_id] = record;
-        setMemberCounts(prev => ({ ...prev, [record.account_id]: record.members.length }));
-      }
-      setHealthMap(nextMap);
-      setBatchCheckProgress({ done: targetTotal, total: targetTotal });
-      void loadDashboard();
-      toast(
-        `检查完成: 命中缓存 ${res.cache_hits ?? 0}，重算 ${res.cache_misses ?? 0}`,
-        "success",
-      );
-    } catch (error) {
-      toast(`检查失败: ${error}`, "error");
-    } finally {
-      setBatchCheckLoading(false);
     }
+
+    if (accountIds.length === 0) {
+      setBatchCheckLoading(false);
+      return;
+    }
+
+    const chunks: string[][] = [];
+    for (let i = 0; i < accountIds.length; i += BATCH_CHECK_CHUNK_SIZE) {
+      chunks.push(accountIds.slice(i, i + BATCH_CHECK_CHUNK_SIZE));
+    }
+
+    setBatchCheckLoading(true);
+    batchCheckCancelledRef.current = false;
+    setBatchCheckProgress({ done: 0, total: accountIds.length });
+
+    let totalCacheHits = 0;
+    let totalCacheMisses = 0;
+    let doneCount = 0;
+    let failedChunks = 0;
+
+    for (let i = 0; i < chunks.length; i += 1) {
+      if (batchCheckCancelledRef.current) {
+        toast(`检查已取消，已完成 ${doneCount}/${accountIds.length}`, "success");
+        break;
+      }
+
+      try {
+        const res = await api.batchCheckTeamManageOwners({
+          account_ids: chunks[i],
+          concurrency: checkConcurrency,
+          force_refresh: forceRefreshHealth,
+          prefer_cache: !forceRefreshHealth,
+          scope: "manual",
+        });
+
+        setHealthMap(prev => {
+          const next = { ...prev };
+          for (const record of res.results || []) {
+            next[record.account_id] = record;
+          }
+          return next;
+        });
+
+        for (const record of res.results || []) {
+          setMemberCounts(prev => ({ ...prev, [record.account_id]: record.members.length }));
+        }
+
+        totalCacheHits += res.cache_hits ?? 0;
+        totalCacheMisses += res.cache_misses ?? 0;
+      } catch {
+        failedChunks += 1;
+      }
+
+      doneCount += chunks[i].length;
+      setBatchCheckProgress({ done: doneCount, total: accountIds.length });
+
+      if ((i + 1) % 5 === 0) {
+        void loadDashboard();
+      }
+    }
+
+    void loadDashboard();
+    if (!batchCheckCancelledRef.current) {
+      toast(
+        failedChunks > 0
+          ? `检查完成: 命中缓存 ${totalCacheHits}，重算 ${totalCacheMisses}，失败 ${failedChunks} 批`
+          : `检查完成: 命中缓存 ${totalCacheHits}，重算 ${totalCacheMisses}`,
+        failedChunks > 0 ? "error" : "success",
+      );
+    }
+    setBatchCheckLoading(false);
   };
 
   const toggleOwnerSelected = (accountId: string) => {
@@ -706,21 +771,33 @@ export default function TeamManage() {
                   className="field-input w-10 px-1 py-1 text-center text-xs"
                 />
               </div>
-              <label className="inline-flex items-center gap-2 text-xs c-dim">
-                <input
-                  type="checkbox"
-                  checked={forceRefreshHealth}
-                  onChange={event => setForceRefreshHealth(event.target.checked)}
-                />
-                强制刷新
-              </label>
-              <button type="button" onClick={batchCheck} disabled={batchCheckLoading || loading} className="btn btn-ghost flex items-center gap-1 py-1.5 text-xs">
+              <HSwitch
+                checked={forceRefreshHealth}
+                onChange={setForceRefreshHealth}
+                label="强制刷新"
+              />
+              <button
+                type="button"
+                onClick={batchCheck}
+                disabled={batchCheckLoading || loading}
+                className="btn btn-ghost flex items-center gap-1 py-1.5 text-xs"
+              >
                 {batchCheckLoading ? (
                   <><Loader2 size={12} className="animate-spin" /> 检查中 {batchCheckProgress.done}/{batchCheckProgress.total}</>
                 ) : (
                   <><Search size={12} /> 一键检查</>
                 )}
               </button>
+              {batchCheckLoading && (
+                <button
+                  type="button"
+                  onClick={() => { batchCheckCancelledRef.current = true; }}
+                  className="btn btn-ghost py-1.5 text-xs"
+                  style={{ color: "#f87171" }}
+                >
+                  取消
+                </button>
+              )}
               <button type="button" onClick={() => void loadOwners(1)} disabled={loading} className="btn btn-ghost py-1.5 text-xs">
                 {loading ? "加载中..." : "刷新"}
               </button>
@@ -734,21 +811,28 @@ export default function TeamManage() {
               className="field-input team-manage-filterbar__search"
               placeholder="搜索邮箱 / account_id"
             />
-            <select value={stateFilter} onChange={event => setStateFilter(event.target.value)} className="field-input team-manage-filterbar__select">
-              <option value="">全部状态</option>
-              <option value="active">活跃</option>
-              <option value="banned">封禁</option>
-              <option value="expired">过期</option>
-              <option value="quarantined">隔离</option>
-            </select>
-            <label className="inline-flex items-center gap-2 text-xs c-dim">
-              <input type="checkbox" checked={onlyWithSlots} onChange={event => setOnlyWithSlots(event.target.checked)} />
-              仅有空位
-            </label>
-            <label className="inline-flex items-center gap-2 text-xs c-dim">
-              <input type="checkbox" checked={onlyWithBannedMembers} onChange={event => setOnlyWithBannedMembers(event.target.checked)} />
-              仅有封禁成员
-            </label>
+            <HSelect
+              value={stateFilter}
+              onChange={setStateFilter}
+              className="team-manage-filterbar__select"
+              options={[
+                { value: "", label: "全部状态" },
+                { value: "active", label: "活跃" },
+                { value: "banned", label: "封禁" },
+                { value: "expired", label: "过期" },
+                { value: "quarantined", label: "隔离" },
+              ]}
+            />
+            <HSwitch
+              checked={onlyWithSlots}
+              onChange={setOnlyWithSlots}
+              label="仅有空位"
+            />
+            <HSwitch
+              checked={onlyWithBannedMembers}
+              onChange={setOnlyWithBannedMembers}
+              label="仅有封禁成员"
+            />
           </div>
           <OwnerDashboard summary={dashboardSummary} loading={dashboardLoading} />
           <div className="team-manage-bulkbar">
@@ -896,16 +980,16 @@ export default function TeamManage() {
               </span>
               {activeBatchJob && activeBatchJob.failed_count > 0 && activeBatchJob.job_type === "batch_invite" && (
                 <div className="team-manage-job-detail__toolbar">
-                  <select
+                  <HSelect
                     value={retryMode}
-                    onChange={event => setRetryMode(event.target.value as TeamManageBatchRetryMode)}
-                    className="input py-1.5 text-xs"
-                    style={{ minWidth: 140 }}
-                  >
-                    <option value="all">重试全部失败项</option>
-                    <option value="network">仅网络类错误</option>
-                    <option value="recoverable">仅可恢复错误</option>
-                  </select>
+                    onChange={value => setRetryMode(value as TeamManageBatchRetryMode)}
+                    style={{ minWidth: 160 }}
+                    options={[
+                      { value: "all", label: "重试全部失败项" },
+                      { value: "network", label: "仅网络类错误" },
+                      { value: "recoverable", label: "仅可恢复错误" },
+                    ]}
+                  />
                   <button
                     type="button"
                     onClick={() => void retryFailedBatchItems(activeBatchJob.job_id)}
@@ -1275,34 +1359,35 @@ export default function TeamManage() {
             </div>
 
             <div className="space-y-3">
-              <label className="block">
+              <div>
                 <span className="field-label">目标号池</span>
-                <select
+                <HSelect
                   value={batchInviteForm.s2a_team}
-                  onChange={event => setBatchInviteForm(prev => ({ ...prev, s2a_team: event.target.value }))}
-                  className="field-input w-full"
-                >
-                  <option value="">请选择号池</option>
-                  {s2aTeams.map(team => (
-                    <option key={team.name} value={team.name}>{team.name}</option>
-                  ))}
-                </select>
-              </label>
+                  onChange={value => setBatchInviteForm(prev => ({ ...prev, s2a_team: value }))}
+                  placeholder="请选择号池"
+                  className="w-full"
+                  options={[
+                    { value: "", label: "请选择号池" },
+                    ...s2aTeams.map(team => ({ value: team.name, label: team.name })),
+                  ]}
+                />
+              </div>
 
-              <label className="block">
+              <div>
                 <span className="field-label">邀请策略</span>
-                <select
+                <HSelect
                   value={batchInviteForm.strategy}
-                  onChange={event => setBatchInviteForm(prev => ({
+                  onChange={value => setBatchInviteForm(prev => ({
                     ...prev,
-                    strategy: event.target.value as "fill_to_limit" | "fixed_count",
+                    strategy: value as "fill_to_limit" | "fixed_count",
                   }))}
-                  className="field-input w-full"
-                >
-                  <option value="fill_to_limit">补满到上限</option>
-                  <option value="fixed_count">每个 Owner 固定数量</option>
-                </select>
-              </label>
+                  className="w-full"
+                  options={[
+                    { value: "fill_to_limit", label: "补满到上限" },
+                    { value: "fixed_count", label: "每个 Owner 固定数量" },
+                  ]}
+                />
+              </div>
 
               {batchInviteForm.strategy === "fixed_count" && (
                 <label className="block">
@@ -1321,23 +1406,27 @@ export default function TeamManage() {
                 </label>
               )}
 
-              <div className="grid gap-2 text-sm c-dim">
-                <label className="inline-flex items-center gap-2">
-                  <input type="checkbox" checked={batchInviteForm.skip_banned} onChange={event => setBatchInviteForm(prev => ({ ...prev, skip_banned: event.target.checked }))} />
-                  跳过封禁 Owner
-                </label>
-                <label className="inline-flex items-center gap-2">
-                  <input type="checkbox" checked={batchInviteForm.skip_expired} onChange={event => setBatchInviteForm(prev => ({ ...prev, skip_expired: event.target.checked }))} />
-                  跳过过期 Owner
-                </label>
-                <label className="inline-flex items-center gap-2">
-                  <input type="checkbox" checked={batchInviteForm.skip_quarantined} onChange={event => setBatchInviteForm(prev => ({ ...prev, skip_quarantined: event.target.checked }))} />
-                  跳过隔离 Owner
-                </label>
-                <label className="inline-flex items-center gap-2">
-                  <input type="checkbox" checked={batchInviteForm.only_with_slots} onChange={event => setBatchInviteForm(prev => ({ ...prev, only_with_slots: event.target.checked }))} />
-                  仅处理有空位的 Owner
-                </label>
+              <div className="grid gap-3">
+                <HSwitch
+                  checked={batchInviteForm.skip_banned}
+                  onChange={v => setBatchInviteForm(prev => ({ ...prev, skip_banned: v }))}
+                  label="跳过封禁 Owner"
+                />
+                <HSwitch
+                  checked={batchInviteForm.skip_expired}
+                  onChange={v => setBatchInviteForm(prev => ({ ...prev, skip_expired: v }))}
+                  label="跳过过期 Owner"
+                />
+                <HSwitch
+                  checked={batchInviteForm.skip_quarantined}
+                  onChange={v => setBatchInviteForm(prev => ({ ...prev, skip_quarantined: v }))}
+                  label="跳过隔离 Owner"
+                />
+                <HSwitch
+                  checked={batchInviteForm.only_with_slots}
+                  onChange={v => setBatchInviteForm(prev => ({ ...prev, only_with_slots: v }))}
+                  label="仅处理有空位的 Owner"
+                />
               </div>
             </div>
 
