@@ -481,41 +481,45 @@ export default function TeamManage() {
         <div className="team-modal" onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
           <div className="team-modal-card p-5" style={{ maxWidth: 920, width: '96vw', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
             {/* Header */}
-            <div className="flex items-center justify-between mb-3">
-              <div className="min-w-0">
-                <div className="section-title mb-0 truncate">
-                  成员管理 <span className="text-amber-400">{selectedOwner?.email || selected.substring(0, 12)}</span>
+            <div className="mb-3">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <div className="section-title mb-0 truncate">
+                    成员管理 <span className="text-amber-400">{selectedOwner?.email || selected.substring(0, 12)}</span>
+                  </div>
+                  <div className="text-xs font-mono c-dim mt-0.5">{selected}</div>
                 </div>
-                <div className="text-xs font-mono c-dim mt-0.5">{selected}</div>
+                <button onClick={() => setSelected(null)} className="btn btn-ghost p-1 shrink-0" title="关闭"><X size={14} /></button>
               </div>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {!membersLoading && availableSlots > 0 && (
-                  <button
-                    onClick={() => setShowInviteModal(true)}
-                    disabled={inviteLoading}
-                    className="btn text-[.65rem] py-1 px-2 flex items-center gap-1"
-                    style={{ background: 'linear-gradient(135deg, rgba(20,184,166,0.8), rgba(59,130,246,0.8))', color: '#fff' }}
-                  >
-                    {inviteLoading ? <Loader2 size={11} className="animate-spin" /> : <UserPlus size={11} />}
-                    邀请并入库 ({availableSlots})
-                  </button>
-                )}
-                {!membersLoading && members.length > 0 && (
-                  <button onClick={loadAllMemberQuotas} className="btn btn-ghost text-[.65rem] py-1 px-2 flex items-center gap-1">
-                    <Zap size={11} /> 刷新额度
-                  </button>
-                )}
-                {!membersLoading && kickableCount > 0 && (
-                  <button onClick={kickAll} disabled={kickAllLoading} className="btn btn-danger text-[.65rem] py-1 px-2 flex items-center gap-1">
-                    {kickAllLoading ? (
-                      <><Loader2 size={11} className="animate-spin" /> {kickAllProgress.done}/{kickAllProgress.total}</>
-                    ) : (
-                      <><Trash2 size={11} /> 全踢 ({kickableCount})</>
-                    )}
-                  </button>
-                )}
-                <button onClick={() => setSelected(null)} className="btn btn-ghost p-1" title="关闭"><X size={14} /></button>
-              </div>
+              {!membersLoading && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-2">
+                  {availableSlots > 0 && (
+                    <button
+                      onClick={() => setShowInviteModal(true)}
+                      disabled={inviteLoading}
+                      className="btn text-[.65rem] py-1 px-2 flex items-center gap-1"
+                      style={{ background: 'linear-gradient(135deg, rgba(20,184,166,0.8), rgba(59,130,246,0.8))', color: '#fff' }}
+                    >
+                      {inviteLoading ? <Loader2 size={11} className="animate-spin" /> : <UserPlus size={11} />}
+                      邀请并入库 ({availableSlots})
+                    </button>
+                  )}
+                  {members.length > 0 && (
+                    <button onClick={loadAllMemberQuotas} className="btn btn-ghost text-[.65rem] py-1 px-2 flex items-center gap-1">
+                      <Zap size={11} /> 刷新额度
+                    </button>
+                  )}
+                  {kickableCount > 0 && (
+                    <button onClick={kickAll} disabled={kickAllLoading} className="btn btn-danger text-[.65rem] py-1 px-2 flex items-center gap-1">
+                      {kickAllLoading ? (
+                        <><Loader2 size={11} className="animate-spin" /> {kickAllProgress.done}/{kickAllProgress.total}</>
+                      ) : (
+                        <><Trash2 size={11} /> 全踢 ({kickableCount})</>
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Owner quota + stats bar */}
