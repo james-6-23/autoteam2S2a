@@ -419,6 +419,12 @@ impl RunHistoryDb {
             CREATE INDEX IF NOT EXISTS idx_invite_emails_task
                 ON invite_emails(task_id);",
         )?;
+
+        // Migration: 为旧数据库补充 refresh_token 列
+        let _ = conn.execute_batch(
+            "ALTER TABLE invite_emails ADD COLUMN refresh_token TEXT;",
+        );
+
         Ok(())
     }
 
