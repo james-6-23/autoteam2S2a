@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '../components/Toast';
 import * as api from '../lib/api';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface TeamData {
   name: string; api_base: string; admin_key: string; concurrency: number; priority: number;
@@ -10,10 +11,13 @@ interface TeamData {
 interface GroupInfo { id: number; name: string; account_count: number; status: string; }
 interface TeamStats { available: number; active: number; rate_limited: number; free_available?: number; free_active?: number; free_rate_limited?: number; }
 
+const PAGE_SIZE = 10;
+
 export default function Teams() {
   const { toast } = useToast();
   const [teams, setTeams] = useState<TeamData[]>([]);
   const [stats, setStats] = useState<Record<string, TeamStats>>({});
+  const [page, setPage] = useState(1);
   const [addModal, setAddModal] = useState(false);
   const [editModal, setEditModal] = useState<string | null>(null);
   const [groupsModal, setGroupsModal] = useState<string | null>(null);
@@ -44,10 +48,7 @@ export default function Teams() {
     try {
       const data = await api.fetchConfig() as { teams: TeamData[] };
       setTeams(data.teams || []);
-      // Load stats for each team
-      for (const t of (data.teams || [])) {
-        loadTeamStats(t.name);
-      }
+      setPage(1);
     } catch {}
   }, []);
 
@@ -64,6 +65,13 @@ export default function Teams() {
   };
 
   useEffect(() => { loadTeams(); }, [loadTeams]);
+
+  // 仅加载当前页的 stats
+  useEffect(() => {
+    const pageTeams = teams.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    pageTeams.forEach(t => { if (!stats[t.name]) loadTeamStats(t.name); });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, teams]);
 
   // Escape handler
   useEffect(() => {
@@ -202,9 +210,13 @@ export default function Teams() {
 
         {teams.length === 0 ? (
           <p className="text-sm c-dim text-center py-6">暂无号池</p>
-        ) : (
+        ) : (() => {
+          const totalPages = Math.ceil(teams.length / PAGE_SIZE);
+          const pagedTeams = teams.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+          return (
+          <>
           <div className="team-grid">
-            {teams.map(t => {
+            {pagedTeams.map(t => {
               const s = stats[t.name];
               return (
                 <div key={t.name} className="row-item">
@@ -250,7 +262,29 @@ export default function Teams() {
               );
             })}
           </div>
-        )}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4 px-1">
+              <span className="text-xs c-dim">第 {page} / {totalPages} 页，共 {teams.length} 个号池</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage(p => p - 1)} disabled={page <= 1} className="btn btn-ghost p-1.5 disabled:opacity-30"><ChevronLeft size={14} /></button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter(p => p === 1 || p === totalPages || Math.abs(p - page) <= 1)
+                  .reduce<(number | string)[]>((acc, p, idx, arr) => {
+                    if (idx > 0 && (p as number) - (arr[idx - 1] as number) > 1) acc.push('…');
+                    acc.push(p);
+                    return acc;
+                  }, [])
+                  .map((p, i) => p === '…'
+                    ? <span key={`e${i}`} className="text-xs c-dim px-1">…</span>
+                    : <button key={p} onClick={() => setPage(p as number)} className={`text-xs px-2.5 py-1 rounded-lg font-mono transition-all ${page === p ? 'text-white' : 'btn btn-ghost'}`} style={page === p ? { background: 'linear-gradient(135deg, rgba(20,184,166,0.85), rgba(139,92,246,0.85))' } : {}}>{p}</button>
+                  )}
+                <button onClick={() => setPage(p => p + 1)} disabled={page >= totalPages} className="btn btn-ghost p-1.5 disabled:opacity-30"><ChevronRight size={14} /></button>
+              </div>
+            </div>
+          )}
+          </>
+          );
+        })()}
       </div>
 
       {/* ─── Add Modal ─── */}
