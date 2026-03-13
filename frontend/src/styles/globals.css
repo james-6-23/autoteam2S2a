@@ -1183,9 +1183,9 @@ html.light .log-line-error { color: #dc2626; }
   inset: 0;
   z-index: 200;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
-  padding: 6vh 24px 24px;
+  padding: 24px;
   background: var(--modal-backdrop);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
