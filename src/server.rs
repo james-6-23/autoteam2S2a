@@ -4301,6 +4301,52 @@ async fn fetch_codex_quota(access_token: &str) -> CodexQuota {
             };
         }
 
+        // 限流检测
+        if status_code == 429 {
+            // 尝试从响应头解析额度信息
+            let headers = resp.headers().clone();
+            let parse_header = |name: &str| -> Option<f64> {
+                headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<f64>().ok())
+            };
+
+            let primary_used = parse_header("x-codex-primary-used-percent");
+            let primary_reset = parse_header("x-codex-primary-reset-after-seconds");
+            let primary_window = parse_header("x-codex-primary-window-minutes");
+            let secondary_used = parse_header("x-codex-secondary-used-percent");
+            let secondary_reset = parse_header("x-codex-secondary-reset-after-seconds");
+            let secondary_window = parse_header("x-codex-secondary-window-minutes");
+
+            let five_hour = match (primary_used, primary_window) {
+                (Some(used), Some(win)) if win <= 360.0 => Some(QuotaWindow {
+                    used_percent: used,
+                    remaining_percent: 100.0 - used,
+                    reset_after_seconds: primary_reset.unwrap_or(0.0) as u64,
+                    window_minutes: win as u64,
+                }),
+                _ => None,
+            };
+            let seven_day = match (secondary_used, secondary_window) {
+                (Some(used), Some(win)) if win >= 10000.0 => Some(QuotaWindow {
+                    used_percent: used,
+                    remaining_percent: 100.0 - used,
+                    reset_after_seconds: secondary_reset.unwrap_or(0.0) as u64,
+                    window_minutes: win as u64,
+                }),
+                _ => None,
+            };
+
+            return CodexQuota {
+                five_hour,
+                seven_day,
+                status: "rate_limited".to_string(),
+                model_used: Some(model.to_string()),
+                error: Some(format!("HTTP 429 限流")),
+            };
+        }
+
         // 先克隆 headers 再消费 body
         let headers = resp.headers().clone();
 

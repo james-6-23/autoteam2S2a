@@ -70,6 +70,17 @@ function MemberQuotaInline({ quota, loading, onLoad }: { quota?: CodexQuota; loa
       </span>
     );
   }
+  if (quota.status === "rate_limited") {
+    return (
+      <div className="flex min-w-[120px] flex-col gap-0.5">
+        <span className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[.6rem] font-medium" style={{ background: "rgba(245,158,11,.12)", color: "#f59e0b" }}>
+          限流中
+        </span>
+        {quota.five_hour && <QuotaBar label="5h" window={quota.five_hour} />}
+        {quota.seven_day && <QuotaBar label="7d" window={quota.seven_day} />}
+      </div>
+    );
+  }
   if (quota.status === "error") {
     return <span className="text-[.6rem] c-dim" title={quota.error || ""}>错误</span>;
   }
@@ -107,6 +118,7 @@ export default function TeamManage() {
   const [kickLoading, setKickLoading] = useState<string | null>(null);
   const [kickAllLoading, setKickAllLoading] = useState(false);
   const [kickAllProgress, setKickAllProgress] = useState({ done: 0, total: 0 });
+  const [kickBannedLoading, setKickBannedLoading] = useState(false);
 
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
   const [ownerQuotas, setOwnerQuotas] = useState<Record<string, CodexQuota>>({});
@@ -368,8 +380,13 @@ export default function TeamManage() {
     try {
       const data = await api.fetchTeamManageMemberQuota(email);
       setMemberQuotas(prev => ({ ...prev, [email]: data }));
-    } catch {
-      toast(`${email} 额度查询失败`, "error");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isNotFound = msg.includes("404") || msg.includes("找不到");
+      setMemberQuotas(prev => ({
+        ...prev,
+        [email]: { status: "error", error: isNotFound ? "凭证未找到" : msg } as CodexQuota,
+      }));
     } finally {
       setMemberQuotaLoading(prev => ({ ...prev, [email]: false }));
     }
@@ -420,19 +437,64 @@ export default function TeamManage() {
     setKickAllProgress({ done: 0, total: toKick.length });
     let success = 0;
     let failed = 0;
-    for (const member of toKick) {
-      try {
-        await api.post(`/api/team-manage/owners/${encodeURIComponent(selected)}/members/${encodeURIComponent(member.user_id)}/kick`);
-        success += 1;
-        setMembers(prev => prev.filter(item => item.user_id !== member.user_id));
-      } catch {
-        failed += 1;
+    const concurrency = Math.min(toKick.length, 20);
+    let cursor = 0;
+    const kickOne = async () => {
+      while (cursor < toKick.length) {
+        const idx = cursor++;
+        const member = toKick[idx];
+        try {
+          await api.post(`/api/team-manage/owners/${encodeURIComponent(selected)}/members/${encodeURIComponent(member.user_id)}/kick`);
+          success += 1;
+          setMembers(prev => prev.filter(item => item.user_id !== member.user_id));
+        } catch {
+          failed += 1;
+        }
+        setKickAllProgress({ done: success + failed, total: toKick.length });
       }
-      setKickAllProgress({ done: success + failed, total: toKick.length });
-    }
+    };
+    await Promise.all(Array.from({ length: concurrency }, () => kickOne()));
     setKickAllLoading(false);
     setMemberCounts(prev => ({ ...prev, [selected]: Math.max(0, members.length - success) }));
     toast(`踢除完成: 成功 ${success}，失败 ${failed}`, failed > 0 ? "error" : "success");
+    void loadDashboard();
+  };
+
+  const kickBanned = async () => {
+    if (!selected) return;
+    const toKick = members.filter(member =>
+      member.role !== "owner"
+      && member.role !== "account-owner"
+      && member.email
+      && memberQuotas[member.email]?.status === "banned",
+    );
+    if (toKick.length === 0) {
+      toast("没有封禁成员可踢除", "error");
+      return;
+    }
+    if (!confirm(`确定要踢除全部 ${toKick.length} 个封禁成员？`)) return;
+    setKickBannedLoading(true);
+    let success = 0;
+    let failed = 0;
+    const concurrency = Math.min(toKick.length, 20);
+    let cursor = 0;
+    const kickOne = async () => {
+      while (cursor < toKick.length) {
+        const idx = cursor++;
+        const member = toKick[idx];
+        try {
+          await api.post(`/api/team-manage/owners/${encodeURIComponent(selected)}/members/${encodeURIComponent(member.user_id)}/kick`);
+          success += 1;
+          setMembers(prev => prev.filter(item => item.user_id !== member.user_id));
+        } catch {
+          failed += 1;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: concurrency }, () => kickOne()));
+    setKickBannedLoading(false);
+    setMemberCounts(prev => ({ ...prev, [selected]: Math.max(0, members.length - success) }));
+    toast(`踢除封禁成员完成: 成功 ${success}，失败 ${failed}`, failed > 0 ? "error" : "success");
     void loadDashboard();
   };
 
@@ -735,6 +797,12 @@ export default function TeamManage() {
 
   const selectedOwner = owners.find(owner => owner.account_id === selected);
   const kickableCount = members.filter(member => member.role !== "owner" && member.role !== "account-owner").length;
+  const kickBannedCount = members.filter(member =>
+    member.role !== "owner"
+    && member.role !== "account-owner"
+    && member.email
+    && memberQuotas[member.email]?.status === "banned",
+  ).length;
   const availableSlots = Math.max(0, TEAM_MANAGE_MAX_MEMBERS - members.length);
   const selectedOwnerQuota = selected ? ownerQuotas[selected] : undefined;
   const isSelectedOwnerBanned = Boolean(
@@ -1157,8 +1225,17 @@ export default function TeamManage() {
                       <Zap size={11} /> 刷新额度
                     </button>
                   )}
+                  {kickBannedCount > 0 && (
+                    <button type="button" onClick={() => void kickBanned()} disabled={kickBannedLoading || kickAllLoading} className="btn btn-danger flex items-center gap-1 px-2 py-1 text-[.65rem]">
+                      {kickBannedLoading ? (
+                        <><Loader2 size={11} className="animate-spin" /> 踢除中...</>
+                      ) : (
+                        <><ShieldAlert size={11} /> 踢除封禁 ({kickBannedCount})</>
+                      )}
+                    </button>
+                  )}
                   {kickableCount > 0 && (
-                    <button type="button" onClick={() => void kickAll()} disabled={kickAllLoading} className="btn btn-danger flex items-center gap-1 px-2 py-1 text-[.65rem]">
+                    <button type="button" onClick={() => void kickAll()} disabled={kickAllLoading || kickBannedLoading} className="btn btn-danger flex items-center gap-1 px-2 py-1 text-[.65rem]">
                       {kickAllLoading ? (
                         <><Loader2 size={11} className="animate-spin" /> {kickAllProgress.done}/{kickAllProgress.total}</>
                       ) : (
