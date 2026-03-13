@@ -4015,6 +4015,11 @@ async fn team_manage_batch_refresh_members_handler(
         return Err(error_json(StatusCode::BAD_REQUEST, "account_ids 不能为空"));
     }
     let concurrency = req.concurrency.clamp(1, 20);
+    crate::log_broadcast::broadcast_log(&format!(
+        "[Team管理] 批量刷新成员: {} 个 owner, 并发={}",
+        account_ids.len(),
+        concurrency
+    ));
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let mut handles = Vec::new();
     for account_id in account_ids.clone() {
@@ -4035,6 +4040,10 @@ async fn team_manage_batch_refresh_members_handler(
         match handle.await {
             Ok(Ok((account_id, member_count))) => {
                 success += 1;
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[Team管理] 刷新成员成功: {} ({}人)",
+                    account_id, member_count
+                ));
                 refreshed.push(serde_json::json!({
                     "account_id": account_id,
                     "member_count": member_count,
@@ -4042,6 +4051,10 @@ async fn team_manage_batch_refresh_members_handler(
             }
             Ok(Err((account_id, error))) => {
                 failed += 1;
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[Team管理][ERR] 刷新成员失败: {} - {}",
+                    account_id, error
+                ));
                 refreshed.push(serde_json::json!({
                     "account_id": account_id,
                     "error": error,
@@ -4052,6 +4065,10 @@ async fn team_manage_batch_refresh_members_handler(
             }
         }
     }
+    crate::log_broadcast::broadcast_log(&format!(
+        "[Team管理] 批量刷新完成: 成功 {}, 失败 {}",
+        success, failed
+    ));
     Ok(Json(BatchRefreshMembersResponse {
         total: account_ids.len(),
         success,
@@ -4075,6 +4092,11 @@ async fn team_manage_batch_update_owner_state(
     if account_ids.is_empty() {
         return Err(error_json(StatusCode::BAD_REQUEST, "account_ids 不能为空"));
     }
+    crate::log_broadcast::broadcast_log(&format!(
+        "[Team管理] 批量更新状态: {} 个 owner → {}",
+        account_ids.len(),
+        next_state
+    ));
     let previous_states = state
         .run_history_db
         .get_owner_registry_states_by_account_ids(&account_ids)
@@ -4106,6 +4128,10 @@ async fn team_manage_batch_update_owner_state(
             })
             .collect(),
     );
+    crate::log_broadcast::broadcast_log(&format!(
+        "[Team管理] 批量更新完成: {} 个 owner 已更新为 {}",
+        affected, next_state
+    ));
     Ok(TeamManageBatchOwnerStateResponse {
         affected,
         state: next_state.to_string(),
@@ -5123,6 +5149,12 @@ async fn team_manage_batch_invite_handler(
             .map(team_manage_cached_results_map)
             .unwrap_or_default();
 
+        crate::log_broadcast::broadcast_log(&format!(
+            "[Team管理] 批量邀请任务开始: job={}, {} 个 owner",
+            job_id_clone,
+            req_for_task.account_ids.len()
+        ));
+
         for account_id in req_for_task.account_ids {
             if req_for_task.skip_banned
                 && cached_map
@@ -5130,6 +5162,7 @@ async fn team_manage_batch_invite_handler(
                     .map(|cached| cached.owner_status == "banned")
                     .unwrap_or(false)
             {
+                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过封禁 owner: {}", account_id));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -5144,6 +5177,7 @@ async fn team_manage_batch_invite_handler(
                 continue;
             }
             if req_for_task.skip_expired || req_for_task.skip_quarantined {
+                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过过期/隔离 owner: {}", account_id));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -5185,6 +5219,7 @@ async fn team_manage_batch_invite_handler(
             };
 
             if req_for_task.only_with_slots && invite_count == 0 {
+                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过无空位 owner: {}", account_id));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -5200,6 +5235,7 @@ async fn team_manage_batch_invite_handler(
             }
 
             if invite_count == 0 {
+                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过未生成邀请: {}", account_id));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -5225,6 +5261,10 @@ async fn team_manage_batch_invite_handler(
             .await
             {
                 Ok(created) => {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[Team管理][OK] 邀请成功: {} (task={})",
+                        account_id, created.task_id
+                    ));
                     team_manage_update_batch_job_item(
                         &state_clone,
                         &job_id_clone,
@@ -5238,6 +5278,12 @@ async fn team_manage_batch_invite_handler(
                     .await;
                 }
                 Err((status, body)) => {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[Team管理][ERR] 邀请失败: {} - {} {}",
+                        account_id,
+                        status.as_u16(),
+                        body.0.error
+                    ));
                     team_manage_update_batch_job_item(
                         &state_clone,
                         &job_id_clone,
@@ -5252,6 +5298,7 @@ async fn team_manage_batch_invite_handler(
                 }
             }
         }
+        crate::log_broadcast::broadcast_log(&format!("[Team管理] 批量邀请任务完成: job={}", job_id_clone));
     });
 
     Ok((
@@ -5790,6 +5837,11 @@ async fn team_manage_batch_check_handler(
         account_ids.len(),
         concurrency
     );
+    crate::log_broadcast::broadcast_log(&format!(
+        "[Team管理] 批量检查: {} 个 owner, 并发={}",
+        account_ids.len(),
+        concurrency
+    ));
 
     let _ = state
         .run_history_db
@@ -5914,6 +5966,12 @@ async fn team_manage_batch_check_handler(
     }
 
     tracing::info!("[TeamManage] 批量检查完成: {} 个结果", results.len());
+    crate::log_broadcast::broadcast_log(&format!(
+        "[Team管理] 批量检查完成: {} 个结果, 缓存命中 {}, 重算 {}",
+        results.len(),
+        cache_hits,
+        cache_misses
+    ));
     Ok(Json(BatchCheckResponse {
         results,
         cache_hits,

@@ -672,6 +672,12 @@ export default function TeamManage() {
   const kickableCount = members.filter(member => member.role !== "owner" && member.role !== "account-owner").length;
   const availableSlots = Math.max(0, TEAM_MANAGE_MAX_MEMBERS - members.length);
   const selectedOwnerQuota = selected ? ownerQuotas[selected] : undefined;
+  const isSelectedOwnerBanned = Boolean(
+    selected && (
+      selectedOwner?.state === "banned"
+      || healthMap[selected]?.owner_status === "banned"
+    ),
+  );
   const allPageSelected = selectionScope === "filtered"
     || (owners.length > 0 && owners.every(owner => selectedOwnerIds.includes(owner.account_id)));
 
@@ -1048,7 +1054,7 @@ export default function TeamManage() {
                   <X size={14} />
                 </button>
               </div>
-              {!membersLoading && (
+              {!membersLoading && !isSelectedOwnerBanned && (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {availableSlots > 0 && (
                     <button
@@ -1080,163 +1086,176 @@ export default function TeamManage() {
               )}
             </div>
 
-            <div className="mb-3 flex flex-wrap items-center gap-4 border-b pb-3 text-xs" style={{ borderColor: "var(--border)" }}>
-              {!membersLoading && (
-                <>
-                  <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 个成员</span>
-                  <span className="c-dim">可踢除 <span className="font-mono text-red-400">{kickableCount}</span></span>
-                  <span className="c-dim">可邀请 <span className="font-mono" style={{ color: availableSlots > 0 ? "#2dd4bf" : "#f87171" }}>{availableSlots}</span></span>
-                </>
-              )}
-              <span className="h-3 w-px" style={{ background: "var(--border)" }} />
-              <span className="c-dim">Owner 额度:</span>
-              {selectedOwnerQuota ? (
-                selectedOwnerQuota.status === "banned" ? (
-                  <span className="flex items-center gap-1 font-medium" style={{ color: "#f87171" }}>
-                    <ShieldAlert size={12} /> 封禁
-                  </span>
-                ) : selectedOwnerQuota.status === "error" ? (
-                  <span className="c-dim" title={selectedOwnerQuota.error || ""}>查询失败</span>
-                ) : (
-                  <>
-                    {selectedOwnerQuota.five_hour && (
-                      <span style={{ color: quotaColor(selectedOwnerQuota.five_hour.remaining_percent) }}>
-                        5h <span className="font-mono font-medium">{Math.round(selectedOwnerQuota.five_hour.remaining_percent)}%</span>
-                        <span className="c-dim ml-1">({fmtReset(selectedOwnerQuota.five_hour.reset_after_seconds)})</span>
-                      </span>
-                    )}
-                    {selectedOwnerQuota.seven_day && (
-                      <span style={{ color: quotaColor(selectedOwnerQuota.seven_day.remaining_percent) }}>
-                        7d <span className="font-mono font-medium">{Math.round(selectedOwnerQuota.seven_day.remaining_percent)}%</span>
-                        <span className="c-dim ml-1">({fmtReset(selectedOwnerQuota.seven_day.reset_after_seconds)})</span>
-                      </span>
-                    )}
-                  </>
-                )
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => { if (selected) void loadOwnerQuota(selected); }}
-                  disabled={selected ? ownerQuotaLoading[selected] || false : true}
-                  className="btn btn-ghost flex items-center gap-1 px-2 py-0.5 text-[.65rem]"
-                >
-                  {selected && ownerQuotaLoading[selected] ? <Loader2 size={11} className="animate-spin" /> : <Zap size={11} />} 查询
-                </button>
-              )}
-            </div>
-
-            <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
-              {membersLoading ? (
-                <div className="flex items-center justify-center gap-2 py-12 c-dim">
-                  <Loader2 size={16} className="animate-spin" /> 加载中...
-                </div>
-              ) : members.length === 0 ? (
-                <div className="py-12 text-center c-dim">无成员数据</div>
-              ) : (
-                <div className="space-y-1.5">
-                  {pagedMembers.map(member => {
-                    const quota = member.email ? memberQuotas[member.email] : undefined;
-                    const quotaLoading = member.email ? memberQuotaLoading[member.email] : false;
-                    return (
-                      <div key={member.user_id} className="card-inner flex items-center gap-3 px-4 py-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="truncate text-sm font-medium c-heading">{member.name || member.email || "未知"}</span>
-                            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[.6rem] font-medium ${member.role === "owner" ? "text-amber-400" : "c-dim"}`} style={{ background: "var(--ghost)" }}>
-                              {member.role}
-                            </span>
-                          </div>
-                          <div className="mt-0.5 flex items-center gap-2 text-[.65rem] c-dim">
-                            {member.email && <span className="truncate font-mono">{member.email}</span>}
-                            {member.created_at && <span className="shrink-0">{new Date(member.created_at).toLocaleDateString("zh-CN")}</span>}
-                          </div>
-                        </div>
-
-                        <div className="shrink-0">
-                          <MemberQuotaInline
-                            quota={quota}
-                            loading={quotaLoading}
-                            onLoad={() => { if (member.email) void loadMemberQuota(member.email); }}
-                          />
-                        </div>
-
-                        <div className="shrink-0">
-                          {member.role !== "owner" && member.role !== "account-owner" && (
-                            <button
-                              type="button"
-                              onClick={() => void kickMember(member.user_id)}
-                              disabled={kickLoading === member.user_id || kickAllLoading}
-                              className="btn btn-danger px-2.5 py-1 text-xs"
-                            >
-                              {kickLoading === member.user_id ? "..." : "踢除"}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <TeamManagePagination
-              page={memberPage}
-              totalPages={Math.max(1, Math.ceil(members.length / TEAM_MANAGE_PAGE_SIZE))}
-              totalItems={members.length}
-              onChange={page => setMemberPage(page)}
-            />
-
-            {showInviteModal && (
+            {isSelectedOwnerBanned ? (
               <div
-                className="absolute inset-0 flex items-center justify-center rounded-2xl"
-                style={{ background: "rgba(0,0,0,.6)", zIndex: 50 }}
-                onClick={() => !inviteLoading && setShowInviteModal(false)}
+                className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border px-4 py-12 text-center"
+                style={{ borderColor: "rgba(248,113,113,.35)", background: "rgba(248,113,113,.08)", color: "#fca5a5" }}
               >
-                <div
-                  className="rounded-xl p-4"
-                  style={{ background: "var(--card)", border: "1px solid var(--border)", minWidth: 320, maxWidth: 420 }}
-                  onClick={event => event.stopPropagation()}
-                >
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="text-sm font-medium c-heading">选择号池</span>
-                    <button type="button" onClick={() => setShowInviteModal(false)} disabled={inviteLoading} className="btn btn-ghost p-1">
-                      <X size={14} />
-                    </button>
-                  </div>
-                  <p className="mb-3 text-xs c-dim">将为该 Owner 邀请 <span className="font-mono text-teal-400">{availableSlots}</span> 个成员并入库到选定号池</p>
-                  <div className="mb-3 max-h-48 space-y-1.5 overflow-y-auto">
-                    {s2aTeams.length === 0 ? (
-                      <div className="py-4 text-center text-xs c-dim">暂无号池配置</div>
-                    ) : s2aTeams.map(team => (
-                      <div
-                        key={team.name}
-                        className="cursor-pointer rounded-lg px-3 py-2 transition-all"
-                        style={{
-                          background: selectedS2aTeam === team.name ? "rgba(20,184,166,.15)" : "var(--ghost)",
-                          border: `1px solid ${selectedS2aTeam === team.name ? "rgba(20,184,166,.5)" : "var(--border)"}`,
-                        }}
-                        onClick={() => setSelectedS2aTeam(team.name)}
-                      >
-                        <div className="text-sm font-medium c-heading">{team.name}</div>
-                        <div className="truncate text-[.6rem] font-mono c-dim">{team.api_base}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void inviteAndPush(selectedS2aTeam)}
-                    disabled={!selectedS2aTeam || inviteLoading}
-                    className="w-full rounded-lg py-2 text-sm font-medium transition-all disabled:opacity-40"
-                    style={{ background: "linear-gradient(135deg, rgba(20,184,166,0.85), rgba(59,130,246,0.85))", color: "#fff" }}
-                  >
-                    {inviteLoading ? (
-                      <span className="flex items-center justify-center gap-1.5"><Loader2 size={14} className="animate-spin" /> 邀请中...</span>
-                    ) : (
-                      `确认邀请 ${availableSlots} 个到 ${selectedS2aTeam || "..."}`
-                    )}
-                  </button>
-                </div>
+                <ShieldAlert size={20} />
+                <div className="text-sm font-semibold">Owner 封禁</div>
+                <div className="text-xs" style={{ color: "#fda4af" }}>该 Owner 已被封禁，无法进行成员管理操作</div>
               </div>
+            ) : (
+              <>
+                <div className="mb-3 flex flex-wrap items-center gap-4 border-b pb-3 text-xs" style={{ borderColor: "var(--border)" }}>
+                  {!membersLoading && (
+                    <>
+                      <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 个成员</span>
+                      <span className="c-dim">可踢除 <span className="font-mono text-red-400">{kickableCount}</span></span>
+                      <span className="c-dim">可邀请 <span className="font-mono" style={{ color: availableSlots > 0 ? "#2dd4bf" : "#f87171" }}>{availableSlots}</span></span>
+                    </>
+                  )}
+                  <span className="h-3 w-px" style={{ background: "var(--border)" }} />
+                  <span className="c-dim">Owner 额度:</span>
+                  {selectedOwnerQuota ? (
+                    selectedOwnerQuota.status === "banned" ? (
+                      <span className="flex items-center gap-1 font-medium" style={{ color: "#f87171" }}>
+                        <ShieldAlert size={12} /> 封禁
+                      </span>
+                    ) : selectedOwnerQuota.status === "error" ? (
+                      <span className="c-dim" title={selectedOwnerQuota.error || ""}>查询失败</span>
+                    ) : (
+                      <>
+                        {selectedOwnerQuota.five_hour && (
+                          <span style={{ color: quotaColor(selectedOwnerQuota.five_hour.remaining_percent) }}>
+                            5h <span className="font-mono font-medium">{Math.round(selectedOwnerQuota.five_hour.remaining_percent)}%</span>
+                            <span className="c-dim ml-1">({fmtReset(selectedOwnerQuota.five_hour.reset_after_seconds)})</span>
+                          </span>
+                        )}
+                        {selectedOwnerQuota.seven_day && (
+                          <span style={{ color: quotaColor(selectedOwnerQuota.seven_day.remaining_percent) }}>
+                            7d <span className="font-mono font-medium">{Math.round(selectedOwnerQuota.seven_day.remaining_percent)}%</span>
+                            <span className="c-dim ml-1">({fmtReset(selectedOwnerQuota.seven_day.reset_after_seconds)})</span>
+                          </span>
+                        )}
+                      </>
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { if (selected) void loadOwnerQuota(selected); }}
+                      disabled={selected ? ownerQuotaLoading[selected] || false : true}
+                      className="btn btn-ghost flex items-center gap-1 px-2 py-0.5 text-[.65rem]"
+                    >
+                      {selected && ownerQuotaLoading[selected] ? <Loader2 size={11} className="animate-spin" /> : <Zap size={11} />} 查询
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
+                  {membersLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-12 c-dim">
+                      <Loader2 size={16} className="animate-spin" /> 加载中...
+                    </div>
+                  ) : members.length === 0 ? (
+                    <div className="py-12 text-center c-dim">无成员数据</div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {pagedMembers.map(member => {
+                        const quota = member.email ? memberQuotas[member.email] : undefined;
+                        const quotaLoading = member.email ? memberQuotaLoading[member.email] : false;
+                        return (
+                          <div key={member.user_id} className="card-inner flex items-center gap-3 px-4 py-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="truncate text-sm font-medium c-heading">{member.name || member.email || "未知"}</span>
+                                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[.6rem] font-medium ${member.role === "owner" ? "text-amber-400" : "c-dim"}`} style={{ background: "var(--ghost)" }}>
+                                  {member.role}
+                                </span>
+                              </div>
+                              <div className="mt-0.5 flex items-center gap-2 text-[.65rem] c-dim">
+                                {member.email && <span className="truncate font-mono">{member.email}</span>}
+                                {member.created_at && <span className="shrink-0">{new Date(member.created_at).toLocaleDateString("zh-CN")}</span>}
+                              </div>
+                            </div>
+
+                            <div className="shrink-0">
+                              <MemberQuotaInline
+                                quota={quota}
+                                loading={quotaLoading}
+                                onLoad={() => { if (member.email) void loadMemberQuota(member.email); }}
+                              />
+                            </div>
+
+                            <div className="shrink-0">
+                              {member.role !== "owner" && member.role !== "account-owner" && (
+                                <button
+                                  type="button"
+                                  onClick={() => void kickMember(member.user_id)}
+                                  disabled={kickLoading === member.user_id || kickAllLoading}
+                                  className="btn btn-danger px-2.5 py-1 text-xs"
+                                >
+                                  {kickLoading === member.user_id ? "..." : "踢除"}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <TeamManagePagination
+                  page={memberPage}
+                  totalPages={Math.max(1, Math.ceil(members.length / TEAM_MANAGE_PAGE_SIZE))}
+                  totalItems={members.length}
+                  onChange={page => setMemberPage(page)}
+                />
+
+                {showInviteModal && (
+                  <div
+                    className="absolute inset-0 flex items-center justify-center rounded-2xl"
+                    style={{ background: "rgba(0,0,0,.6)", zIndex: 50 }}
+                    onClick={() => !inviteLoading && setShowInviteModal(false)}
+                  >
+                    <div
+                      className="rounded-xl p-4"
+                      style={{ background: "var(--card)", border: "1px solid var(--border)", minWidth: 320, maxWidth: 420 }}
+                      onClick={event => event.stopPropagation()}
+                    >
+                      <div className="mb-3 flex items-center justify-between">
+                        <span className="text-sm font-medium c-heading">选择号池</span>
+                        <button type="button" onClick={() => setShowInviteModal(false)} disabled={inviteLoading} className="btn btn-ghost p-1">
+                          <X size={14} />
+                        </button>
+                      </div>
+                      <p className="mb-3 text-xs c-dim">将为该 Owner 邀请 <span className="font-mono text-teal-400">{availableSlots}</span> 个成员并入库到选定号池</p>
+                      <div className="mb-3 max-h-48 space-y-1.5 overflow-y-auto">
+                        {s2aTeams.length === 0 ? (
+                          <div className="py-4 text-center text-xs c-dim">暂无号池配置</div>
+                        ) : s2aTeams.map(team => (
+                          <div
+                            key={team.name}
+                            className="cursor-pointer rounded-lg px-3 py-2 transition-all"
+                            style={{
+                              background: selectedS2aTeam === team.name ? "rgba(20,184,166,.15)" : "var(--ghost)",
+                              border: `1px solid ${selectedS2aTeam === team.name ? "rgba(20,184,166,.5)" : "var(--border)"}`,
+                            }}
+                            onClick={() => setSelectedS2aTeam(team.name)}
+                          >
+                            <div className="text-sm font-medium c-heading">{team.name}</div>
+                            <div className="truncate text-[.6rem] font-mono c-dim">{team.api_base}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void inviteAndPush(selectedS2aTeam)}
+                        disabled={!selectedS2aTeam || inviteLoading}
+                        className="w-full rounded-lg py-2 text-sm font-medium transition-all disabled:opacity-40"
+                        style={{ background: "linear-gradient(135deg, rgba(20,184,166,0.85), rgba(59,130,246,0.85))", color: "#fff" }}
+                      >
+                        {inviteLoading ? (
+                          <span className="flex items-center justify-center gap-1.5"><Loader2 size={14} className="animate-spin" /> 邀请中...</span>
+                        ) : (
+                          `确认邀请 ${availableSlots} 个到 ${selectedS2aTeam || "..."}`
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
