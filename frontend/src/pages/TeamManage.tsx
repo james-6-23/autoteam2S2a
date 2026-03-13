@@ -165,9 +165,16 @@ export default function TeamManage() {
     setMemberQuotas({}); setMemberQuotaLoading({});
     try {
       const data = await api.get<{ members: TeamMember[] }>(`/api/team-manage/owners/${encodeURIComponent(accountId)}/members`);
-      const list = data.members || [];
+      const raw = data.members || [];
+      const list = raw.filter(m => m.role !== 'account-owner');
       setMembers(list);
       setMemberCounts(prev => ({ ...prev, [accountId]: list.length }));
+      // 自动查询所有成员额度
+      setTimeout(() => {
+        for (const m of list) {
+          if (m.email) loadMemberQuota(m.email);
+        }
+      }, 100);
     } catch { toast('获取成员失败', 'error'); }
     finally { setMembersLoading(false); }
   };
@@ -218,9 +225,9 @@ export default function TeamManage() {
 
   const kickAll = async () => {
     if (!selected) return;
-    const toKick = members.filter(m => m.role !== 'owner');
+    const toKick = members.filter(m => m.role !== 'owner' && m.role !== 'account-owner');
     if (toKick.length === 0) { toast('没有可踢除的成员', 'error'); return; }
-    if (!confirm(`确定要踢除全部 ${toKick.length} 个非 Owner 成员？`)) return;
+    if (!confirm(`确定要踢除全部 ${toKick.length} 个成员？`)) return;
 
     setKickAllLoading(true);
     setKickAllProgress({ done: 0, total: toKick.length });
@@ -252,7 +259,7 @@ export default function TeamManage() {
   };
 
   const selectedOwner = owners.find(o => o.account_id === selected);
-  const kickableCount = members.filter(m => m.role !== 'owner').length;
+  const kickableCount = members.filter(m => m.role !== 'owner' && m.role !== 'account-owner').length;
   const selectedOwnerQuota = selected ? ownerQuotas[selected] : undefined;
 
   return (
@@ -335,22 +342,22 @@ export default function TeamManage() {
                 </div>
                 <div className="text-xs font-mono c-dim mt-0.5">{selected}</div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 shrink-0">
                 {!membersLoading && members.length > 0 && (
-                  <button onClick={loadAllMemberQuotas} className="btn btn-ghost text-xs py-1.5 px-3 flex items-center gap-1.5">
-                    <Zap size={13} /> 全部查额度
+                  <button onClick={loadAllMemberQuotas} className="btn btn-ghost text-[.65rem] py-1 px-2 flex items-center gap-1">
+                    <Zap size={11} /> 刷新额度
                   </button>
                 )}
                 {!membersLoading && kickableCount > 0 && (
-                  <button onClick={kickAll} disabled={kickAllLoading} className="btn btn-danger text-xs py-1.5 px-3 flex items-center gap-1.5">
+                  <button onClick={kickAll} disabled={kickAllLoading} className="btn btn-danger text-[.65rem] py-1 px-2 flex items-center gap-1">
                     {kickAllLoading ? (
-                      <><Loader2 size={13} className="animate-spin" /> 踢除中 {kickAllProgress.done}/{kickAllProgress.total}</>
+                      <><Loader2 size={11} className="animate-spin" /> {kickAllProgress.done}/{kickAllProgress.total}</>
                     ) : (
-                      <><Trash2 size={13} /> 一键全踢 ({kickableCount})</>
+                      <><Trash2 size={11} /> 全踢 ({kickableCount})</>
                     )}
                   </button>
                 )}
-                <button onClick={() => setSelected(null)} className="btn btn-ghost p-1.5" title="关闭"><X size={16} /></button>
+                <button onClick={() => setSelected(null)} className="btn btn-ghost p-1" title="关闭"><X size={14} /></button>
               </div>
             </div>
 
@@ -358,9 +365,8 @@ export default function TeamManage() {
             <div className="flex items-center gap-4 mb-3 flex-wrap text-xs pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
               {!membersLoading && (
                 <>
-                  <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 成员</span>
-                  <span className="c-dim">Owner <span className="font-mono text-amber-400">{members.filter(m => m.role === 'owner').length}</span></span>
-                  <span className="c-dim">可踢 <span className="font-mono text-red-400">{kickableCount}</span></span>
+                  <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 个成员</span>
+                  <span className="c-dim">可踢除 <span className="font-mono text-red-400">{kickableCount}</span></span>
                 </>
               )}
               <span className="w-px h-3" style={{ background: 'var(--border)' }} />
@@ -433,11 +439,11 @@ export default function TeamManage() {
 
                         {/* 右侧: 操作 */}
                         <div className="shrink-0">
-                          {m.role !== 'owner' && (
+                          {m.role !== 'owner' && m.role !== 'account-owner' && (
                             <button
                               onClick={() => kickMember(m.user_id)}
                               disabled={kickLoading === m.user_id || kickAllLoading}
-                              className="btn btn-danger text-xs py-1 px-3"
+                              className="btn btn-danger text-xs py-1 px-2.5"
                             >
                               {kickLoading === m.user_id ? '...' : '踢除'}
                             </button>
