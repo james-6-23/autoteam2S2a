@@ -405,7 +405,7 @@ export default function TeamManage() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       {/* 左侧: 头像 + 邮箱 */}
-                      <div className="flex items-center gap-3 min-w-0 shrink-0" style={{ maxWidth: '30%' }}>
+                      <div className="flex items-center gap-3 min-w-0 shrink-0" style={{ width: 200 }}>
                         <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
                           <User size={16} className="c-dim" />
                         </div>
