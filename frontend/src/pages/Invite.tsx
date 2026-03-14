@@ -51,7 +51,7 @@ export default function Invite() {
   const [uploadId, setUploadId] = useState('');
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [tasks, setTasks] = useState<InviteTaskItem[]>([]);
-  const [invCount, setInvCount] = useState(6);
+  const [invCount, setInvCount] = useState(4);
   const [pushS2a, setPushS2a] = useState(true);
   const [teams, setTeams] = useState<TeamItem[]>([]);
   const [dist, setDist] = useState<{ team: string; percent: number }[]>([]);
