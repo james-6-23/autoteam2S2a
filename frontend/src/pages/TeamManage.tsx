@@ -798,58 +798,21 @@ export default function TeamManage() {
       return;
     }
 
-    let accountIds: string[];
-    if (selectionScope === "filtered") {
-      const allIds: string[] = [];
-      let page = 1;
-      try {
-        while (true) {
-          const data = await api.fetchTeamManageOwnersPage({ ...ownerQuery, page, page_size: 200 });
-          for (const owner of data.items || []) allIds.push(owner.account_id);
-          if (page >= data.total_pages) break;
-          page += 1;
-        }
-      } catch (error) {
-        toast(`获取 Owner 列表失败: ${error}`, "error");
-        return;
-      }
-      accountIds = allIds;
-    } else {
-      accountIds = selectedOwnerIds.length > 0
-        ? selectedOwnerIds
-        : owners.map(owner => owner.account_id);
-    }
-
-    if (accountIds.length === 0) {
-      toast("没有可补位的 Owner", "error");
-      return;
-    }
-
-    const totalWeight = activePools.reduce((sum, p) => sum + p.weight, 0);
-    let offset = 0;
-    const poolAssignments: Array<{ team: string; ids: string[] }> = [];
-    for (let i = 0; i < activePools.length; i++) {
-      const pool = activePools[i];
-      const count = i === activePools.length - 1
-        ? accountIds.length - offset
-        : Math.round((pool.weight / totalWeight) * accountIds.length);
-      poolAssignments.push({ team: pool.team, ids: accountIds.slice(offset, offset + count) });
-      offset += count;
-    }
-
     setFillSlotsLoading(true);
     let totalAccepted = 0;
     let totalSkipped = 0;
     let failedPools = 0;
 
-    for (const assignment of poolAssignments) {
-      if (assignment.ids.length === 0) continue;
+    // 按权重比例拆分为多个号池任务，每个号池独立调用后端
+    // 后端通过 scope="filtered" + filters.has_slots=true 自动筛选有空位的 owner
+    for (const pool of activePools) {
       try {
         const result = await api.batchInviteTeamManageOwners({
-          account_ids: assignment.ids,
-          s2a_team: assignment.team,
+          account_ids: [],
+          s2a_team: pool.team,
           strategy: "fill_to_limit",
-          scope: "manual",
+          scope: "filtered",
+          filters: { has_slots: true },
           skip_banned: true,
           only_with_slots: true,
         });
@@ -962,6 +925,7 @@ export default function TeamManage() {
                 { value: "banned", label: "封禁" },
                 { value: "expired", label: "过期" },
                 { value: "quarantined", label: "隔离" },
+                { value: "seat_limited", label: "席位已满" },
               ]}
             />
             <HSwitch
@@ -1044,7 +1008,6 @@ export default function TeamManage() {
                   setFillSlotsPools(s2aTeams.length > 0 ? [{ team: s2aTeams[0].name, weight: 100 }] : []);
                   setShowFillSlotsModal(true);
                 }}
-                disabled={selectedOwnerCount === 0}
                 className="btn py-1.5 text-xs"
                 style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.84), rgba(20,184,166,0.82))", color: "#fff" }}
               >
@@ -1439,7 +1402,7 @@ export default function TeamManage() {
               <div>
                 <div className="section-title mb-0">一键补位</div>
                 <div className="mt-1.5 text-xs c-dim">
-                  已选 <strong className="c-heading">{selectedOwnerCount}</strong> 个 Owner，按权重分配到号池
+                  自动补位所有有空位的 Owner，按权重分配到号池
                 </div>
               </div>
               <button type="button" onClick={() => setShowFillSlotsModal(false)} className="btn btn-ghost p-1.5 -mr-1 -mt-1">

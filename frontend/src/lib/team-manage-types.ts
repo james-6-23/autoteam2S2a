@@ -331,7 +331,7 @@ export function buildFallbackDashboardSummary(
     if (isBanned) bannedOwners += 1;
     if (isExpired) expiredOwners += 1;
     if (isQuarantined) quarantinedOwners += 1;
-    if (availableSlots > 0) ownersWithSlots += 1;
+    if (availableSlots > 0 && state !== "seat_limited") ownersWithSlots += 1;
     if (hasBannedMember) ownersWithBannedMembers += 1;
     if (cacheStatus === "fresh") freshCacheOwners += 1;
     if (cacheStatus === "stale" || cacheStatus === "expired") staleCacheOwners += 1;

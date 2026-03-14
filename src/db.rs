@@ -2346,7 +2346,7 @@ impl RunHistoryDb {
                 SUM(CASE WHEN state = 'expired' THEN 1 ELSE 0 END) AS expired_owners,
                 SUM(CASE WHEN state = 'quarantined' THEN 1 ELSE 0 END) AS quarantined_owners,
                 SUM(CASE WHEN state = 'archived' THEN 1 ELSE 0 END) AS archived_owners,
-                SUM(CASE WHEN available_slots_cached > 0 THEN 1 ELSE 0 END) AS owners_with_slots
+                SUM(CASE WHEN available_slots_cached > 0 AND state != 'seat_limited' THEN 1 ELSE 0 END) AS owners_with_slots
              FROM owner_registry",
             [],
             |row| {
@@ -2998,7 +2998,7 @@ fn build_owner_registry_where(query: &OwnerRegistryQuery) -> (String, Vec<Box<dy
         clauses.push("r.state != 'archived'");
     }
     if matches!(query.has_slots, Some(true)) {
-        clauses.push("r.available_slots_cached > 0");
+        clauses.push("r.available_slots_cached > 0 AND r.state != 'seat_limited'");
     }
     if matches!(query.has_slots, Some(false)) {
         clauses.push("r.available_slots_cached = 0");

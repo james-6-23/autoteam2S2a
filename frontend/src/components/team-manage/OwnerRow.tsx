@@ -83,6 +83,7 @@ function stateToLabel(state: string): string {
     case "expired": return "过期";
     case "quarantined": return "隔离";
     case "archived": return "归档";
+    case "seat_limited": return "席位已满";
     default: return state;
   }
 }
@@ -103,6 +104,7 @@ export function OwnerRow({
   const isCheckError = health?.owner_status === "check_failed" || health?.owner_status === "timeout" || health?.owner_status === "lock_conflict";
   const hasBannedMember = health?.members.some(member => member.status === "banned");
   const stateLabel = owner.state ?? "active";
+  const isSeatLimited = stateLabel === "seat_limited";
 
   return (
     <div
@@ -133,7 +135,7 @@ export function OwnerRow({
         </div>
 
         <div className="team-manage-owner-row__status">
-          <span className={`badge ${isOwnerBanned ? "badge-err" : hasBannedMember ? "badge-warn" : "badge-off"}`}>
+          <span className={`badge ${isOwnerBanned ? "badge-err" : hasBannedMember ? "badge-warn" : isSeatLimited ? "badge-warn" : "badge-off"}`}>
             {isOwnerBanned ? "Owner封禁" : hasBannedMember ? "成员封禁" : stateToLabel(stateLabel)}
           </span>
           {health?.checked_at && (

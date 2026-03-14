@@ -5232,6 +5232,13 @@ async fn team_manage_batch_invite_handler(
             .get_all_owner_health()
             .map(team_manage_cached_results_map)
             .unwrap_or_default();
+        // 批量获取 owner_registry 状态，用于跳过 seat_limited
+        let registry_state_map: std::collections::HashMap<String, String> = state_clone
+            .run_history_db
+            .get_owner_registry_states_by_account_ids(&req_for_task.account_ids)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         crate::log_broadcast::broadcast_log(&format!(
             "[Team管理] 批量邀请任务开始: job={}, {} 个 owner",
@@ -5255,6 +5262,22 @@ async fn team_manage_batch_invite_handler(
                     0,
                     None,
                     Some("已按规则跳过封禁 owner".to_string()),
+                    None,
+                )
+                .await;
+                continue;
+            }
+            // 跳过 seat_limited 状态的 owner（free trial 席位上限）
+            if registry_state_map.get(&account_id).map(|s| s.as_str()) == Some("seat_limited") {
+                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过席位已满 owner: {}", account_id));
+                team_manage_update_batch_job_item(
+                    &state_clone,
+                    &job_id_clone,
+                    &account_id,
+                    "skipped",
+                    0,
+                    None,
+                    Some("席位已满(free trial)，已自动跳过".to_string()),
                     None,
                 )
                 .await;
@@ -5286,6 +5309,23 @@ async fn team_manage_batch_invite_handler(
                 match team_manage_live_member_count(&state_clone, &account_id).await {
                     Ok(member_count) => max_members.saturating_sub(member_count),
                     Err(error) => {
+                        // 检测席位上限错误，标记 owner 为 seat_limited
+                        let err_lower = error.to_ascii_lowercase();
+                        if err_lower.contains("maximum number of seats")
+                            || err_lower.contains("seats allowed")
+                            || err_lower.contains("seat limit")
+                        {
+                            let now = chrono::Utc::now().to_rfc3339();
+                            let _ = state_clone.run_history_db.batch_update_owner_registry_state(
+                                &[account_id.clone()],
+                                "seat_limited",
+                                Some("free_trial_seat_limit"),
+                                &now,
+                            );
+                            crate::log_broadcast::broadcast_log(&format!(
+                                "[Team管理] 已标记 owner {} 为 seat_limited", account_id
+                            ));
+                        }
                         team_manage_update_batch_job_item(
                             &state_clone,
                             &job_id_clone,
@@ -5362,12 +5402,28 @@ async fn team_manage_batch_invite_handler(
                     .await;
                 }
                 Err((status, body)) => {
+                    let error_msg = format!("{} {}", status.as_u16(), body.0.error);
                     crate::log_broadcast::broadcast_log(&format!(
-                        "[Team管理][ERR] 邀请失败: {} - {} {}",
-                        account_id,
-                        status.as_u16(),
-                        body.0.error
+                        "[Team管理][ERR] 邀请失败: {} - {}",
+                        account_id, error_msg
                     ));
+                    // 检测席位上限错误，标记 owner 为 seat_limited
+                    let err_lower = error_msg.to_ascii_lowercase();
+                    if err_lower.contains("maximum number of seats")
+                        || err_lower.contains("seats allowed")
+                        || err_lower.contains("seat limit")
+                    {
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let _ = state_clone.run_history_db.batch_update_owner_registry_state(
+                            &[account_id.clone()],
+                            "seat_limited",
+                            Some("free_trial_seat_limit"),
+                            &now,
+                        );
+                        crate::log_broadcast::broadcast_log(&format!(
+                            "[Team管理] 已标记 owner {} 为 seat_limited", account_id
+                        ));
+                    }
                     team_manage_update_batch_job_item(
                         &state_clone,
                         &job_id_clone,
@@ -5376,7 +5432,7 @@ async fn team_manage_batch_invite_handler(
                         invite_count,
                         None,
                         None,
-                        Some(format!("{} {}", status.as_u16(), body.0.error)),
+                        Some(error_msg),
                     )
                     .await;
                 }
