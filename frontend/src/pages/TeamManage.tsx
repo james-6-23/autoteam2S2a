@@ -93,7 +93,6 @@ function MemberQuotaInline({ quota, loading, onLoad }: { quota?: CodexQuota; loa
 }
 
 const INVITE_TASK_EMAIL_PREVIEW = 12;
-const BATCH_CHECK_CHUNK_SIZE = 20;
 
 export default function TeamManage() {
   const { toast } = useToast();
@@ -572,9 +571,11 @@ export default function TeamManage() {
       return;
     }
 
+    // chunk 大小跟随并发设置，确保后端 semaphore 被充分利用
+    const chunkSize = Math.max(checkConcurrency, 50);
     const chunks: string[][] = [];
-    for (let i = 0; i < accountIds.length; i += BATCH_CHECK_CHUNK_SIZE) {
-      chunks.push(accountIds.slice(i, i + BATCH_CHECK_CHUNK_SIZE));
+    for (let i = 0; i < accountIds.length; i += chunkSize) {
+      chunks.push(accountIds.slice(i, i + chunkSize));
     }
 
     setBatchCheckLoading(true);
@@ -585,46 +586,65 @@ export default function TeamManage() {
     let totalCacheMisses = 0;
     let doneCount = 0;
     let failedChunks = 0;
+    let processedChunks = 0;
+    let nextChunkIndex = 0;
+    // 并行请求数：减少 HTTP 往返开销
+    const chunkRequestConcurrency = 5;
 
-    for (let i = 0; i < chunks.length; i += 1) {
-      if (batchCheckCancelledRef.current) {
-        toast(`检查已取消，已完成 ${doneCount}/${accountIds.length}`, "success");
-        break;
-      }
-
-      try {
-        const res = await api.batchCheckTeamManageOwners({
-          account_ids: chunks[i],
-          concurrency: checkConcurrency,
-          force_refresh: forceRefreshHealth,
-          prefer_cache: !forceRefreshHealth,
-          scope: "manual",
-        });
-
-        setHealthMap(prev => {
-          const next = { ...prev };
-          for (const record of res.results || []) {
-            next[record.account_id] = record;
-          }
-          return next;
-        });
-
-        for (const record of res.results || []) {
-          setMemberCounts(prev => ({ ...prev, [record.account_id]: record.members.length }));
+    const runChunkWorker = async () => {
+      while (true) {
+        if (batchCheckCancelledRef.current) {
+          return;
         }
 
-        totalCacheHits += res.cache_hits ?? 0;
-        totalCacheMisses += res.cache_misses ?? 0;
-      } catch {
-        failedChunks += 1;
-      }
+        const chunkIndex = nextChunkIndex;
+        if (chunkIndex >= chunks.length) {
+          return;
+        }
+        nextChunkIndex += 1;
 
-      doneCount += chunks[i].length;
-      setBatchCheckProgress({ done: doneCount, total: accountIds.length });
+        try {
+          const res = await api.batchCheckTeamManageOwners({
+            account_ids: chunks[chunkIndex],
+            concurrency: checkConcurrency,
+            force_refresh: forceRefreshHealth,
+            prefer_cache: !forceRefreshHealth,
+            scope: "manual",
+          });
 
-      if ((i + 1) % 5 === 0) {
-        void loadDashboard();
+          setHealthMap(prev => {
+            const next = { ...prev };
+            for (const record of res.results || []) {
+              next[record.account_id] = record;
+            }
+            return next;
+          });
+
+          for (const record of res.results || []) {
+            setMemberCounts(prev => ({ ...prev, [record.account_id]: record.members.length }));
+          }
+
+          totalCacheHits += res.cache_hits ?? 0;
+          totalCacheMisses += res.cache_misses ?? 0;
+        } catch {
+          failedChunks += 1;
+        }
+
+        doneCount += chunks[chunkIndex].length;
+        processedChunks += 1;
+        setBatchCheckProgress({ done: doneCount, total: accountIds.length });
+
+        if (processedChunks % 5 === 0) {
+          void loadDashboard();
+        }
       }
+    };
+
+    const workerCount = Math.min(chunkRequestConcurrency, chunks.length);
+    await Promise.all(Array.from({ length: workerCount }, () => runChunkWorker()));
+
+    if (batchCheckCancelledRef.current) {
+      toast(`检查已取消，已完成 ${doneCount}/${accountIds.length}`, "success");
     }
 
     void loadDashboard();

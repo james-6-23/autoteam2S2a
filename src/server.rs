@@ -13,6 +13,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use futures::future::join_all;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
@@ -253,6 +254,8 @@ pub struct AppState {
     pub log_tx: broadcast::Sender<String>,
     pub redis_cache: Option<Arc<RedisCache>>,
     team_manage_health_locks: Arc<Mutex<HashMap<String, Instant>>>,
+    /// 上次执行 sync_owner_registry 的时间，用于节流
+    last_owner_registry_sync: Arc<Mutex<Option<Instant>>>,
 }
 
 // ─── Request / Response types ────────────────────────────────────────────────
@@ -2548,6 +2551,7 @@ pub async fn start_server(
         log_tx,
         redis_cache,
         team_manage_health_locks: Arc::new(Mutex::new(HashMap::new())),
+        last_owner_registry_sync: Arc::new(Mutex::new(None)),
     };
 
     // 启动后台调度器
@@ -3698,11 +3702,7 @@ async fn fetch_chatgpt_members(
     account_id: &str,
     access_token: &str,
 ) -> Result<Vec<TeamManageMember>, String> {
-    let client = rquest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| rquest::Client::new());
+    let client = shared_http_client_15s();
 
     let url = format!(
         "https://chatgpt.com/backend-api/accounts/{}/users?offset=0&limit=100&query=",
@@ -4248,11 +4248,7 @@ const CODEX_MODELS: &[&str] = &[
 ];
 
 async fn fetch_codex_quota(access_token: &str) -> CodexQuota {
-    let client = rquest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| rquest::Client::new());
+    let client = shared_http_client_10s();
 
     let device_id = uuid::Uuid::new_v4().to_string();
 
@@ -4461,11 +4457,19 @@ struct MemberQuotaRequest {
 }
 
 /// 用 refresh_token 换 access_token
+fn shared_http_client_15s() -> &'static rquest::Client {
+    static CLIENT: OnceLock<rquest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        rquest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(8))
+            .build()
+            .unwrap_or_else(|_| rquest::Client::new())
+    })
+}
+
 async fn refresh_rt_to_at(refresh_token: &str) -> Result<String, String> {
-    let client = rquest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_else(|_| rquest::Client::new());
+    let client = shared_http_client_15s();
 
     let resp = client
         .post("https://auth.openai.com/oauth/token")
@@ -5905,15 +5909,26 @@ async fn team_manage_batch_check_handler(
         concurrency
     ));
 
-    let _ = state
-        .run_history_db
-        .sync_owner_registry_from_invite_owners()
-        .map_err(|e| {
-            error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("同步 owner_registry 失败: {e}"),
-            )
-        })?;
+    // 节流：30 秒内最多执行一次 sync_owner_registry
+    {
+        let mut last_sync = state.last_owner_registry_sync.lock().await;
+        let should_sync = match *last_sync {
+            None => true,
+            Some(t) => t.elapsed().as_secs() >= 30,
+        };
+        if should_sync {
+            let _ = state
+                .run_history_db
+                .sync_owner_registry_from_invite_owners()
+                .map_err(|e| {
+                    error_json(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &format!("同步 owner_registry 失败: {e}"),
+                    )
+                })?;
+            *last_sync = Some(Instant::now());
+        }
+    }
     let cached_records = state
         .run_history_db
         .get_owner_health_by_account_ids(&account_ids)
@@ -6009,7 +6024,23 @@ async fn team_manage_batch_check_handler(
             else {
                 return None;
             };
-            let result = check_single_owner(&state, &account_id).await;
+            // 单 owner 检查整体超时 60 秒，防止一个慢 owner 卡住整个 chunk
+            let result = match tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                check_single_owner(&state, &account_id),
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    tracing::warn!("[TeamManage] {} 健康检查超时(60s)，跳过", account_id);
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[健康检查] {} 超时(60s)，已跳过",
+                        account_id
+                    ));
+                    None
+                }
+            };
             team_manage_release_health_lock(&state, &account_id, &lock_owner).await;
             result
         });
@@ -6041,7 +6072,18 @@ async fn team_manage_batch_check_handler(
                     else {
                         return None;
                     };
-                    let result = check_single_owner(&state, &account_id).await;
+                    let result = match tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        check_single_owner(&state, &account_id),
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => {
+                            tracing::warn!("[TeamManage] {} 后台刷新超时(60s)，跳过", account_id);
+                            None
+                        }
+                    };
                     team_manage_release_health_lock(&state, &account_id, &lock_owner).await;
                     result
                 });
@@ -6109,65 +6151,79 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
     let config_clone = config.clone();
     drop(config);
 
-    let mut member_infos = Vec::new();
+    let mut member_tasks = Vec::new();
     for (idx, m) in members_filtered.iter().enumerate() {
         let email = match &m.email {
             Some(e) => e.clone(),
             None => continue,
         };
+        let member_name = m.name.clone();
+        let state_clone = state.clone();
+        let config_clone = config_clone.clone();
+        let account_id = account_id.to_string();
 
-        let mut status = "unknown".to_string();
-        let mut seven_day_pct: Option<f64> = None;
+        member_tasks.push(tokio::spawn(async move {
+            let mut status = "unknown".to_string();
+            let mut seven_day_pct: Option<f64> = None;
 
-        // 尝试查成员额度
-        // 策略1: 本地 DB refresh_token
-        let mut got_quota = false;
-        if let Ok(Some(rt)) = state.run_history_db.get_email_refresh_token(&email) {
-            if let Ok(at) = refresh_rt_to_at(&rt).await {
-                let quota = fetch_codex_quota(&at).await;
-                status = quota.status.clone();
-                seven_day_pct = quota.seven_day.as_ref().map(|w| w.remaining_percent);
-                got_quota = true;
+            // 尝试查成员额度
+            // 策略1: 本地 DB refresh_token
+            let mut got_quota = false;
+            if let Ok(Some(rt)) = state_clone.run_history_db.get_email_refresh_token(&email) {
+                if let Ok(at) = refresh_rt_to_at(&rt).await {
+                    let quota = fetch_codex_quota(&at).await;
+                    status = quota.status.clone();
+                    seven_day_pct = quota.seven_day.as_ref().map(|w| w.remaining_percent);
+                    got_quota = true;
+                }
             }
-        }
 
-        // 策略2: S2A 号池搜索
-        if !got_quota {
-            if let Some((at, rt_opt)) = search_s2a_for_email(&config_clone, &email).await {
-                let effective_at = if let Some(rt) = &rt_opt {
-                    refresh_rt_to_at(rt).await.unwrap_or(at.clone())
-                } else {
-                    at
-                };
-                let quota = fetch_codex_quota(&effective_at).await;
-                status = quota.status.clone();
-                seven_day_pct = quota.seven_day.as_ref().map(|w| w.remaining_percent);
-                got_quota = true;
+            // 策略2: S2A 号池搜索
+            if !got_quota {
+                if let Some((at, rt_opt)) = search_s2a_for_email(&config_clone, &email).await {
+                    let effective_at = if let Some(rt) = &rt_opt {
+                        refresh_rt_to_at(rt).await.unwrap_or(at.clone())
+                    } else {
+                        at
+                    };
+                    let quota = fetch_codex_quota(&effective_at).await;
+                    status = quota.status.clone();
+                    seven_day_pct = quota.seven_day.as_ref().map(|w| w.remaining_percent);
+                    got_quota = true;
+                }
             }
+
+            if !got_quota {
+                status = "no_credentials".to_string();
+            }
+
+            let pct_str = seven_day_pct
+                .map(|p| format!("{:.0}%", p))
+                .unwrap_or("--".to_string());
+            crate::log_broadcast::broadcast_log(&format!(
+                "[健康检查] {} #{} {} status={} 7d={}",
+                account_id,
+                idx + 1,
+                email,
+                status,
+                pct_str
+            ));
+
+            MemberHealthInfo {
+                email,
+                name: member_name,
+                status,
+                seven_day_pct: seven_day_pct.map(|p| (p * 10.0).round() / 10.0),
+            }
+        }));
+    }
+
+    let mut member_infos = Vec::new();
+    for result in join_all(member_tasks).await {
+        match result {
+            Ok(info) => member_infos.push(info),
+            Err(e) => tracing::warn!("[健康检查] {} 成员任务失败: {}", account_id, e),
         }
-
-        if !got_quota {
-            status = "no_credentials".to_string();
-        }
-
-        let pct_str = seven_day_pct
-            .map(|p| format!("{:.0}%", p))
-            .unwrap_or("--".to_string());
-        crate::log_broadcast::broadcast_log(&format!(
-            "[健康检查] {} #{} {} status={} 7d={}",
-            account_id,
-            idx + 1,
-            email,
-            status,
-            pct_str
-        ));
-
-        member_infos.push(MemberHealthInfo {
-            email,
-            name: m.name.clone(),
-            status,
-            seven_day_pct: seven_day_pct.map(|p| (p * 10.0).round() / 10.0),
-        });
     }
 
     crate::log_broadcast::broadcast_log(&format!(
