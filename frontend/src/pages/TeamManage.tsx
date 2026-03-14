@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Loader2, Search, ShieldAlert, Trash2, UserPlus, X, Zap } from "lucide-react";
 
 import { useToast } from "../components/Toast";
@@ -1056,7 +1057,7 @@ export default function TeamManage() {
         />
       </div>
 
-      {selected && (
+      {selected && createPortal(
         <div className="team-modal" onClick={event => { if (event.target === event.currentTarget) setSelected(null); }}>
           <div
             className="team-modal-card p-5"
@@ -1289,9 +1290,9 @@ export default function TeamManage() {
             )}
           </div>
         </div>
-      )}
+      , document.body)}
 
-      {showBatchInviteModal && (
+      {showBatchInviteModal && createPortal(
         <div className="team-modal" onClick={event => { if (event.target === event.currentTarget) setShowBatchInviteModal(false); }}>
           <div className="team-modal-card p-5" style={{ maxWidth: 520, width: "96vw" }} onClick={event => event.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between">
@@ -1392,9 +1393,9 @@ export default function TeamManage() {
             </div>
           </div>
         </div>
-      )}
+      , document.body)}
 
-      {showFillSlotsModal && (
+      {showFillSlotsModal && createPortal(
         <div className="team-modal" onClick={event => { if (event.target === event.currentTarget) setShowFillSlotsModal(false); }}>
           <div className="team-modal-card p-6" style={{ maxWidth: 640, width: "96vw" }} onClick={event => event.stopPropagation()}>
             {/* 标题区 */}
@@ -1498,7 +1499,7 @@ export default function TeamManage() {
             </div>
           </div>
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }
