@@ -826,18 +826,16 @@ export default function TeamManage() {
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1">
                 <span className="text-[.65rem] c-dim">并发:</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={checkConcurrency}
-                  onChange={event => {
-                    const value = Math.max(1, Math.min(20, Number(event.target.value) || 1));
-                    setCheckConcurrency(value);
-                    localStorage.setItem("team-check-concurrency", String(value));
-                  }}
-                  className="field-input w-10 px-1 py-1 text-center text-xs"
-                />
+                            <input
+                              type="number"
+                              min={1}
+                              value={checkConcurrency}
+                              onChange={event => {
+                                const value = Math.max(1, Number(event.target.value) || 1);
+                                setCheckConcurrency(value);
+                                localStorage.setItem("team-check-concurrency", String(value));
+                              }}
+                              className="field-input w-14 px-1 py-1 text-center text-xs"                />
               </div>
               <HSwitch
                 checked={forceRefreshHealth}

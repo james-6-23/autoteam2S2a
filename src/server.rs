@@ -4030,7 +4030,7 @@ async fn team_manage_batch_refresh_members_handler(
     if account_ids.is_empty() {
         return Err(error_json(StatusCode::BAD_REQUEST, "account_ids 不能为空"));
     }
-    let concurrency = req.concurrency.clamp(1, 20);
+    let concurrency = req.concurrency.max(1);
     crate::log_broadcast::broadcast_log(&format!(
         "[Team管理] 批量刷新成员: {} 个 owner, 并发={}",
         account_ids.len(),
@@ -5893,7 +5893,7 @@ async fn team_manage_batch_check_handler(
         Some(&filters),
     )
     .await?;
-    let concurrency = concurrency.clamp(1, 20);
+    let concurrency = concurrency.max(1);
     tracing::info!(
         "[TeamManage] 批量检查: {} 个 owner, 并发={}",
         account_ids.len(),
