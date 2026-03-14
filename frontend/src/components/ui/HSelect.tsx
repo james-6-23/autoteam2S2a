@@ -25,7 +25,7 @@ export function HSelect({ value, onChange, options, className = "", style, place
           className="field-input flex w-full cursor-pointer items-center justify-between gap-2 text-left"
           style={{ height: 40 }}
         >
-          <span className={selected ? "c-heading" : "c-dim"}>
+          <span className={`truncate ${selected ? "c-heading" : "c-dim"}`}>
             {selected ? selected.label : (placeholder ?? "请选择")}
           </span>
           <ChevronDown size={14} className="c-dim shrink-0 transition-transform ui-open:rotate-180" />

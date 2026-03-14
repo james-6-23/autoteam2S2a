@@ -1396,7 +1396,7 @@ export default function TeamManage() {
 
       {showFillSlotsModal && (
         <div className="team-modal" onClick={event => { if (event.target === event.currentTarget) setShowFillSlotsModal(false); }}>
-          <div className="team-modal-card p-6" style={{ maxWidth: 520, width: "96vw" }} onClick={event => event.stopPropagation()}>
+          <div className="team-modal-card p-6" style={{ maxWidth: 640, width: "96vw" }} onClick={event => event.stopPropagation()}>
             {/* 标题区 */}
             <div className="mb-5 flex items-start justify-between">
               <div>
@@ -1421,7 +1421,7 @@ export default function TeamManage() {
                     className="flex items-center gap-2 rounded-lg px-3 py-2.5"
                     style={{ background: "var(--ghost)" }}
                   >
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-[140px] flex-1">
                       <HSelect
                         value={pool.team}
                         onChange={v => {
