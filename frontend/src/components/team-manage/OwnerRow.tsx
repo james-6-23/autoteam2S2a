@@ -37,7 +37,14 @@ function QuotaBadge({ quota }: { quota?: CodexQuota }) {
       </span>
     );
   }
-  if (quota.status === "error") return <span className="text-[.6rem] c-dim" title={quota.error || ""}>错误</span>;
+  if (quota.status === "error") {
+    const err = quota.error || "";
+    const isExternal = err.includes("外部域名");
+    const isPoolNotFound = err.includes("号池域名") || err.includes("已移除");
+    const label = isExternal ? "外部域名" : isPoolNotFound ? "号池未找到" : "错误";
+    const color = isExternal ? "#94a3b8" : isPoolNotFound ? "#f59e0b" : "var(--text-dim)";
+    return <span className="text-[.6rem]" style={{ color }} title={err}>{label}</span>;
+  }
 
   return (
     <div className="flex items-center gap-1.5">
@@ -145,7 +152,13 @@ export function OwnerRow({
             ) : health.members.length > 0 ? health.members.map((member, index) => {
               const pct = member.seven_day_pct;
               const memberBanned = member.status === "banned";
-              const color = memberBanned ? "#f87171" : pct != null ? quotaColor(pct) : "var(--text-dim)";
+              const isExternal = member.status === "external_domain";
+              const isPoolNotFound = member.status === "pool_not_found";
+              const isNoCredentials = member.status === "no_credentials" || isExternal || isPoolNotFound;
+              const color = memberBanned ? "#f87171"
+                : isExternal ? "#94a3b8"
+                : isPoolNotFound ? "#f59e0b"
+                : pct != null ? quotaColor(pct) : "var(--text-dim)";
               return (
                 <div key={member.email} className="flex items-center gap-1.5" style={{ width: 90 }} title={member.email}>
                   <span className="text-[.6rem] font-mono shrink-0" style={{ color, width: 14 }}>#{index + 1}</span>
@@ -156,6 +169,10 @@ export function OwnerRow({
                     >
                       <ShieldAlert size={8} /> 封禁
                     </span>
+                  ) : isExternal ? (
+                    <span className="text-[.55rem]" style={{ color: "#94a3b8" }}>外部</span>
+                  ) : isPoolNotFound ? (
+                    <span className="text-[.55rem]" style={{ color: "#f59e0b" }}>未入库</span>
                   ) : (
                     <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="text-right text-[.6rem] font-mono" style={{ color }}>

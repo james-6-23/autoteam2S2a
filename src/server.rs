@@ -4629,11 +4629,26 @@ async fn team_manage_member_quota_handler(
         );
         return Ok(Json(quota));
     }
-    drop(config);
+
+    // 区分：外部域名 vs 号池未找到
+    let email_lower = email.to_lowercase();
+    let is_pool_domain = {
+        let cfg = state.config.read().await;
+        cfg.email_domains
+            .iter()
+            .chain(cfg.chatgpt_mail_domains.iter())
+            .any(|d| email_lower.ends_with(&d.to_lowercase()))
+    };
+    let reason = if is_pool_domain {
+        format!("{email} 属于号池域名但未在号池中找到（可能已移除）")
+    } else {
+        let domain = email_lower.rsplit('@').next().unwrap_or("unknown");
+        format!("{email} 为外部域名(@{domain})，非号池管理范围")
+    };
 
     Err(error_json(
         StatusCode::NOT_FOUND,
-        &format!("找不到 {email} 的凭证，本地 DB 和号池均未找到"),
+        &reason,
     ))
 }
 
@@ -6232,7 +6247,18 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
             }
 
             if !got_quota {
-                status = "no_credentials".to_string();
+                // 区分：外部域名 vs 号池未找到
+                let email_lower = email.to_lowercase();
+                let is_pool_domain = config_clone
+                    .email_domains
+                    .iter()
+                    .chain(config_clone.chatgpt_mail_domains.iter())
+                    .any(|d| email_lower.ends_with(&d.to_lowercase()));
+                status = if is_pool_domain {
+                    "pool_not_found".to_string() // 域名匹配但号池没找到（可能已移除）
+                } else {
+                    "external_domain".to_string() // 非号池域名（如 @gmail.com）
+                };
             }
 
             let pct_str = seven_day_pct

@@ -82,7 +82,12 @@ function MemberQuotaInline({ quota, loading, onLoad }: { quota?: CodexQuota; loa
     );
   }
   if (quota.status === "error") {
-    return <span className="text-[.6rem] c-dim" title={quota.error || ""}>错误</span>;
+    const err = quota.error || "";
+    const isExternal = err.includes("外部域名");
+    const isPoolNotFound = err.includes("号池域名") || err.includes("已移除");
+    const label = isExternal ? "外部域名" : isPoolNotFound ? "号池未找到" : "错误";
+    const color = isExternal ? "#94a3b8" : isPoolNotFound ? "#f59e0b" : "var(--text-dim)";
+    return <span className="text-[.6rem]" style={{ color }} title={err}>{label}</span>;
   }
   return (
     <div className="flex min-w-[120px] flex-col gap-0.5">
