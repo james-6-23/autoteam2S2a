@@ -93,6 +93,7 @@ export function OwnerRow({
   onRefreshMembers,
 }: OwnerRowProps) {
   const isOwnerBanned = health?.owner_status === "banned";
+  const isCheckError = health?.owner_status === "check_failed" || health?.owner_status === "timeout" || health?.owner_status === "lock_conflict";
   const hasBannedMember = health?.members.some(member => member.status === "banned");
   const stateLabel = owner.state ?? "active";
 
@@ -137,7 +138,11 @@ export function OwnerRow({
 
         <div className="flex min-w-0 flex-1 gap-3 mx-3">
           {health ? (
-            health.members.length > 0 ? health.members.map((member, index) => {
+            isCheckError ? (
+              <span className="text-[.6rem]" style={{ color: health.owner_status === "timeout" ? "#f59e0b" : "#94a3b8" }}>
+                {health.owner_status === "check_failed" ? "检查失败(无token)" : health.owner_status === "timeout" ? "检查超时" : "锁冲突(重试即可)"}
+              </span>
+            ) : health.members.length > 0 ? health.members.map((member, index) => {
               const pct = member.seven_day_pct;
               const memberBanned = member.status === "banned";
               const color = memberBanned ? "#f87171" : pct != null ? quotaColor(pct) : "var(--text-dim)";

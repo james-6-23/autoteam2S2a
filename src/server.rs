@@ -6018,40 +6018,78 @@ async fn team_manage_batch_check_handler(
         cache_misses += 1;
         let sem = semaphore.clone();
         let state = state.clone();
+        let aid = account_id.clone();
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await;
-            let Some(lock_owner) = team_manage_try_acquire_health_lock(&state, &account_id).await
+            let Some(lock_owner) = team_manage_try_acquire_health_lock(&state, &aid).await
             else {
-                return None;
+                // 锁冲突 → 返回占位结果，让前端知道此 owner 被跳过
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[健康检查] {} 锁冲突，已跳过",
+                    aid
+                ));
+                return OwnerHealthResult {
+                    account_id: aid,
+                    owner_status: "lock_conflict".to_string(),
+                    members: vec![],
+                    checked_at: crate::util::beijing_now().to_rfc3339(),
+                };
             };
             // 单 owner 检查整体超时 60 秒，防止一个慢 owner 卡住整个 chunk
             let result = match tokio::time::timeout(
                 std::time::Duration::from_secs(60),
-                check_single_owner(&state, &account_id),
+                check_single_owner(&state, &aid),
             )
             .await
             {
-                Ok(r) => r,
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    // check_single_owner 返回 None（无 token 等）
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[健康检查] {} 检查失败(无token或内部错误)",
+                        aid
+                    ));
+                    OwnerHealthResult {
+                        account_id: aid.clone(),
+                        owner_status: "check_failed".to_string(),
+                        members: vec![],
+                        checked_at: crate::util::beijing_now().to_rfc3339(),
+                    }
+                }
                 Err(_) => {
-                    tracing::warn!("[TeamManage] {} 健康检查超时(60s)，跳过", account_id);
+                    tracing::warn!("[TeamManage] {} 健康检查超时(60s)，跳过", aid);
                     crate::log_broadcast::broadcast_log(&format!(
                         "[健康检查] {} 超时(60s)，已跳过",
-                        account_id
+                        aid
                     ));
-                    None
+                    OwnerHealthResult {
+                        account_id: aid.clone(),
+                        owner_status: "timeout".to_string(),
+                        members: vec![],
+                        checked_at: crate::util::beijing_now().to_rfc3339(),
+                    }
                 }
             };
-            team_manage_release_health_lock(&state, &account_id, &lock_owner).await;
+            team_manage_release_health_lock(&state, &aid, &lock_owner).await;
             result
         });
         handles.push(handle);
     }
 
     for handle in handles {
-        if let Ok(result) = handle.await {
-            if let Some(r) = result {
-                team_manage_persist_health_result(&state, &r).await;
+        match handle.await {
+            Ok(r) => {
+                // 只对正常检查成功的结果持久化到缓存（跳过 check_failed/timeout/lock_conflict）
+                if !matches!(
+                    r.owner_status.as_str(),
+                    "check_failed" | "timeout" | "lock_conflict"
+                ) {
+                    team_manage_persist_health_result(&state, &r).await;
+                }
                 results.push(r);
+            }
+            Err(e) => {
+                tracing::warn!("[TeamManage] 健康检查 task panic: {e}");
             }
         }
     }
