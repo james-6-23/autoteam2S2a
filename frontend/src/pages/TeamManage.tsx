@@ -10,12 +10,8 @@ import { TeamManagePagination } from "../components/team-manage/TeamManagePagina
 import * as api from "../lib/api";
 import type {
   CodexQuota,
-  InviteTaskDetail,
   OwnerHealth,
   S2aTeam,
-  TeamManageBatchJobDetail,
-  TeamManageBatchRetryMode,
-  TeamManageBatchJobSummary,
   TeamManageDashboardSummary,
   TeamMember,
   TeamOwner,
@@ -97,8 +93,6 @@ function MemberQuotaInline({ quota, loading, onLoad }: { quota?: CodexQuota; loa
   );
 }
 
-const INVITE_TASK_EMAIL_PREVIEW = 12;
-
 export default function TeamManage() {
   const { toast } = useToast();
   const [owners, setOwners] = useState<TeamOwner[]>([]);
@@ -138,15 +132,6 @@ export default function TeamManage() {
   const [showBatchInviteModal, setShowBatchInviteModal] = useState(false);
   const [batchInviteLoading, setBatchInviteLoading] = useState(false);
   const [batchRefreshLoading, setBatchRefreshLoading] = useState(false);
-  const [batchJobs, setBatchJobs] = useState<TeamManageBatchJobSummary[]>([]);
-  const [activeBatchJobId, setActiveBatchJobId] = useState<string | null>(null);
-  const [activeBatchJob, setActiveBatchJob] = useState<TeamManageBatchJobDetail | null>(null);
-  const [batchJobLoading, setBatchJobLoading] = useState(false);
-  const [retryFailedLoading, setRetryFailedLoading] = useState(false);
-  const [retryMode, setRetryMode] = useState<TeamManageBatchRetryMode>("all");
-  const [activeInviteTaskId, setActiveInviteTaskId] = useState<string | null>(null);
-  const [activeInviteTask, setActiveInviteTask] = useState<InviteTaskDetail | null>(null);
-  const [inviteTaskLoading, setInviteTaskLoading] = useState(false);
   const [batchInviteForm, setBatchInviteForm] = useState({
     s2a_team: "",
     strategy: "fill_to_limit" as "fill_to_limit" | "fixed_count",
@@ -222,10 +207,6 @@ export default function TeamManage() {
     () => dashboard ?? buildFallbackDashboardSummary(owners, healthMap, memberCounts),
     [dashboard, healthMap, memberCounts, owners],
   );
-  const visibleInviteEmails = useMemo(
-    () => activeInviteTask?.emails.slice(0, INVITE_TASK_EMAIL_PREVIEW) ?? [],
-    [activeInviteTask],
-  );
 
   const selectedOwnerCount = selectionScope === "filtered" ? ownerTotal : selectedOwnerIds.length;
   const selectedOwnerSet = useMemo(
@@ -274,48 +255,6 @@ export default function TeamManage() {
     }
   }, []);
 
-  const loadBatchJobs = useCallback(async () => {
-    try {
-      const data = await api.fetchTeamManageBatchJobs();
-      setBatchJobs(data.jobs || []);
-    } catch {
-      setBatchJobs([]);
-    }
-  }, []);
-
-  const loadBatchJobDetail = useCallback(async (
-    jobId: string,
-    options?: { preserveInviteTask?: boolean },
-  ) => {
-    setBatchJobLoading(true);
-    if (!options?.preserveInviteTask) {
-      setActiveInviteTask(null);
-      setActiveInviteTaskId(null);
-    }
-    try {
-      const data = await api.fetchTeamManageBatchJob(jobId);
-      setActiveBatchJob(data);
-      setActiveBatchJobId(jobId);
-    } catch (error) {
-      toast(`获取批量任务详情失败: ${error}`, "error");
-    } finally {
-      setBatchJobLoading(false);
-    }
-  }, [toast]);
-
-  const loadInviteTaskDetail = useCallback(async (taskId: string) => {
-    setInviteTaskLoading(true);
-    try {
-      const data = await api.fetchInviteTaskDetail(taskId);
-      setActiveInviteTask(data);
-      setActiveInviteTaskId(taskId);
-    } catch (error) {
-      toast(`获取邀请任务详情失败: ${error}`, "error");
-    } finally {
-      setInviteTaskLoading(false);
-    }
-  }, [toast]);
-
   useEffect(() => {
     void loadOwners(ownerPage);
   }, [loadOwners, ownerPage]);
@@ -327,34 +266,6 @@ export default function TeamManage() {
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
-
-  useEffect(() => {
-    void loadBatchJobs();
-  }, [loadBatchJobs]);
-
-  useEffect(() => {
-    if (!batchJobs.some(job => job.status === "pending" || job.status === "running")) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void loadBatchJobs();
-      if (activeBatchJobId) void loadBatchJobDetail(activeBatchJobId, { preserveInviteTask: true });
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [activeBatchJobId, batchJobs, loadBatchJobDetail, loadBatchJobs]);
-
-  useEffect(() => {
-    if (!activeInviteTaskId || !activeInviteTask) {
-      return;
-    }
-    if (activeInviteTask.task.status !== "pending" && activeInviteTask.task.status !== "running") {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void loadInviteTaskDetail(activeInviteTaskId);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [activeInviteTask, activeInviteTaskId, loadInviteTaskDetail]);
 
   useEffect(() => {
     void (async () => {
@@ -841,20 +752,6 @@ export default function TeamManage() {
     }
   }, [loadDashboard, loadOwners, ownerQuery.has_banned_member, ownerQuery.has_slots, ownerQuery.search, ownerQuery.state, selectedOwnerIds, selectionScope, toast]);
 
-  const retryFailedBatchItems = async (jobId: string) => {
-    setRetryFailedLoading(true);
-    try {
-      const result = await api.retryFailedTeamManageBatchItems(jobId, { retry_mode: retryMode });
-      toast(result.message, "success");
-      void loadBatchJobs();
-      void loadBatchJobDetail(result.job_id);
-    } catch (error) {
-      toast(`重试失败子项失败: ${error}`, "error");
-    } finally {
-      setRetryFailedLoading(false);
-    }
-  };
-
   const submitBatchInvite = async () => {
     if (selectionScope !== "filtered" && selectedOwnerIds.length === 0) {
       toast("请先选择 Owner", "error");
@@ -887,7 +784,6 @@ export default function TeamManage() {
       setShowBatchInviteModal(false);
       setSelectedOwnerIds([]);
       setSelectionScope("manual");
-      void loadBatchJobs();
     } catch (error) {
       toast(`批量邀请失败: ${error}`, "error");
     } finally {
@@ -972,7 +868,6 @@ export default function TeamManage() {
         : `补位任务已创建: 接受 ${totalAccepted}，跳过 ${totalSkipped}`,
       failedPools > 0 ? "error" : "success",
     );
-    void loadBatchJobs();
   };
 
   const selectedOwner = owners.find(owner => owner.account_id === selected);
@@ -1170,9 +1065,7 @@ export default function TeamManage() {
               >
                 批量邀请入库
               </button>
-              <button type="button" onClick={() => void loadBatchJobs()} className="btn btn-ghost py-1.5 text-xs">
-                刷新任务
-              </button>
+
             </div>
           </div>
         </div>
@@ -1191,183 +1084,6 @@ export default function TeamManage() {
           onRefreshMembers={accountId => { void refreshMembers(accountId); }}
         />
 
-        {batchJobs.length > 0 && (
-          <div className="team-manage-jobs">
-            <div className="team-manage-jobs__header">
-              <span className="text-sm font-medium c-heading">批量任务</span>
-              <span className="text-xs c-dim">展示最近 {batchJobs.length} 条</span>
-            </div>
-            <div className="space-y-2">
-              {batchJobs.slice(0, 6).map(job => (
-                <button
-                  key={job.job_id}
-                  type="button"
-                  className={`team-manage-jobs__item ${activeBatchJobId === job.job_id ? "team-manage-jobs__item--active" : ""}`}
-                  onClick={() => {
-                    void loadBatchJobDetail(job.job_id);
-                  }}
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium c-heading">{job.job_type}</span>
-                      <span className="badge badge-off">{job.status}</span>
-                    </div>
-                    <div className="mt-1 text-[.7rem] c-dim font-mono">
-                      {job.job_id} · {job.created_at}
-                    </div>
-                  </div>
-                  <div className="text-right text-[.75rem]">
-                    <div className="font-mono c-heading">
-                      {job.success_count}/{job.total_count}
-                    </div>
-                    <div className="c-dim">
-                      失败 {job.failed_count} · 跳过 {job.skipped_count}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {(batchJobLoading || activeBatchJob) && (
-          <div className="team-manage-job-detail">
-            <div className="team-manage-jobs__header">
-              <span className="text-sm font-medium c-heading">
-                {batchJobLoading ? "任务详情加载中..." : `任务详情 · ${activeBatchJob?.job_id}`}
-              </span>
-              {activeBatchJob && activeBatchJob.failed_count > 0 && activeBatchJob.job_type === "batch_invite" && (
-                <div className="team-manage-job-detail__toolbar">
-                  <HSelect
-                    value={retryMode}
-                    onChange={value => setRetryMode(value as TeamManageBatchRetryMode)}
-                    style={{ minWidth: 160 }}
-                    options={[
-                      { value: "all", label: "重试全部失败项" },
-                      { value: "network", label: "仅网络类错误" },
-                      { value: "recoverable", label: "仅可恢复错误" },
-                    ]}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void retryFailedBatchItems(activeBatchJob.job_id)}
-                    disabled={retryFailedLoading}
-                    className="btn btn-ghost py-1.5 text-xs"
-                  >
-                    {retryFailedLoading ? "重试中..." : "重试失败子项"}
-                  </button>
-                </div>
-              )}
-            </div>
-            {activeBatchJob && (
-              <div className="space-y-2">
-                {activeBatchJob.items.map(item => (
-                  <div key={`${activeBatchJob.job_id}-${item.account_id}`} className="team-manage-jobs__detail-item">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs c-heading">{item.account_id}</span>
-                        <span className="badge badge-off">{item.status}</span>
-                      </div>
-                      <div className="mt-1 text-[.72rem] c-dim">
-                        invite_count: {item.invite_count}
-                        {item.child_task_id ? (
-                          <>
-                            {" · "}
-                            <button
-                              type="button"
-                              className="team-manage-link-button"
-                              onClick={() => void loadInviteTaskDetail(item.child_task_id!)}
-                            >
-                              task: {item.child_task_id}
-                            </button>
-                          </>
-                        ) : null}
-                      </div>
-                      {item.message && <div className="mt-1 text-[.72rem] c-dim">{item.message}</div>}
-                      {item.error && <div className="mt-1 text-[.72rem] text-red-400">{item.error}</div>}
-                    </div>
-                    <div className="text-[.72rem] c-dim">{item.updated_at}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {(inviteTaskLoading || activeInviteTask) && (
-          <div className="team-manage-job-detail">
-            <div className="team-manage-jobs__header">
-              <span className="text-sm font-medium c-heading">
-                {inviteTaskLoading ? "邀请任务详情加载中..." : `邀请任务详情 · ${activeInviteTask?.task.id}`}
-              </span>
-              {activeInviteTask && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveInviteTaskId(null);
-                    setActiveInviteTask(null);
-                  }}
-                  className="btn btn-ghost py-1.5 text-xs"
-                >
-                  关闭
-                </button>
-              )}
-            </div>
-            {activeInviteTask && (
-              <div className="space-y-3">
-                <div className="team-manage-invite-task__summary">
-                  <div>
-                    <div className="text-[.72rem] c-dim">Owner</div>
-                    <div className="font-mono text-xs c-heading">{activeInviteTask.task.owner_account_id}</div>
-                    <div className="text-[.72rem] c-dim">{activeInviteTask.task.owner_email}</div>
-                  </div>
-                  <div>
-                    <div className="text-[.72rem] c-dim">状态</div>
-                    <div className="flex items-center gap-2">
-                      <span className="badge badge-off">{activeInviteTask.task.status}</span>
-                      <span className="text-[.72rem] c-dim">{activeInviteTask.task.s2a_team || "--"}</span>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[.72rem] c-dim">进度</div>
-                    <div className="text-[.78rem] c-heading">
-                      邀请 {activeInviteTask.task.invited_ok}/{activeInviteTask.task.invite_count}
-                      {" · "}
-                      注册 {activeInviteTask.task.reg_ok}/{activeInviteTask.task.invite_count}
-                    </div>
-                    <div className="text-[.72rem] c-dim">
-                      RT {activeInviteTask.task.rt_ok} · 入库 {activeInviteTask.task.s2a_ok}
-                    </div>
-                  </div>
-                </div>
-                {activeInviteTask.task.error && (
-                  <div className="rounded-xl border border-red-500/20 bg-red-500/8 px-3 py-2 text-[.75rem] text-red-300">
-                    {activeInviteTask.task.error}
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium c-heading">邮箱明细</span>
-                    <span className="text-[.72rem] c-dim">
-                      展示前 {Math.min(INVITE_TASK_EMAIL_PREVIEW, activeInviteTask.emails.length)} / {activeInviteTask.emails.length} 条
-                    </span>
-                  </div>
-                  {visibleInviteEmails.map(email => (
-                    <div key={email.id} className="team-manage-jobs__detail-item">
-                      <div className="min-w-0">
-                        <div className="font-mono text-xs c-heading">{email.email}</div>
-                        <div className="mt-1 text-[.72rem] c-dim">
-                          invite:{email.invite_status} · reg:{email.reg_status} · rt:{email.rt_status} · s2a:{email.s2a_status}
-                        </div>
-                        {email.error && <div className="mt-1 text-[.72rem] text-red-400">{email.error}</div>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
 
         <TeamManagePagination
           page={ownerPage}
