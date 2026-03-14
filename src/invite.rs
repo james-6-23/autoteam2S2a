@@ -26,13 +26,17 @@ pub struct TeamOwner {
 /// 解析上传的 accounts JSON，兼容多种格式：
 /// - 格式 A（数组）：`[{ "user": { "email": "..." }, "account": { "id": "..." }, "accessToken": "..." }]`
 /// - 格式 B（对象）：`{ "accounts": [{ "id": "...", "access_token": "..." }] }`
+/// - 格式 C（codex）：`{ "type": "codex", "email": "...", "account_id": "...", "access_token": "...", "expired": "..." }`
 /// - email 缺失时自动从 JWT access_token 中提取
 pub fn parse_owners_json(value: &serde_json::Value) -> Result<Vec<TeamOwner>> {
-    // 兼容 { "accounts": [...] } 包装格式
+    // 兼容多种包装格式：数组 / { "accounts": [...] } / 单个对象
     let arr = if let Some(arr) = value.as_array() {
         arr.clone()
     } else if let Some(arr) = value.pointer("/accounts").and_then(|v| v.as_array()) {
         arr.clone()
+    } else if value.is_object() && (value.get("access_token").is_some() || value.get("accessToken").is_some()) {
+        // 单个账号对象，自动包装为数组
+        vec![value.clone()]
     } else {
         bail!("JSON 格式不支持，需要数组或 {{ \"accounts\": [...] }}");
     };
@@ -47,12 +51,13 @@ pub fn parse_owners_json(value: &serde_json::Value) -> Result<Vec<TeamOwner>> {
             .ok_or_else(|| anyhow::anyhow!("第 {} 个账号缺少 accessToken / access_token", i + 1))?
             .to_string();
 
-        // account_id: 兼容 account.id / id
+        // account_id: 兼容 account.id / account_id / id
         let account_id = item
             .pointer("/account/id")
+            .or_else(|| item.get("account_id"))
             .or_else(|| item.get("id"))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("第 {} 个账号缺少 account.id / id", i + 1))?
+            .ok_or_else(|| anyhow::anyhow!("第 {} 个账号缺少 account.id / account_id / id", i + 1))?
             .to_string();
 
         // email: 兼容 user.email / email，缺失时从 JWT 提取
@@ -64,8 +69,10 @@ pub fn parse_owners_json(value: &serde_json::Value) -> Result<Vec<TeamOwner>> {
             .or_else(|| extract_email_from_jwt(&access_token))
             .unwrap_or_default();
 
+        // expires: 兼容 expires / expired
         let expires = item
             .get("expires")
+            .or_else(|| item.get("expired"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
