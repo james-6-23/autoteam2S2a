@@ -164,6 +164,50 @@ export default function TeamManage() {
   const [batchCheckLoading, setBatchCheckLoading] = useState(false);
   const [batchCheckProgress, setBatchCheckProgress] = useState({ done: 0, total: 0 });
   const batchCheckCancelledRef = useRef(false);
+  const batchCheckLoadingRef = useRef(false);
+
+  // 同步 ref + sessionStorage，防止刷新后丢失状态
+  const updateBatchCheckState = useCallback((loading: boolean, progress?: { done: number; total: number }) => {
+    batchCheckLoadingRef.current = loading;
+    setBatchCheckLoading(loading);
+    if (progress) setBatchCheckProgress(progress);
+    if (loading) {
+      sessionStorage.setItem("batch-check-state", JSON.stringify({
+        loading: true,
+        ...(progress ?? { done: 0, total: 0 }),
+        ts: Date.now(),
+      }));
+    } else {
+      sessionStorage.removeItem("batch-check-state");
+    }
+  }, []);
+
+  // 刷新浏览器时警告
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (batchCheckLoadingRef.current) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
+
+  // 组件挂载时检测中断的批量检查
+  useEffect(() => {
+    const raw = sessionStorage.getItem("batch-check-state");
+    if (raw) {
+      try {
+        const state = JSON.parse(raw);
+        // 超过 5 分钟认为过期
+        if (state.loading && Date.now() - state.ts < 5 * 60 * 1000) {
+          toast(`上次批量检查被中断（已完成 ${state.done}/${state.total}），请重新开始`, "error");
+        }
+      } catch { /* ignore */ }
+      sessionStorage.removeItem("batch-check-state");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [checkConcurrency, setCheckConcurrency] = useState(() =>
     parseInt(localStorage.getItem("team-check-concurrency") || "5", 10),
   );
@@ -548,8 +592,7 @@ export default function TeamManage() {
       const allIds: string[] = [];
       let page = 1;
       const pageSize = 500;
-      setBatchCheckLoading(true);
-      setBatchCheckProgress({ done: 0, total: 0 });
+      updateBatchCheckState(true, { done: 0, total: 0 });
       try {
         // 第一页获取 total_pages 信息
         const firstPage = await api.fetchTeamManageOwnersPage({
@@ -564,7 +607,7 @@ export default function TeamManage() {
         // 估算总数用于显示进度
         const estimatedTotal = (firstPage as { total?: number }).total
           ?? totalPages * pageSize;
-        setBatchCheckProgress({ done: 0, total: estimatedTotal });
+        updateBatchCheckState(true, { done: 0, total: estimatedTotal });
 
         // 剩余页并行获取（最多 5 页同时）
         if (totalPages > 1) {
@@ -590,7 +633,7 @@ export default function TeamManage() {
         }
       } catch (error) {
         toast(`获取 Owner 列表失败: ${error}`, "error");
-        setBatchCheckLoading(false);
+        updateBatchCheckState(false);
         return;
       }
       accountIds = allIds;
@@ -601,7 +644,7 @@ export default function TeamManage() {
     }
 
     if (accountIds.length === 0) {
-      setBatchCheckLoading(false);
+      updateBatchCheckState(false);
       return;
     }
 
@@ -612,9 +655,9 @@ export default function TeamManage() {
       chunks.push(accountIds.slice(i, i + chunkSize));
     }
 
-    setBatchCheckLoading(true);
+    updateBatchCheckState(true, { done: 0, total: accountIds.length });
     batchCheckCancelledRef.current = false;
-    setBatchCheckProgress({ done: 0, total: accountIds.length });
+    const checkStartTime = Date.now();
 
     let totalCacheHits = 0;
     let totalCacheMisses = 0;
@@ -666,7 +709,7 @@ export default function TeamManage() {
 
         doneCount += chunks[chunkIndex].length;
         processedChunks += 1;
-        setBatchCheckProgress({ done: doneCount, total: accountIds.length });
+        updateBatchCheckState(true, { done: doneCount, total: accountIds.length });
 
         if (processedChunks % 5 === 0) {
           void loadDashboard();
@@ -681,16 +724,19 @@ export default function TeamManage() {
       toast(`检查已取消，已完成 ${doneCount}/${accountIds.length}`, "success");
     }
 
+    const elapsed = ((Date.now() - checkStartTime) / 1000).toFixed(1);
     void loadDashboard();
     if (!batchCheckCancelledRef.current) {
+      const parts = [`${accountIds.length} 个 owner`, `耗时 ${elapsed}s`];
+      if (totalCacheHits > 0) parts.push(`缓存 ${totalCacheHits}`);
+      parts.push(`实查 ${totalCacheMisses}`);
+      if (failedChunks > 0) parts.push(`失败 ${failedChunks} 批`);
       toast(
-        failedChunks > 0
-          ? `检查完成: 命中缓存 ${totalCacheHits}，重算 ${totalCacheMisses}，失败 ${failedChunks} 批`
-          : `检查完成: 命中缓存 ${totalCacheHits}，重算 ${totalCacheMisses}`,
+        `检查完成: ${parts.join("，")}`,
         failedChunks > 0 ? "error" : "success",
       );
     }
-    setBatchCheckLoading(false);
+    updateBatchCheckState(false);
   };
 
   const toggleOwnerSelected = (accountId: string) => {
@@ -1096,6 +1142,18 @@ export default function TeamManage() {
                 className="btn btn-ghost py-1.5 text-xs"
               >
                 批量归档
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFillSlotsPools(s2aTeams.length > 0 ? [{ team: s2aTeams[0].name, weight: 100 }] : []);
+                  setShowFillSlotsModal(true);
+                }}
+                disabled={selectedOwnerCount === 0}
+                className="btn py-1.5 text-xs"
+                style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.84), rgba(20,184,166,0.82))", color: "#fff" }}
+              >
+                一键补位
               </button>
               <button
                 type="button"
@@ -1651,6 +1709,93 @@ export default function TeamManage() {
                 style={{ background: "linear-gradient(135deg, rgba(20,184,166,0.84), rgba(59,130,246,0.82))", color: "#fff" }}
               >
                 {batchInviteLoading ? <span className="inline-flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> 提交中</span> : "创建批量任务"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFillSlotsModal && (
+        <div className="team-modal" onClick={event => { if (event.target === event.currentTarget) setShowFillSlotsModal(false); }}>
+          <div className="team-modal-card p-5" style={{ maxWidth: 560, width: "96vw" }} onClick={event => event.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <div className="section-title mb-0">一键补位</div>
+                <div className="mt-1 text-xs c-dim">
+                  当前已选 {selectedOwnerCount} 个 Owner，按权重比例分配到不同号池
+                </div>
+              </div>
+              <button type="button" onClick={() => setShowFillSlotsModal(false)} className="btn btn-ghost p-1">
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {fillSlotsPools.map((pool, index) => {
+                const totalWeight = fillSlotsPools.reduce((s, p) => s + p.weight, 0);
+                const pct = totalWeight > 0 ? Math.round((pool.weight / totalWeight) * 100) : 0;
+                return (
+                  <div key={index} className="flex items-center gap-2">
+                    <HSelect
+                      value={pool.team}
+                      onChange={v => {
+                        const next = [...fillSlotsPools];
+                        next[index] = { ...next[index], team: v };
+                        setFillSlotsPools(next);
+                      }}
+                      className="flex-1"
+                      placeholder="选择号池"
+                      options={[
+                        { value: "", label: "请选择号池" },
+                        ...s2aTeams.map(t => ({ value: t.name, label: t.name })),
+                      ]}
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      value={pool.weight}
+                      onChange={event => {
+                        const next = [...fillSlotsPools];
+                        next[index] = { ...next[index], weight: Math.max(1, Number(event.target.value) || 1) };
+                        setFillSlotsPools(next);
+                      }}
+                      className="field-input w-20 text-center"
+                      title="权重"
+                    />
+                    <span className="w-10 shrink-0 text-right text-xs font-mono c-dim">{pct}%</span>
+                    {fillSlotsPools.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setFillSlotsPools(prev => prev.filter((_, i) => i !== index))}
+                        className="btn btn-ghost p-1"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => setFillSlotsPools(prev => [...prev, { team: "", weight: 1 }])}
+                className="btn btn-ghost w-full py-1.5 text-xs"
+              >
+                + 添加号池
+              </button>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setShowFillSlotsModal(false)} className="btn btn-ghost">
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitFillSlots()}
+                disabled={fillSlotsLoading || fillSlotsPools.filter(p => p.team && p.weight > 0).length === 0}
+                className="btn"
+                style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.84), rgba(20,184,166,0.82))", color: "#fff" }}
+              >
+                {fillSlotsLoading ? <span className="inline-flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> 提交中</span> : "确认补位"}
               </button>
             </div>
           </div>
