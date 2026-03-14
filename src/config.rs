@@ -272,6 +272,14 @@ impl Default for S2aExtraConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum D1CleanupTiming {
+    BeforeTask,
+    #[default]
+    AfterTask,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct D1CleanupConfig {
     /// 是否启用 D1 清理，默认 false
@@ -286,6 +294,8 @@ pub struct D1CleanupConfig {
     pub keep_percent: Option<f64>,
     /// 每批删除数量，默认 5000
     pub batch_size: Option<usize>,
+    /// 清理时机：before_task 或 after_task（默认）
+    pub cleanup_timing: Option<D1CleanupTiming>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
