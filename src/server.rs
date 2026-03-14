@@ -330,6 +330,7 @@ struct D1CleanupResp {
     databases: Vec<crate::config::D1Database>,
     keep_percent: f64,
     batch_size: usize,
+    cleanup_timing: String,
 }
 
 #[derive(Serialize)]
@@ -435,6 +436,7 @@ struct UpdateD1CleanupRequest {
     databases: Option<Vec<crate::config::D1Database>>,
     keep_percent: Option<f64>,
     batch_size: Option<usize>,
+    cleanup_timing: Option<String>,
 }
 
 fn error_json(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
@@ -547,6 +549,10 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
             databases: cfg.d1_cleanup.databases.clone().unwrap_or_default(),
             keep_percent: cfg.d1_cleanup.keep_percent.unwrap_or(0.1),
             batch_size: cfg.d1_cleanup.batch_size.unwrap_or(5000),
+            cleanup_timing: cfg.d1_cleanup.cleanup_timing.map(|t| match t {
+                crate::config::D1CleanupTiming::BeforeTask => "before_task".to_string(),
+                crate::config::D1CleanupTiming::AfterTask => "after_task".to_string(),
+            }).unwrap_or_else(|| "after_task".to_string()),
         },
     })
 }
@@ -1160,10 +1166,34 @@ async fn update_d1_cleanup_handler(
     if let Some(v) = req.batch_size {
         cfg.d1_cleanup.batch_size = Some(v);
     }
+    if let Some(v) = req.cleanup_timing {
+        cfg.d1_cleanup.cleanup_timing = Some(match v.as_str() {
+            "before_task" => crate::config::D1CleanupTiming::BeforeTask,
+            _ => crate::config::D1CleanupTiming::AfterTask,
+        });
+    }
     auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
         message: "D1 清理配置已更新".to_string(),
     })
+}
+
+async fn trigger_d1_cleanup_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let d1_cfg = {
+        let cfg = state.config.read().await;
+        cfg.d1_cleanup.clone()
+    };
+    match crate::d1_cleanup::run_cleanup(&d1_cfg).await {
+        Ok(_) => Ok(Json(MsgResponse {
+            message: "D1 清理完成".to_string(),
+        })),
+        Err(e) => Err(error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("D1 清理失败: {e}"),
+        )),
+    }
 }
 
 /// 自动持久化配置到文件（静默，不阻塞请求）
@@ -2578,6 +2608,7 @@ pub async fn start_server(
         .route("/api/config/register", put(update_register_handler))
         .route("/api/test/gptmail", post(test_gptmail_handler))
         .route("/api/config/d1_cleanup", put(update_d1_cleanup_handler))
+        .route("/api/d1_cleanup/trigger", post(trigger_d1_cleanup_handler))
         .route("/api/config/email_domains", post(add_email_domain_handler))
         .route(
             "/api/config/email_domains",
@@ -5386,8 +5417,8 @@ async fn team_manage_batch_invite_handler(
             {
                 Ok(created) => {
                     crate::log_broadcast::broadcast_log(&format!(
-                        "[Team管理][OK] 邀请成功: {} (task={})",
-                        account_id, created.task_id
+                        "[Team管理] 邀请任务已派发: {} (task={}, 需邀请{}人)",
+                        account_id, created.task_id, created.invite_count
                     ));
                     team_manage_update_batch_job_item(
                         &state_clone,
