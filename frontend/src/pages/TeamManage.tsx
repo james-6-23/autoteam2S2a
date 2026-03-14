@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Search, ShieldAlert, Trash2, UserPlus, X, Zap } from "lucide-react";
 
 import { useToast } from "../components/Toast";
@@ -156,6 +156,10 @@ export default function TeamManage() {
     skip_quarantined: false,
     only_with_slots: true,
   });
+
+  const [showFillSlotsModal, setShowFillSlotsModal] = useState(false);
+  const [fillSlotsLoading, setFillSlotsLoading] = useState(false);
+  const [fillSlotsPools, setFillSlotsPools] = useState<Array<{ team: string; weight: number }>>([]);
 
   const [batchCheckLoading, setBatchCheckLoading] = useState(false);
   const [batchCheckProgress, setBatchCheckProgress] = useState({ done: 0, total: 0 });
@@ -543,21 +547,46 @@ export default function TeamManage() {
     if (selectionScope === "filtered") {
       const allIds: string[] = [];
       let page = 1;
-      const pageSize = 200;
+      const pageSize = 500;
       setBatchCheckLoading(true);
       setBatchCheckProgress({ done: 0, total: 0 });
       try {
-        while (true) {
-          const data = await api.fetchTeamManageOwnersPage({
-            ...ownerQuery,
-            page,
-            page_size: pageSize,
-          });
-          for (const owner of data.items || []) {
-            allIds.push(owner.account_id);
+        // 第一页获取 total_pages 信息
+        const firstPage = await api.fetchTeamManageOwnersPage({
+          ...ownerQuery,
+          page: 1,
+          page_size: pageSize,
+        });
+        for (const owner of firstPage.items || []) {
+          allIds.push(owner.account_id);
+        }
+        const totalPages = firstPage.total_pages;
+        // 估算总数用于显示进度
+        const estimatedTotal = (firstPage as { total?: number }).total
+          ?? totalPages * pageSize;
+        setBatchCheckProgress({ done: 0, total: estimatedTotal });
+
+        // 剩余页并行获取（最多 5 页同时）
+        if (totalPages > 1) {
+          const remainingPages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+          const PARALLEL_FETCH = 5;
+          for (let i = 0; i < remainingPages.length; i += PARALLEL_FETCH) {
+            const batch = remainingPages.slice(i, i + PARALLEL_FETCH);
+            const results = await Promise.all(
+              batch.map(p =>
+                api.fetchTeamManageOwnersPage({
+                  ...ownerQuery,
+                  page: p,
+                  page_size: pageSize,
+                }),
+              ),
+            );
+            for (const data of results) {
+              for (const owner of data.items || []) {
+                allIds.push(owner.account_id);
+              }
+            }
           }
-          if (page >= data.total_pages) break;
-          page += 1;
         }
       } catch (error) {
         toast(`获取 Owner 列表失败: ${error}`, "error");
@@ -818,6 +847,86 @@ export default function TeamManage() {
     } finally {
       setBatchInviteLoading(false);
     }
+  };
+
+  const submitFillSlots = async () => {
+    const activePools = fillSlotsPools.filter(p => p.team && p.weight > 0);
+    if (activePools.length === 0) {
+      toast("请至少添加一个号池", "error");
+      return;
+    }
+
+    let accountIds: string[];
+    if (selectionScope === "filtered") {
+      const allIds: string[] = [];
+      let page = 1;
+      try {
+        while (true) {
+          const data = await api.fetchTeamManageOwnersPage({ ...ownerQuery, page, page_size: 200 });
+          for (const owner of data.items || []) allIds.push(owner.account_id);
+          if (page >= data.total_pages) break;
+          page += 1;
+        }
+      } catch (error) {
+        toast(`获取 Owner 列表失败: ${error}`, "error");
+        return;
+      }
+      accountIds = allIds;
+    } else {
+      accountIds = selectedOwnerIds.length > 0
+        ? selectedOwnerIds
+        : owners.map(owner => owner.account_id);
+    }
+
+    if (accountIds.length === 0) {
+      toast("没有可补位的 Owner", "error");
+      return;
+    }
+
+    const totalWeight = activePools.reduce((sum, p) => sum + p.weight, 0);
+    let offset = 0;
+    const poolAssignments: Array<{ team: string; ids: string[] }> = [];
+    for (let i = 0; i < activePools.length; i++) {
+      const pool = activePools[i];
+      const count = i === activePools.length - 1
+        ? accountIds.length - offset
+        : Math.round((pool.weight / totalWeight) * accountIds.length);
+      poolAssignments.push({ team: pool.team, ids: accountIds.slice(offset, offset + count) });
+      offset += count;
+    }
+
+    setFillSlotsLoading(true);
+    let totalAccepted = 0;
+    let totalSkipped = 0;
+    let failedPools = 0;
+
+    for (const assignment of poolAssignments) {
+      if (assignment.ids.length === 0) continue;
+      try {
+        const result = await api.batchInviteTeamManageOwners({
+          account_ids: assignment.ids,
+          s2a_team: assignment.team,
+          strategy: "fill_to_limit",
+          scope: "manual",
+          skip_banned: true,
+          only_with_slots: true,
+        });
+        totalAccepted += result.accepted;
+        totalSkipped += result.skipped;
+      } catch {
+        failedPools += 1;
+      }
+    }
+
+    setFillSlotsLoading(false);
+    setShowFillSlotsModal(false);
+    toast(
+      failedPools > 0
+        ? `补位任务已创建: 接受 ${totalAccepted}，跳过 ${totalSkipped}，${failedPools} 个号池失败`
+        : `补位任务已创建: 接受 ${totalAccepted}，跳过 ${totalSkipped}`,
+      failedPools > 0 ? "error" : "success",
+    );
+    void loadBatchJobs();
   };
 
   const selectedOwner = owners.find(owner => owner.account_id === selected);
