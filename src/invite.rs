@@ -687,12 +687,21 @@ pub async fn run_invite_workflow(
                 broadcast_log("[邀请] 检测到席位上限错误(free trial?)，停止重试");
                 // 标记该 owner 为 seat_limited，后续批量补位将自动跳过
                 let now = chrono::Utc::now().to_rfc3339();
-                let _ = db.batch_update_owner_registry_state(
+                match db.batch_update_owner_registry_state(
                     &[owner.account_id.clone()],
                     "seat_limited",
                     Some("free_trial_seat_limit"),
                     &now,
-                );
+                ) {
+                    Ok(n) => broadcast_log(&format!(
+                        "[邀请] 已标记 owner {} 为 seat_limited (affected={})",
+                        owner.account_id, n
+                    )),
+                    Err(e) => broadcast_log(&format!(
+                        "[邀请] 标记 owner {} 为 seat_limited 失败: {e}",
+                        owner.account_id
+                    )),
+                }
                 break;
             }
             broadcast_log("[邀请] 本轮所有邮箱邀请均失败");

@@ -800,20 +800,78 @@ export default function TeamManage() {
     }
 
     setFillSlotsLoading(true);
+
+    // 单号池：直接让后端筛选，无需前端分页拉取
+    if (activePools.length === 1) {
+      try {
+        const result = await api.batchInviteTeamManageOwners({
+          account_ids: [],
+          s2a_team: activePools[0].team,
+          strategy: "fill_to_limit",
+          scope: "filtered",
+          filters: { has_slots: true },
+          skip_banned: true,
+          only_with_slots: true,
+        });
+        setFillSlotsLoading(false);
+        setShowFillSlotsModal(false);
+        toast(`补位任务已创建: 接受 ${result.accepted}，跳过 ${result.skipped}`, "success");
+      } catch (error) {
+        setFillSlotsLoading(false);
+        toast(`补位任务创建失败: ${error}`, "error");
+      }
+      return;
+    }
+
+    // 多号池：先拉取所有有空位 owner，再按权重分配到不同号池
+    const allIds: string[] = [];
+    let page = 1;
+    try {
+      while (true) {
+        const data = await api.fetchTeamManageOwnersPage({
+          page, page_size: 200, has_slots: true,
+        });
+        for (const owner of data.items || []) allIds.push(owner.account_id);
+        if (page >= data.total_pages) break;
+        page += 1;
+      }
+    } catch (error) {
+      setFillSlotsLoading(false);
+      toast(`获取 Owner 列表失败: ${error}`, "error");
+      return;
+    }
+
+    if (allIds.length === 0) {
+      setFillSlotsLoading(false);
+      toast("没有可补位的 Owner", "error");
+      return;
+    }
+
+    // 按权重切分 owner 到各号池
+    const totalWeight = activePools.reduce((sum, p) => sum + p.weight, 0);
+    let offset = 0;
+    const poolAssignments: Array<{ team: string; ids: string[] }> = [];
+    for (let i = 0; i < activePools.length; i++) {
+      const pool = activePools[i];
+      const count = i === activePools.length - 1
+        ? allIds.length - offset
+        : Math.round((pool.weight / totalWeight) * allIds.length);
+      poolAssignments.push({ team: pool.team, ids: allIds.slice(offset, offset + count) });
+      offset += count;
+    }
+
     let totalAccepted = 0;
     let totalSkipped = 0;
     let failedPools = 0;
 
-    // 按权重比例拆分为多个号池任务，每个号池独立调用后端
-    // 后端通过 scope="filtered" + filters.has_slots=true 自动筛选有空位的 owner
-    for (const pool of activePools) {
+    for (const assignment of poolAssignments) {
+      if (assignment.ids.length === 0) continue;
       try {
         const result = await api.batchInviteTeamManageOwners({
-          account_ids: [],
-          s2a_team: pool.team,
+          account_ids: assignment.ids,
+          s2a_team: assignment.team,
           strategy: "fill_to_limit",
-          scope: "filtered",
-          filters: { has_slots: true },
+          scope: "manual",
           skip_banned: true,
           only_with_slots: true,
         });
