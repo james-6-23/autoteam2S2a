@@ -672,8 +672,23 @@ pub async fn run_invite_workflow(
         cum_invited_failed += invited_failed;
 
         if invited_emails_ok.is_empty() {
+            // 检测致命错误：如果任一邀请失败原因是席位上限，则不再重试
+            let has_seat_limit_error = invite_results.iter().any(|r| {
+                r.error
+                    .as_deref()
+                    .map(|e| {
+                        e.contains("maximum number of seats")
+                            || e.contains("seats allowed")
+                            || e.contains("seat limit")
+                    })
+                    .unwrap_or(false)
+            });
+            if has_seat_limit_error {
+                broadcast_log("[邀请] 检测到席位上限错误(free trial?)，停止重试");
+                break;
+            }
             broadcast_log("[邀请] 本轮所有邮箱邀请均失败");
-            continue; // 直接进入下一轮重试
+            continue; // 其他类型失败：进入下一轮重试
         }
 
         // ─── 等待邀请生效 ────────────────────────────────────────────────
