@@ -60,10 +60,11 @@ export default function Layout() {
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col pt-14">
+    <div className="min-h-screen flex flex-col pt-32 xl:pt-20">
       {/* Header */}
-      <header className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-5 py-2.5">
-        <div className="flex items-center gap-3">
+      <header className="fixed top-0 left-0 right-0 z-50">
+        <div className="mx-auto grid w-full max-w-[1400px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-4 py-2.5 sm:px-5 xl:grid-cols-[auto_minmax(0,1fr)_auto] xl:gap-x-5">
+        <div className="flex min-w-0 items-center gap-3">
           {/* Logo */}
           <div className="relative group cursor-pointer">
             <div className="absolute -inset-1 bg-gradient-to-tr from-teal-400/40 to-primary/40 rounded-xl blur-md opacity-0 group-hover:opacity-100 transition-all duration-500" />
@@ -86,7 +87,7 @@ export default function Layout() {
         </div>
 
         {/* 右侧状态 */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 justify-self-end xl:col-start-3">
           <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
             <span className="text-[.65rem] font-mono c-dim tabular-nums" title="北京时间 (UTC+8)">{clock}</span>
             <span className="w-px h-3" style={{ background: 'var(--border)' }} />
@@ -109,19 +110,19 @@ export default function Layout() {
             )}
           </button>
         </div>
-      </header>
 
-      <div className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 flex flex-col pb-10">
         {/* 胶囊导航 */}
-        <div className="w-full mt-5 mb-7 pt-1">
+        <div className="col-span-2 min-w-0 xl:col-span-1 xl:col-start-2 xl:row-start-1">
           <nav
-            className="flex items-center gap-1 p-1 rounded-2xl overflow-x-auto mx-auto"
+            className="header-nav mx-auto flex max-w-full items-center gap-1 overflow-x-auto rounded-2xl p-1"
             style={{
               background: 'var(--bg-inner)',
               border: '1px solid var(--border)',
-              maxWidth: 'fit-content',
+              width: 'fit-content',
+              maxWidth: '100%',
               backdropFilter: 'blur(16px) saturate(140%)',
-              boxShadow: '0 2px 12px -4px rgba(0,0,0,0.08)',
+              WebkitBackdropFilter: 'blur(16px) saturate(140%)',
+              boxShadow: '0 4px 18px -8px rgba(0,0,0,0.18)',
             }}
           >
             {NAV_ITEMS.map(item => (
@@ -151,7 +152,10 @@ export default function Layout() {
             ))}
           </nav>
         </div>
+        </div>
+      </header>
 
+      <div className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 flex flex-col pb-10 pt-4 sm:pt-5">
         {/* 内容路由 */}
         <main className="flex-1 w-full animate-enter">
           <Outlet />

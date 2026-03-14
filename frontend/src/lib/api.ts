@@ -76,6 +76,7 @@ export const testGptMail = () => get<unknown>('/api/config/gptmail/test');
 export const saveD1Cleanup = (body: unknown) => put('/api/config/d1-cleanup', body);
 export const triggerD1Cleanup = () => post<{ message: string }>('/api/d1_cleanup/trigger');
 export const saveToFile = () => post('/api/config/save');
+export const setProxyEnabled = (enabled: boolean) => put('/api/config/proxy_enabled', { enabled });
 export const addProxy = (proxy: string) => post<{ message: string }>('/api/config/proxy_pool', { proxy });
 export const deleteProxy = (proxy: string) => request<{ message: string }>('/api/config/proxy_pool', { method: 'DELETE', body: JSON.stringify({ proxy }), headers: { 'Content-Type': 'application/json' } });
 export const checkProxyHealth = () => post<{ proxy: string; ok: boolean; reason: string }[]>('/api/proxy/health-check');

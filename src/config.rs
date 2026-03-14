@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct AppConfig {
     #[serde(default)]
     pub proxy_pool: Vec<String>,
+    /// 是否启用代理池（None 视为 true，向后兼容）
+    pub proxy_enabled: Option<bool>,
     #[serde(default)]
     pub s2a: Vec<S2aConfig>,
     #[serde(default)]

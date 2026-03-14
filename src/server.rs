@@ -317,6 +317,7 @@ struct FullConfigResponse {
     defaults: DefaultsResp,
     register: RegisterResp,
     proxy_pool: Vec<String>,
+    proxy_enabled: bool,
     email_domains: Vec<String>,
     chatgpt_mail_domains: Vec<String>,
     d1_cleanup: D1CleanupResp,
@@ -540,6 +541,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
             register_perf_mode: reg.register_perf_mode.unwrap_or_default(),
         },
         proxy_pool: cfg.proxy_pool.clone(),
+        proxy_enabled: cfg.proxy_enabled.unwrap_or(true),
         email_domains: cfg.email_domains.clone(),
         chatgpt_mail_domains: cfg.chatgpt_mail_domains.clone(),
         d1_cleanup: D1CleanupResp {
@@ -1200,6 +1202,25 @@ async fn delete_proxy_handler(
     }))
 }
 
+async fn set_proxy_enabled_handler(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let enabled = req
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let mut cfg = state.config.write().await;
+    cfg.proxy_enabled = Some(enabled);
+    auto_save(&cfg, &state.config_path);
+    Json(MsgResponse {
+        message: format!(
+            "代理池已{}",
+            if enabled { "启用" } else { "禁用（直连模式）" }
+        ),
+    })
+}
+
 async fn proxy_health_check_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
@@ -1738,6 +1759,10 @@ async fn build_proxy_pool(
     cfg: &AppConfig,
     proxy_file: Option<&std::path::Path>,
 ) -> anyhow::Result<Arc<ProxyPool>> {
+    if !cfg.proxy_enabled.unwrap_or(true) {
+        println!("[server] 代理池已禁用，使用直连模式");
+        return Ok(Arc::new(ProxyPool::new(vec![])));
+    }
     let proxy_list = resolve_proxies(proxy_file, &cfg.proxy_pool)?;
     let check_timeout = cfg.proxy_check_timeout_sec.unwrap_or(5);
     let healthy_proxies = health_check(&proxy_list, check_timeout, proxy_file).await?;
@@ -2724,6 +2749,7 @@ pub async fn start_server(
             "/api/config/proxy_pool",
             post(add_proxy_handler).delete(delete_proxy_handler),
         )
+        .route("/api/config/proxy_enabled", put(set_proxy_enabled_handler))
         .route("/api/proxy/health-check", post(proxy_health_check_handler))
         .route("/api/proxy/test", post(proxy_test_handler))
         .route("/api/proxy/quality-check", post(proxy_quality_check_handler))

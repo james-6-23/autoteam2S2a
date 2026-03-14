@@ -12,6 +12,7 @@ use crate::log_broadcast::broadcast_log;
 use crate::models::InviteProgress;
 use crate::proxy_pool::ProxyPool;
 use crate::services::{CodexService, RegisterService};
+use crate::util::mask_proxy;
 
 // ─── Team Owner 解析 ──────────────────────────────────────────────────────────
 
@@ -393,7 +394,12 @@ pub async fn run_invite_workflow(
     // ─── 初始化服务（所有轮次共用）─────────────────────────────────────────
     let register_runtime = cfg.register_runtime();
     let codex_runtime = cfg.codex_runtime();
-    let proxy_pool = Arc::new(ProxyPool::new(cfg.proxy_pool.clone()));
+    let proxy_pool = if cfg.proxy_enabled.unwrap_or(true) {
+        Arc::new(ProxyPool::new(cfg.proxy_pool.clone()))
+    } else {
+        broadcast_log("[邀请] 代理池已禁用，使用直连模式");
+        Arc::new(ProxyPool::new(vec![]))
+    };
 
     let email_cfg = EmailServiceConfig {
         mail_api_base: register_runtime.mail_api_base.clone(),
@@ -739,6 +745,12 @@ pub async fn run_invite_workflow(
 
                 async move {
                     let proxy = proxy_pool.next();
+                    if let Some(p) = proxy.as_deref() {
+                        broadcast_log(&format!(
+                            "[邀请注册] {} 使用代理: {}",
+                            seed.account, mask_proxy(p)
+                        ));
+                    }
 
                     // ── 注册（最多 3 次尝试，退避 2s → 5s）──
                     const MAX_REG_RETRIES: usize = 3;
