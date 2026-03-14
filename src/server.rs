@@ -2972,6 +2972,7 @@ async fn execute_invite_handler(
         let progress = Arc::new(crate::models::InviteProgress::new());
         let db = state.run_history_db.clone();
         let invite_cfg = config_snapshot.invite_runtime();
+        let max_members = invite_cfg.default_invite_count;
         let cfg_clone = config_snapshot.clone();
         let task_id_clone = task_id.clone();
         let sem = invite_semaphore.clone();
@@ -2989,7 +2990,7 @@ async fn execute_invite_handler(
                 push_s2a,
                 db,
                 progress,
-                0, // max_members=0: 使用 seeds.len() 作为满员线（批量邀请的原有行为）
+                max_members, // team 席位上限（不含 owner）
             )
             .await;
         });
