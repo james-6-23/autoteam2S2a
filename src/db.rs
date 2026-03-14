@@ -510,6 +510,7 @@ pub struct NewTeamManageOwnerAudit {
 pub struct TeamManageOwnerAuditRecord {
     pub id: i64,
     pub account_id: String,
+    pub owner_email: Option<String>,
     pub action: String,
     pub from_state: Option<String>,
     pub to_state: String,
@@ -2770,20 +2771,29 @@ impl RunHistoryDb {
         let mut conditions = Vec::new();
         let mut values: Vec<Box<dyn ToSql>> = Vec::new();
 
+        // 搜索同时匹配邮箱时需要 JOIN
+        let has_search = account_id.map_or(false, |v| !v.trim().is_empty());
+
         if let Some(account_id) = account_id.filter(|value| !value.trim().is_empty()) {
-            conditions.push("account_id LIKE ?");
-            values.push(Box::new(format!("%{}%", account_id.trim())));
+            conditions.push("(a.account_id LIKE ? OR o.display_email LIKE ?)");
+            let pattern = format!("%{}%", account_id.trim());
+            values.push(Box::new(pattern.clone()));
+            values.push(Box::new(pattern));
         }
         if let Some(action) = action.filter(|value| !value.trim().is_empty()) {
-            conditions.push("action = ?");
+            conditions.push("a.action = ?");
             values.push(Box::new(action.trim().to_string()));
         }
         if let Some(batch_job_id) = batch_job_id.filter(|value| !value.trim().is_empty()) {
-            conditions.push("batch_job_id = ?");
+            conditions.push("a.batch_job_id = ?");
             values.push(Box::new(batch_job_id.trim().to_string()));
         }
 
-        let mut sql = String::from("SELECT COUNT(*) FROM team_manage_owner_audits");
+        let mut sql = if has_search {
+            String::from("SELECT COUNT(*) FROM team_manage_owner_audits a LEFT JOIN owner_registry o ON a.account_id = o.account_id")
+        } else {
+            String::from("SELECT COUNT(*) FROM team_manage_owner_audits a")
+        };
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
@@ -2807,28 +2817,32 @@ impl RunHistoryDb {
         let mut values: Vec<Box<dyn ToSql>> = Vec::new();
 
         if let Some(account_id) = account_id.filter(|value| !value.trim().is_empty()) {
-            conditions.push("account_id LIKE ?");
-            values.push(Box::new(format!("%{}%", account_id.trim())));
+            // 同时搜索 account_id 和邮箱
+            conditions.push("(a.account_id LIKE ? OR o.display_email LIKE ?)");
+            let pattern = format!("%{}%", account_id.trim());
+            values.push(Box::new(pattern.clone()));
+            values.push(Box::new(pattern));
         }
         if let Some(action) = action.filter(|value| !value.trim().is_empty()) {
-            conditions.push("action = ?");
+            conditions.push("a.action = ?");
             values.push(Box::new(action.trim().to_string()));
         }
         if let Some(batch_job_id) = batch_job_id.filter(|value| !value.trim().is_empty()) {
-            conditions.push("batch_job_id = ?");
+            conditions.push("a.batch_job_id = ?");
             values.push(Box::new(batch_job_id.trim().to_string()));
         }
 
         let offset = page.saturating_sub(1) * page_size;
         let mut sql = String::from(
-            "SELECT id, account_id, action, from_state, to_state, reason, scope, batch_job_id, created_at
-             FROM team_manage_owner_audits",
+            "SELECT a.id, a.account_id, o.display_email, a.action, a.from_state, a.to_state, a.reason, a.scope, a.batch_job_id, a.created_at
+             FROM team_manage_owner_audits a
+             LEFT JOIN owner_registry o ON a.account_id = o.account_id",
         );
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
         }
-        sql.push_str(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
+        sql.push_str(" ORDER BY a.created_at DESC LIMIT ? OFFSET ?");
         values.push(Box::new(page_size as i64));
         values.push(Box::new(offset as i64));
 
@@ -2962,13 +2976,14 @@ fn map_team_manage_owner_audit_row(
     Ok(TeamManageOwnerAuditRecord {
         id: row.get(0)?,
         account_id: row.get(1)?,
-        action: row.get(2)?,
-        from_state: row.get(3)?,
-        to_state: row.get(4)?,
-        reason: row.get(5)?,
-        scope: row.get(6)?,
-        batch_job_id: row.get(7)?,
-        created_at: row.get(8)?,
+        owner_email: row.get(2)?,
+        action: row.get(3)?,
+        from_state: row.get(4)?,
+        to_state: row.get(5)?,
+        reason: row.get(6)?,
+        scope: row.get(7)?,
+        batch_job_id: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }
 

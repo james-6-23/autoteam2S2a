@@ -309,28 +309,63 @@ export default function Proxy() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const [showAddModal, setShowAddModal] = useState(false);
+  const [addMode, setAddMode] = useState<"single" | "batch">("single");
+  const [singleInput, setSingleInput] = useState("");
   const [addInput, setAddInput] = useState("");
   const [adding, setAdding] = useState(false);
 
   const [batchChecking, setBatchChecking] = useState(false);
+  const [batchTesting, setBatchTesting] = useState(false);
+  const [batchTestProgress, setBatchTestProgress] = useState({ done: 0, total: 0 });
 
-  // 加载代理列表
+  // localStorage 持久化：保存/恢复检测结果
+  const CACHE_KEY = "proxy-test-results";
+
+  const saveCache = useCallback((entries: ProxyEntry[]) => {
+    const cache: Record<string, Pick<ProxyEntry, "health" | "test" | "quality">> = {};
+    for (const e of entries) {
+      if (e.health || e.test || e.quality) {
+        cache[e.url] = { health: e.health, test: e.test, quality: e.quality };
+      }
+    }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); } catch { /* quota exceeded */ }
+  }, []);
+
+  const loadCache = useCallback((): Record<string, Pick<ProxyEntry, "health" | "test" | "quality">> => {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  }, []);
+
+  // 加载代理列表（合并 localStorage 缓存）
   const load = useCallback(async () => {
     try {
       const data = await api.fetchConfig() as { proxy_pool?: string[]; proxy_enabled?: boolean };
       setProxyEnabled(data.proxy_enabled !== false);
+      const cached = loadCache();
       setProxies(prev => {
         const prevMap = new Map(prev.map(p => [p.url, p]));
-        return (data.proxy_pool || []).map(url => prevMap.get(url) || { url });
+        return (data.proxy_pool || []).map(url => {
+          const existing = prevMap.get(url);
+          if (existing) return existing;
+          const c = cached[url];
+          return c ? { url, ...c } : { url };
+        });
       });
     } catch {
       toast("加载代理配置失败", "error");
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, loadCache]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // 每次 proxies 变化时持久化结果
+  useEffect(() => {
+    if (proxies.length > 0) saveCache(proxies);
+  }, [proxies, saveCache]);
 
   // 统计
   const stats = useMemo(() => {
@@ -363,7 +398,24 @@ export default function Proxy() {
     }
   };
 
-  // 添加代理
+  // 添加单个代理
+  const handleAddSingle = async () => {
+    const url = singleInput.trim();
+    if (!url) return;
+    setAdding(true);
+    try {
+      await api.addProxy(url);
+      setSingleInput("");
+      toast("代理已添加", "success");
+      void load();
+    } catch (err) {
+      toast(`添加失败: ${err}`, "error");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  // 批量添加代理
   const handleAdd = async () => {
     const lines = addInput.split("\n").map(l => l.trim()).filter(Boolean);
     if (lines.length === 0) return;
@@ -451,6 +503,34 @@ export default function Proxy() {
     }
   };
 
+  // 批量测试连通性（逐个调用 testProxy，获取延迟/地理信息）
+  const handleBatchTest = async () => {
+    if (proxies.length === 0) return;
+    setBatchTesting(true);
+    setBatchTestProgress({ done: 0, total: proxies.length });
+    let okCount = 0;
+    for (let i = 0; i < proxies.length; i++) {
+      const url = proxies[i].url;
+      setProxies(prev => prev.map(p => p.url === url ? { ...p, testing: true } : p));
+      try {
+        const result = await api.testProxy(url);
+        if (result.success) okCount++;
+        setProxies(prev => prev.map(p => p.url === url ? {
+          ...p, testing: false, test: result,
+          health: { ok: result.success, reason: result.message },
+        } : p));
+      } catch (err) {
+        setProxies(prev => prev.map(p => p.url === url ? {
+          ...p, testing: false,
+          health: { ok: false, reason: String(err) },
+        } : p));
+      }
+      setBatchTestProgress({ done: i + 1, total: proxies.length });
+    }
+    setBatchTesting(false);
+    toast(`测试完成: ${okCount}/${proxies.length} 可用`, okCount === proxies.length ? "success" : "error");
+  };
+
   // 全选切换
   const allSelected = proxies.length > 0 && proxies.every(p => selectedIds.has(p.url));
   const toggleSelectAll = () => {
@@ -504,10 +584,21 @@ export default function Proxy() {
             <button
               type="button"
               onClick={handleBatchCheck}
-              disabled={batchChecking || proxies.length === 0}
+              disabled={batchChecking || batchTesting || proxies.length === 0}
               className="btn btn-ghost flex items-center gap-1.5 py-1.5 text-xs"
             >
               {batchChecking ? <><Loader2 size={13} className="animate-spin" /> 检测中...</> : <><Activity size={13} /> 健康检测</>}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleBatchTest()}
+              disabled={batchTesting || batchChecking || proxies.length === 0}
+              className="btn btn-ghost flex items-center gap-1.5 py-1.5 text-xs"
+            >
+              {batchTesting
+                ? <><Loader2 size={13} className="animate-spin" /> 测试中 {batchTestProgress.done}/{batchTestProgress.total}</>
+                : <><Zap size={13} /> 测试连通性</>
+              }
             </button>
             <button
               type="button"
@@ -593,44 +684,130 @@ export default function Proxy() {
         >
           <div
             className="team-modal-card p-6"
-            style={{ maxWidth: 520, width: "96vw" }}
+            style={{ maxWidth: 600, width: "96vw" }}
             onClick={event => event.stopPropagation()}
           >
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <div className="section-title mb-0">添加代理</div>
-                <p className="mt-1 text-xs c-dim">每行一个，支持 HTTP / SOCKS5 协议</p>
-              </div>
-              <button type="button" onClick={() => setShowAddModal(false)} disabled={adding} className="btn btn-ghost p-1.5">
-                <X size={14} />
+            {/* 标题 + 关闭 */}
+            <div className="mb-5 flex items-start justify-between">
+              <div className="section-title mb-0 text-base">添加代理</div>
+              <button
+                type="button"
+                onClick={() => setShowAddModal(false)}
+                disabled={adding}
+                className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors hover:bg-[var(--ghost-hover)]"
+                style={{ color: "var(--text-dim)" }}
+              >
+                <X size={16} />
               </button>
             </div>
-            <textarea
-              value={addInput}
-              onChange={e => setAddInput(e.target.value)}
-              placeholder={"http://127.0.0.1:7890\nhttp://user:pass@host:port\nsocks5://host:port"}
-              rows={5}
-              className="field-input w-full resize-none font-mono text-xs"
-              style={{ lineHeight: 1.8 }}
-              autoFocus
-            />
-            <div className="mt-2 text-[.62rem] c-dim">
-              已输入 <span className="font-mono c-heading">{addInput.split("\n").filter(l => l.trim()).length}</span> 个地址
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setShowAddModal(false)} disabled={adding} className="btn btn-ghost">
-                取消
+
+            {/* Tab 切换 */}
+            <div className="mb-5 flex items-center gap-1 border-b" style={{ borderColor: "var(--border)" }}>
+              <button
+                type="button"
+                onClick={() => setAddMode("single")}
+                className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold transition-colors"
+                style={{
+                  color: addMode === "single" ? "#14b8a6" : "var(--text-dim)",
+                  borderBottom: addMode === "single" ? "2px solid #14b8a6" : "2px solid transparent",
+                  marginBottom: -1,
+                }}
+              >
+                <Plus size={14} /> 标准添加
               </button>
               <button
                 type="button"
-                onClick={() => void handleAdd()}
-                disabled={adding || addInput.trim().length === 0}
-                className="btn"
-                style={{ background: "linear-gradient(135deg, rgba(20,184,166,0.85), rgba(59,130,246,0.85))", color: "#fff" }}
+                onClick={() => setAddMode("batch")}
+                className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold transition-colors"
+                style={{
+                  color: addMode === "batch" ? "#14b8a6" : "var(--text-dim)",
+                  borderBottom: addMode === "batch" ? "2px solid #14b8a6" : "2px solid transparent",
+                  marginBottom: -1,
+                }}
               >
-                {adding ? <span className="inline-flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> 添加中</span> : "确认添加"}
+                <Activity size={14} /> 快捷添加
               </button>
             </div>
+
+            {addMode === "single" ? (
+              /* ── 标准添加：单行输入 ── */
+              <>
+                <p className="mb-3 text-sm c-dim">每行一个，支持 HTTP / SOCKS5 协议</p>
+                <div
+                  className="flex items-center rounded-xl px-4 py-3 transition-all"
+                  style={{
+                    border: "1.5px solid rgba(20,184,166,0.4)",
+                    background: "var(--input-bg)",
+                    boxShadow: "0 0 0 3px rgba(20,184,166,0.06)",
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={singleInput}
+                    onChange={e => setSingleInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") void handleAddSingle(); }}
+                    placeholder="http://127.0.0.1:7890"
+                    className="flex-1 bg-transparent text-sm font-mono outline-none c-heading"
+                    style={{ border: "none" }}
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleAddSingle()}
+                    disabled={adding || !singleInput.trim()}
+                    className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 ml-2 transition-all disabled:opacity-30"
+                    style={{ background: "linear-gradient(135deg, #14b8a6, #3b82f6)", color: "#fff" }}
+                    title="添加"
+                  >
+                    {adding ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                  </button>
+                </div>
+                <div className="mt-6 flex justify-end gap-3">
+                  <button type="button" onClick={() => setShowAddModal(false)} disabled={adding} className="btn btn-ghost px-5 py-2.5">
+                    取消
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* ── 快捷添加：多行批量 ── */
+              <>
+                <div className="mb-2 text-sm font-medium c-heading">代理列表</div>
+                <textarea
+                  value={addInput}
+                  onChange={e => setAddInput(e.target.value)}
+                  placeholder={"每行输入一个代理，支持以下格式：\nsocks5://user:pass@192.168.1.1:1080\nhttp://192.168.1.1:8080\nhttps://user:pass@proxy.example.com:443"}
+                  rows={10}
+                  className="field-input w-full resize-y font-mono text-xs"
+                  style={{ lineHeight: 2, minHeight: 200 }}
+                  autoFocus
+                />
+                <p className="mt-2.5 text-xs c-dim">
+                  支持 http、https、socks5 协议，格式：<span className="font-mono c-dim2">协议://[用户名:密码@]主机:端口</span>
+                </p>
+                <div className="mt-5 flex items-center justify-between border-t pt-4" style={{ borderColor: "var(--border)" }}>
+                  <span className="text-xs c-dim">
+                    已输入 <span className="font-mono font-bold c-heading">{addInput.split("\n").filter(l => l.trim()).length}</span> 个地址
+                  </span>
+                  <div className="flex gap-3">
+                    <button type="button" onClick={() => setShowAddModal(false)} disabled={adding} className="btn btn-ghost px-5 py-2.5">
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleAdd()}
+                      disabled={adding || addInput.trim().length === 0}
+                      className="btn px-5 py-2.5"
+                      style={{ background: "linear-gradient(135deg, rgba(20,184,166,0.85), rgba(59,130,246,0.85))", color: "#fff" }}
+                    >
+                      {adding
+                        ? <span className="inline-flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> 导入中</span>
+                        : `导入 ${addInput.split("\n").filter(l => l.trim()).length} 个代理`
+                      }
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

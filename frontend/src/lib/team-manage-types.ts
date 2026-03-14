@@ -211,6 +211,7 @@ export interface TeamManageBatchOwnerStateResponse {
 export interface TeamManageOwnerAuditRecord {
   id: number;
   account_id: string;
+  owner_email?: string;
   action: string;
   from_state?: string;
   to_state: string;

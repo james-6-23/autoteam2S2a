@@ -139,7 +139,7 @@ export default function OwnerAudit() {
                 submitOwnerAuditFilter();
               }
             }}
-            placeholder="按 account_id 查询审计"
+            placeholder="搜索邮箱 / account_id"
             className="input team-manage-audit__search"
           />
           <HSelect
@@ -191,8 +191,11 @@ export default function OwnerAudit() {
             {ownerAudits.map(record => (
               <div key={record.id} className="team-manage-jobs__detail-item">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs c-heading">{record.account_id}</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {record.owner_email && (
+                      <span className="text-xs font-medium c-heading">{record.owner_email}</span>
+                    )}
+                    <span className="font-mono text-[.68rem] c-dim">{record.account_id}</span>
                     <span className="badge badge-off">{actionToLabel(record.action)}</span>
                   </div>
                   <div className="mt-1 text-[.72rem] c-dim">

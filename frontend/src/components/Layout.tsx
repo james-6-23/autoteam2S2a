@@ -64,15 +64,17 @@ export default function Layout() {
     <div className="min-h-screen flex flex-col pt-[60px]">
       {/* Header */}
       <header className="fixed top-0 left-0 right-0 z-50">
-        <div className="flex items-center w-full px-4 sm:px-5 py-2 gap-3">
+        <div className="relative flex items-center justify-between w-full px-4 sm:px-5 py-2 gap-3">
 
           {/* 左：品牌 */}
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex shrink-0 items-center gap-3 z-10">
             <div className="relative group cursor-pointer">
               <div className="absolute -inset-1 bg-gradient-to-tr from-teal-400/40 to-primary/40 rounded-xl blur-md opacity-0 group-hover:opacity-100 transition-all duration-500" />
-              <div className="relative w-8 h-8 rounded-xl bg-gradient-to-br from-teal-500 to-primary flex items-center justify-center shadow-lg">
-                <span className="text-white font-bold text-sm font-display tracking-tighter">GC</span>
-              </div>
+              <img
+                src="/codex-app.png"
+                alt="logo"
+                className="relative w-8 h-8 rounded-xl object-cover shadow-lg"
+              />
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[.95rem] font-bold tracking-tight c-heading font-display whitespace-nowrap">
@@ -87,8 +89,8 @@ export default function Layout() {
             </div>
           </div>
 
-          {/* 中：胶囊导航 */}
-          <div className="flex-1 flex justify-center">
+          {/* 中：胶囊导航 — 绝对定位保证视口居中 */}
+          <div className="absolute left-1/2 -translate-x-1/2">
             <nav
               className="header-nav flex items-center gap-0.5 rounded-2xl p-1"
               style={{
@@ -128,7 +130,7 @@ export default function Layout() {
           </div>
 
           {/* 右：状态 + 主题切换 */}
-          <div className="flex shrink-0 items-center gap-2.5">
+          <div className="flex shrink-0 items-center gap-2.5 z-10">
             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: 'var(--ghost)', border: '1px solid var(--border)' }}>
               <span className="text-[.65rem] font-mono c-dim tabular-nums" title="北京时间 (UTC+8)">{clock}</span>
               <span className="w-px h-3" style={{ background: 'var(--border)' }} />
