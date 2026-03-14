@@ -74,6 +74,7 @@ export const saveRegister = (body: unknown) => put('/api/config/register', body)
 export const saveGptMail = (body: unknown) => put('/api/config/gptmail', body);
 export const testGptMail = () => get<unknown>('/api/config/gptmail/test');
 export const saveD1Cleanup = (body: unknown) => put('/api/config/d1-cleanup', body);
+export const triggerD1Cleanup = () => post<{ message: string }>('/api/d1_cleanup/trigger');
 export const saveToFile = () => post('/api/config/save');
 
 // ─── Tasks ──

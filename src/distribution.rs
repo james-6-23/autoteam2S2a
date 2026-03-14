@@ -100,6 +100,17 @@ pub async fn run_distribution(
             .unwrap_or(register_runtime.register_perf_mode),
     };
 
+    // D1 清理（任务前）
+    if cfg.d1_cleanup.enabled.unwrap_or(false)
+        && cfg.d1_cleanup.cleanup_timing.unwrap_or_default()
+            == crate::config::D1CleanupTiming::BeforeTask
+    {
+        broadcast_log("[分发] D1 邮件清理（任务前）");
+        if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
+            broadcast_log(&format!("[分发] D1 清理失败（不影响任务执行）: {e}"));
+        }
+    }
+
     // 2. 注册 + RT
     let mode_label = if options.free_mode { "free" } else { "team" };
     broadcast_log(&format!(
@@ -337,8 +348,11 @@ pub async fn run_distribution(
         },
     );
 
-    // D1 清理
-    if cfg.d1_cleanup.enabled.unwrap_or(false) {
+    // D1 清理（任务后）
+    if cfg.d1_cleanup.enabled.unwrap_or(false)
+        && cfg.d1_cleanup.cleanup_timing.unwrap_or_default()
+            != crate::config::D1CleanupTiming::BeforeTask
+    {
         broadcast_log("[分发] D1 邮件清理");
         if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
             broadcast_log(&format!("[分发] D1 清理失败: {e}"));

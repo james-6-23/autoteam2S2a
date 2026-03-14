@@ -8,7 +8,7 @@ interface ConfigData {
   register: Record<string, unknown>;
   email_domains: string[];
   chatgpt_mail_domains?: string[];
-  d1_cleanup?: { enabled: boolean; account_id: string; api_key: string; keep_percent: number; batch_size: number; databases: { name: string; id: string }[] };
+  d1_cleanup?: { enabled: boolean; account_id: string; api_key: string; keep_percent: number; batch_size: number; databases: { name: string; id: string }[]; cleanup_timing?: string };
 }
 
 export default function Config() {
@@ -32,6 +32,8 @@ export default function Config() {
   const [d1Enabled, setD1Enabled] = useState(false); const [d1AccId, setD1AccId] = useState(''); const [d1ApiKey, setD1ApiKey] = useState('');
   const [d1Keep, setD1Keep] = useState(0.1); const [d1Batch, setD1Batch] = useState(5000);
   const [d1Dbs, setD1Dbs] = useState<{ name: string; id: string }[]>([]);
+  const [d1Timing, setD1Timing] = useState<'before_task' | 'after_task'>('after_task');
+  const [d1Cleaning, setD1Cleaning] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -51,6 +53,7 @@ export default function Config() {
         const c = data.d1_cleanup;
         setD1Enabled(c.enabled); setD1AccId(c.account_id || ''); setD1ApiKey(c.api_key || '');
         setD1Keep(c.keep_percent); setD1Batch(c.batch_size); setD1Dbs(c.databases || []);
+        setD1Timing((c.cleanup_timing as 'before_task' | 'after_task') || 'after_task');
       }
     } catch {}
   }, [mode]);
@@ -68,7 +71,18 @@ export default function Config() {
   const addDomain = async () => { if (!newDomain.trim()) return; try { await api.post('/api/config/email_domains', { domain: newDomain.trim() }); setNewDomain(''); toast('域名已添加', 'success'); load(); } catch {} };
   const delDomain = async (d: string) => { try { await api.del('/api/config/email_domains'); await api.post('/api/config/email_domains', {}); } catch {} try { await api.put('/api/config/register', {}); } catch {} load(); };
   const addGptDomain = async () => { if (!newGptDomain.trim()) return; try { await api.post('/api/config/gptmail_domains', { domain: newGptDomain.trim() }); setNewGptDomain(''); toast('域名已添加', 'success'); load(); } catch {} };
-  const saveD1 = async () => { try { await api.put('/api/config/d1_cleanup', { enabled: d1Enabled, account_id: d1AccId, api_key: d1ApiKey, keep_percent: d1Keep, batch_size: d1Batch, databases: d1Dbs }); toast('D1 配置已保存', 'success'); load(); } catch {} };
+  const saveD1 = async () => { try { await api.put('/api/config/d1_cleanup', { enabled: d1Enabled, account_id: d1AccId, api_key: d1ApiKey, keep_percent: d1Keep, batch_size: d1Batch, databases: d1Dbs, cleanup_timing: d1Timing }); toast('D1 配置已保存', 'success'); load(); } catch {} };
+  const triggerD1Clean = async () => {
+    setD1Cleaning(true);
+    try {
+      const r = await api.triggerD1Cleanup();
+      toast(r.message || 'D1 清理完成', 'success');
+    } catch (e: any) {
+      toast(e.message || 'D1 清理失败', 'error');
+    } finally {
+      setD1Cleaning(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -130,12 +144,13 @@ export default function Config() {
       {/* D1 */}
       <div className="card p-5">
         <div className="section-title">D1 清理</div>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div><label className="switch"><input className="switch-input" type="checkbox" checked={d1Enabled} onChange={e => setD1Enabled(e.target.checked)} /><span className="switch-slider" /><span>启用</span></label></div>
           <div><label className="field-label">Account ID</label><input className="field-input" value={d1AccId} onChange={e => setD1AccId(e.target.value)} /></div>
           <div><label className="field-label">API Key</label><input className="field-input" value={d1ApiKey} onChange={e => setD1ApiKey(e.target.value)} /></div>
           <div><label className="field-label">保留比例</label><input type="number" step="0.01" className="field-input" value={d1Keep} onChange={e => setD1Keep(Number(e.target.value))} /></div>
           <div><label className="field-label">批大小</label><input type="number" className="field-input" value={d1Batch} onChange={e => setD1Batch(Number(e.target.value))} /></div>
+          <div><label className="field-label">清理时机</label><Select value={d1Timing} onChange={v => setD1Timing(v as 'before_task' | 'after_task')} options={[{ label: '任务执行后', value: 'after_task' }, { label: '任务执行前', value: 'before_task' }]} /></div>
         </div>
         <div className="mt-3 space-y-2">
           {d1Dbs.map((db, i) => (
@@ -147,7 +162,10 @@ export default function Config() {
           ))}
           <button onClick={() => setD1Dbs([...d1Dbs, { name: '', id: '' }])} className="btn btn-ghost text-xs">+ 数据库</button>
         </div>
-        <button onClick={saveD1} className="btn btn-amber mt-3">保存 D1</button>
+        <div className="flex gap-2 mt-3">
+          <button onClick={saveD1} className="btn btn-amber">保存 D1</button>
+          <button onClick={triggerD1Clean} disabled={d1Cleaning} className="btn btn-teal">{d1Cleaning ? '清理中...' : '清理'}</button>
+        </div>
       </div>
 
       <button onClick={handleSaveToFile} className="btn btn-ghost w-full justify-center">保存到文件</button>

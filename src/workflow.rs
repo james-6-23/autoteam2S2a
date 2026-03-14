@@ -598,6 +598,17 @@ impl WorkflowRunner {
         let workflow_started = Instant::now();
         let mode_label = if options.free_mode { "free" } else { "team" };
 
+        // D1 清理（任务前）
+        if cfg.d1_cleanup.enabled.unwrap_or(false)
+            && cfg.d1_cleanup.cleanup_timing.unwrap_or_default()
+                == crate::config::D1CleanupTiming::BeforeTask
+        {
+            broadcast_log("阶段0: D1 邮件清理（任务前）");
+            if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
+                broadcast_log(&format!("D1 清理失败（不影响任务执行）: {e}"));
+            }
+        }
+
         if let Some(ref p) = progress {
             p.set_stage("注册 + RT");
         }
@@ -681,8 +692,11 @@ impl WorkflowRunner {
             (0, 0, 0, 0)
         };
 
-        // D1 清理
-        if cfg.d1_cleanup.enabled.unwrap_or(false) {
+        // D1 清理（任务后）
+        if cfg.d1_cleanup.enabled.unwrap_or(false)
+            && cfg.d1_cleanup.cleanup_timing.unwrap_or_default()
+                != crate::config::D1CleanupTiming::BeforeTask
+        {
             broadcast_log("阶段4: D1 邮件清理");
             if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
                 broadcast_log(&format!("D1 清理失败（不影响入库结果）: {e}"));
