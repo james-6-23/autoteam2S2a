@@ -27,12 +27,6 @@ export default function Config() {
   const [mailConc, setMailConc] = useState(50); const [logMode, setLogMode] = useState('verbose'); const [perfMode, setPerfMode] = useState('baseline');
   const [gptMailKey, setGptMailKey] = useState('');
 
-  // Proxy
-  const [proxyEnabled, setProxyEnabled] = useState(true);
-  const [newProxy, setNewProxy] = useState('');
-  const [checking, setChecking] = useState(false);
-  const [healthResults, setHealthResults] = useState<{ proxy: string; ok: boolean; reason: string }[]>([]);
-
   // Domains
   const [newDomain, setNewDomain] = useState(''); const [newGptDomain, setNewGptDomain] = useState('');
 
@@ -57,7 +51,6 @@ export default function Config() {
       setMailTimeout(Number(r.mail_request_timeout_sec || 20)); setOtpRetries(Number(r.otp_max_retries || 3)); setReqTimeout(Number(r.request_timeout_sec || 30));
       setMailConc(Number(r.mail_max_concurrency || 50)); setLogMode(String(r.register_log_mode || 'verbose')); setPerfMode(String(r.register_perf_mode || 'baseline'));
       setGptMailKey(String(r.chatgpt_mail_api_key || ''));
-      setProxyEnabled(data.proxy_enabled !== false);
       if (data.d1_cleanup) {
         const c = data.d1_cleanup;
         setD1Enabled(c.enabled); setD1AccId(c.account_id || ''); setD1ApiKey(c.api_key || '');
@@ -93,13 +86,6 @@ export default function Config() {
     }
   };
 
-  const toggleProxyEnabled = async (enabled: boolean) => {
-    setProxyEnabled(enabled);
-    try { await api.setProxyEnabled(enabled); toast(enabled ? '代理池已启用' : '代理池已禁用，使用直连', 'success'); } catch (e: any) { setProxyEnabled(!enabled); toast(e.message || '切换失败', 'error'); }
-  };
-  const addProxy = async () => { if (!newProxy.trim()) return; try { await api.addProxy(newProxy.trim()); setNewProxy(''); toast('代理已添加', 'success'); load(); } catch (e: any) { toast(e.message || '添加失败', 'error'); } };
-  const delProxy = async (p: string) => { try { await api.deleteProxy(p); toast('代理已删除', 'success'); load(); } catch (e: any) { toast(e.message || '删除失败', 'error'); } };
-  const checkHealth = async () => { setChecking(true); setHealthResults([]); try { const r = await api.checkProxyHealth(); setHealthResults(r); } catch (e: any) { toast(e.message || '检测失败', 'error'); } finally { setChecking(false); } };
 
   return (
     <div className="space-y-4">
@@ -131,49 +117,6 @@ export default function Config() {
           <div><label className="field-label">性能模式</label><Select value={perfMode} onChange={setPerfMode} options={[{ label: 'baseline', value: 'baseline' }, { label: 'adaptive', value: 'adaptive' }]} /></div>
         </div>
         <button onClick={saveRegister} className="btn btn-amber mt-3">保存</button>
-      </div>
-
-      {/* Proxy Pool */}
-      <div className="card p-5">
-        <div className="flex items-center justify-between mb-3">
-          <div className="section-title mb-0">代理池 <span className="c-dim2 font-mono text-[.65rem]">{config?.proxy_pool?.length ?? 0}</span></div>
-          <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-            <span className="text-xs" style={{ color: proxyEnabled ? 'var(--color-teal-400)' : 'var(--text-dim)' }}>{proxyEnabled ? '已启用' : '直连模式'}</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={proxyEnabled}
-              onClick={() => toggleProxyEnabled(!proxyEnabled)}
-              className="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-200"
-              style={{ background: proxyEnabled ? 'linear-gradient(135deg, rgba(20,184,166,0.85), rgba(59,130,246,0.85))' : 'var(--ghost)' }}
-            >
-              <span className="inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform duration-200" style={{ transform: proxyEnabled ? 'translateX(17px)' : 'translateX(3px)' }} />
-            </button>
-          </label>
-        </div>
-        <div className="flex flex-wrap gap-1.5 mb-3">
-          {(config?.proxy_pool || []).map(p => (
-            <span key={p} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style={{ background: 'var(--domain-bg)', border: '1px solid var(--domain-border)', color: 'var(--text-dim2)' }}>
-              {p}<button onClick={() => delProxy(p)} className="text-red-400 hover:text-red-300 ml-1">&times;</button>
-            </span>
-          ))}
-        </div>
-        <div className="flex gap-2 mb-3">
-          <input className="field-input flex-1" placeholder="http://127.0.0.1:7890" value={newProxy} onChange={e => setNewProxy(e.target.value)} onKeyDown={e => e.key === 'Enter' && addProxy()} />
-          <button onClick={addProxy} className="btn btn-teal text-xs">添加</button>
-        </div>
-        <button onClick={checkHealth} disabled={checking} className="btn btn-amber text-xs">{checking ? '检测中...' : '健康检测'}</button>
-        {healthResults.length > 0 && (
-          <div className="mt-3 space-y-1">
-            {healthResults.map(r => (
-              <div key={r.proxy} className="flex items-center gap-2 text-xs font-mono">
-                <span className={r.ok ? 'text-green-400' : 'text-red-400'}>{r.ok ? '✓' : '✗'}</span>
-                <span className="c-dim2">{r.proxy}</span>
-                <span className="c-dim2 truncate">{r.reason}</span>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* Domains */}
