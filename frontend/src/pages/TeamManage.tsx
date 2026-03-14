@@ -1717,57 +1717,72 @@ export default function TeamManage() {
 
       {showFillSlotsModal && (
         <div className="team-modal" onClick={event => { if (event.target === event.currentTarget) setShowFillSlotsModal(false); }}>
-          <div className="team-modal-card p-5" style={{ maxWidth: 560, width: "96vw" }} onClick={event => event.stopPropagation()}>
-            <div className="mb-4 flex items-center justify-between">
+          <div className="team-modal-card p-6" style={{ maxWidth: 520, width: "96vw" }} onClick={event => event.stopPropagation()}>
+            {/* 标题区 */}
+            <div className="mb-5 flex items-start justify-between">
               <div>
                 <div className="section-title mb-0">一键补位</div>
-                <div className="mt-1 text-xs c-dim">
-                  当前已选 {selectedOwnerCount} 个 Owner，按权重比例分配到不同号池
+                <div className="mt-1.5 text-xs c-dim">
+                  已选 <strong className="c-heading">{selectedOwnerCount}</strong> 个 Owner，按权重分配到号池
                 </div>
               </div>
-              <button type="button" onClick={() => setShowFillSlotsModal(false)} className="btn btn-ghost p-1">
-                <X size={14} />
+              <button type="button" onClick={() => setShowFillSlotsModal(false)} className="btn btn-ghost p-1.5 -mr-1 -mt-1">
+                <X size={16} />
               </button>
             </div>
 
-            <div className="space-y-3">
+            {/* 号池列表 */}
+            <div className="space-y-2.5">
               {fillSlotsPools.map((pool, index) => {
                 const totalWeight = fillSlotsPools.reduce((s, p) => s + p.weight, 0);
                 const pct = totalWeight > 0 ? Math.round((pool.weight / totalWeight) * 100) : 0;
                 return (
-                  <div key={index} className="flex items-center gap-2">
-                    <HSelect
-                      value={pool.team}
-                      onChange={v => {
-                        const next = [...fillSlotsPools];
-                        next[index] = { ...next[index], team: v };
-                        setFillSlotsPools(next);
-                      }}
-                      className="flex-1"
-                      placeholder="选择号池"
-                      options={[
-                        { value: "", label: "请选择号池" },
-                        ...s2aTeams.map(t => ({ value: t.name, label: t.name })),
-                      ]}
-                    />
-                    <input
-                      type="number"
-                      min={1}
-                      value={pool.weight}
-                      onChange={event => {
-                        const next = [...fillSlotsPools];
-                        next[index] = { ...next[index], weight: Math.max(1, Number(event.target.value) || 1) };
-                        setFillSlotsPools(next);
-                      }}
-                      className="field-input w-20 text-center"
-                      title="权重"
-                    />
-                    <span className="w-10 shrink-0 text-right text-xs font-mono c-dim">{pct}%</span>
+                  <div
+                    key={index}
+                    className="flex items-center gap-2 rounded-lg px-3 py-2.5"
+                    style={{ background: "var(--ghost)" }}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <HSelect
+                        value={pool.team}
+                        onChange={v => {
+                          const next = [...fillSlotsPools];
+                          next[index] = { ...next[index], team: v };
+                          setFillSlotsPools(next);
+                        }}
+                        className="w-full"
+                        placeholder="选择号池"
+                        options={[
+                          { value: "", label: "请选择号池" },
+                          ...s2aTeams.map(t => ({ value: t.name, label: t.name })),
+                        ]}
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-[.65rem] c-dim">权重</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={pool.weight}
+                        onChange={event => {
+                          const next = [...fillSlotsPools];
+                          next[index] = { ...next[index], weight: Math.max(1, Number(event.target.value) || 1) };
+                          setFillSlotsPools(next);
+                        }}
+                        className="field-input w-14 px-1.5 py-1 text-center text-xs"
+                      />
+                      <span
+                        className="w-10 shrink-0 text-right text-xs font-mono font-semibold"
+                        style={{ color: pct >= 50 ? "var(--accent)" : "var(--text-dim)" }}
+                      >
+                        {pct}%
+                      </span>
+                    </div>
                     {fillSlotsPools.length > 1 && (
                       <button
                         type="button"
                         onClick={() => setFillSlotsPools(prev => prev.filter((_, i) => i !== index))}
-                        className="btn btn-ghost p-1"
+                        className="btn btn-ghost p-1 shrink-0 opacity-50 hover:opacity-100"
                       >
                         <X size={12} />
                       </button>
@@ -1775,16 +1790,20 @@ export default function TeamManage() {
                   </div>
                 );
               })}
-              <button
-                type="button"
-                onClick={() => setFillSlotsPools(prev => [...prev, { team: "", weight: 1 }])}
-                className="btn btn-ghost w-full py-1.5 text-xs"
-              >
-                + 添加号池
-              </button>
             </div>
 
-            <div className="mt-5 flex justify-end gap-2">
+            {/* 添加按钮 */}
+            <button
+              type="button"
+              onClick={() => setFillSlotsPools(prev => [...prev, { team: "", weight: 1 }])}
+              className="btn btn-ghost mt-2.5 w-full py-2 text-xs"
+              style={{ borderStyle: "dashed" }}
+            >
+              + 添加号池
+            </button>
+
+            {/* 底部操作 */}
+            <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setShowFillSlotsModal(false)} className="btn btn-ghost">
                 取消
               </button>
