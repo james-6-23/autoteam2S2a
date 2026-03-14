@@ -39,6 +39,7 @@ impl RedisCache {
         self.runtime.batch_progress_ttl_secs
     }
 
+    #[allow(dead_code)]
     pub fn lock_ttl_secs(&self) -> u64 {
         self.runtime.lock_ttl_secs
     }
@@ -128,6 +129,7 @@ impl RedisCache {
     }
 
     /// 批量写入，使用 Pipeline 一次网络往返
+    #[allow(dead_code)]
     pub async fn pipeline_set_json<T>(&self, entries: &[(String, &T, u64)]) -> Result<()>
     where
         T: Serialize,
@@ -195,6 +197,7 @@ impl RedisCache {
     }
 
     /// 在 base TTL 基础上 ±10% 随机浮动，避免缓存雪崩
+    #[allow(dead_code)]
     pub fn jittered_ttl(base: u64) -> u64 {
         if base == 0 {
             return 0;

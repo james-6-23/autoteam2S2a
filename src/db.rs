@@ -324,6 +324,7 @@ pub struct OwnerHealthRecord {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct OwnerRegistryUpsert {
     pub account_id: String,
     pub display_email: String,
@@ -346,6 +347,7 @@ pub struct OwnerRegistryRecord {
     pub account_id: String,
     pub display_email: String,
     #[serde(skip_serializing)]
+    #[allow(dead_code)]
     pub latest_access_token: Option<String>,
     pub token_expires_at: Option<String>,
     pub source_upload_id: Option<String>,
@@ -1597,6 +1599,7 @@ impl RunHistoryDb {
         self.send_write_command(WriteCommand::ResetOwnerUsed { owner_id })
     }
 
+    #[allow(dead_code)]
     pub fn enqueue_upsert_owner_health(
         &self,
         account_id: String,
@@ -1656,6 +1659,7 @@ impl RunHistoryDb {
         Ok(rows)
     }
 
+    #[allow(dead_code)]
     pub fn get_owner_health_freshness(
         &self,
         account_id: &str,
@@ -1670,6 +1674,7 @@ impl RunHistoryDb {
         .map_err(Into::into)
     }
 
+    #[allow(dead_code)]
     pub fn mark_owner_health_stale(&self, account_id: &str) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let affected = conn.execute(
@@ -1855,6 +1860,7 @@ impl RunHistoryDb {
 
     /// 列出所有有 access_token 的 owners（用于 Team 管理模块）
     /// 返回 (email, account_id, access_token) 的列表，每个 account_id 只取最新一条
+    #[allow(dead_code)]
     pub fn list_all_owners_with_tokens(&self) -> Result<Vec<(String, String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1983,6 +1989,7 @@ impl RunHistoryDb {
         Ok(Some(InviteTaskDetail { task, emails }))
     }
 
+    #[allow(dead_code)]
     pub fn upsert_owner_registry_from_snapshot(&self, record: OwnerRegistryUpsert) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -2124,6 +2131,7 @@ impl RunHistoryDb {
         Ok(total)
     }
 
+    #[allow(dead_code)]
     pub fn get_owner_registry_by_account_id(
         &self,
         account_id: &str,
@@ -2294,6 +2302,7 @@ impl RunHistoryDb {
         .map_err(Into::into)
     }
 
+    #[allow(dead_code)]
     pub fn batch_get_owner_member_cache(
         &self,
         account_ids: &[String],

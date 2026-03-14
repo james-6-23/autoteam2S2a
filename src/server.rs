@@ -3208,6 +3208,7 @@ fn team_manage_cache_status(checked_at: Option<&str>) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn team_manage_owner_runtime_state(owner_status: Option<&str>) -> String {
     match owner_status {
         Some("banned") => "banned".to_string(),
@@ -3242,6 +3243,7 @@ fn team_manage_batch_job_summary(
     }
 }
 
+#[allow(dead_code)]
 async fn team_manage_running_batch_jobs_count(state: &AppState) -> usize {
     state
         .run_history_db
