@@ -69,7 +69,7 @@ pub fn load_from_file(path: &Path) -> Result<Vec<String>> {
 }
 
 /// 自动补协议前缀（参考 Go 版本）
-fn normalize_proxy(proxy: &str) -> String {
+pub fn normalize_proxy(proxy: &str) -> String {
     if proxy.contains("://") {
         proxy.to_string()
     } else {
@@ -137,10 +137,11 @@ pub fn resolve_proxies(
 // ============================================================
 
 /// 检测结果
-struct ProxyCheckResult {
-    proxy: String,
-    ok: bool,
-    reason: String,
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProxyCheckResult {
+    pub proxy: String,
+    pub ok: bool,
+    pub reason: String,
 }
 
 /// 异步全并发健康检测所有代理（参考 Go 的 WaitGroup 全并发模式）
@@ -223,6 +224,41 @@ pub async fn health_check(
     }
 
     Ok(healthy)
+}
+
+/// 全并发健康检测所有代理并返回详细结果（供前端使用）
+pub async fn health_check_detailed(proxies: &[String], timeout_sec: u64) -> Vec<ProxyCheckResult> {
+    if proxies.is_empty() {
+        return vec![];
+    }
+
+    const MAX_HEALTH_CHECK_CONCURRENCY: usize = 64;
+    let timeout = Duration::from_secs(timeout_sec);
+    let check_concurrency = proxies.len().clamp(1, MAX_HEALTH_CHECK_CONCURRENCY);
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(check_concurrency));
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for proxy in proxies {
+        let proxy = proxy.clone();
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        join_set.spawn(async move {
+            let _permit = permit;
+            check_proxy_multilayer(&proxy, timeout).await
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(join_result) = join_set.join_next().await {
+        match join_result {
+            Ok(result) => results.push(result),
+            Err(_) => {}
+        }
+    }
+    results
 }
 
 /// 多层检测单个代理（参考 Go 的 test_proxies.go）
@@ -473,4 +509,383 @@ async fn remove_proxies_from_file(path: &Path, to_remove: &HashSet<String>) -> R
     .await
     .map_err(|e| anyhow::anyhow!("移除失效代理任务异常: {e}"))??;
     Ok(())
+}
+
+// ============================================================
+// 代理测试 + 深度质量检测
+// ============================================================
+
+/// 构建带代理的 HTTP 客户端（公共辅助函数）
+fn build_proxy_client(proxy_url: &str, timeout: Duration) -> Result<rquest::Client, String> {
+    rquest::Client::builder()
+        .proxy(rquest::Proxy::all(proxy_url).map_err(|e| format!("代理地址无效: {e}"))?)
+        .timeout(timeout)
+        .connect_timeout(timeout)
+        .no_proxy()
+        .redirect(rquest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| format!("创建客户端失败: {e}"))
+}
+
+#[derive(serde::Deserialize)]
+struct IpApiResponse {
+    status: String,
+    query: Option<String>,
+    city: Option<String>,
+    region: Option<String>,
+    #[serde(rename = "regionName")]
+    region_name: Option<String>,
+    country: Option<String>,
+    #[serde(rename = "countryCode")]
+    country_code: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct HttpBinIpResponse {
+    origin: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ProxyExitInfo {
+    pub ip: String,
+    pub city: String,
+    pub region: String,
+    pub country: String,
+    pub country_code: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProxyTestResult {
+    pub success: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProxyQualityCheckItem {
+    pub target: String,
+    pub status: String,       // pass / warn / fail / challenge
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProxyQualityCheckResult {
+    pub score: i32,
+    pub grade: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_latency_ms: Option<i64>,
+    pub passed_count: i32,
+    pub warn_count: i32,
+    pub failed_count: i32,
+    pub challenge_count: i32,
+    pub checked_at: i64,
+    pub items: Vec<ProxyQualityCheckItem>,
+}
+
+struct QualityTarget {
+    target: &'static str,
+    url: &'static str,
+    method: &'static str,
+    allowed_statuses: &'static [u16],
+}
+
+const QUALITY_TARGETS: &[QualityTarget] = &[
+    QualityTarget {
+        target: "openai",
+        url: "https://api.openai.com/v1/models",
+        method: "GET",
+        allowed_statuses: &[401],
+    },
+    QualityTarget {
+        target: "anthropic",
+        url: "https://api.anthropic.com/v1/messages",
+        method: "GET",
+        allowed_statuses: &[401, 405, 404, 400],
+    },
+    QualityTarget {
+        target: "gemini",
+        url: "https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta",
+        method: "GET",
+        allowed_statuses: &[200],
+    },
+];
+
+/// 探测代理出口信息（ip-api.com 优先，httpbin.org 降级）
+async fn probe_proxy_exit_info(client: &rquest::Client) -> Result<(ProxyExitInfo, i64), String> {
+    // 尝试 ip-api.com
+    let start = std::time::Instant::now();
+    match client.get("http://ip-api.com/json/?lang=zh-CN").send().await {
+        Ok(resp) if resp.status().as_u16() == 200 => {
+            let latency_ms = start.elapsed().as_millis() as i64;
+            if let Ok(info) = resp.json::<IpApiResponse>().await {
+                if info.status.to_lowercase() == "success" {
+                    let region = info.region_name.or(info.region).unwrap_or_default();
+                    return Ok((
+                        ProxyExitInfo {
+                            ip: info.query.unwrap_or_default(),
+                            city: info.city.unwrap_or_default(),
+                            region,
+                            country: info.country.unwrap_or_default(),
+                            country_code: info.country_code.unwrap_or_default(),
+                        },
+                        latency_ms,
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // 降级到 httpbin.org
+    let start = std::time::Instant::now();
+    match client.get("https://httpbin.org/ip").send().await {
+        Ok(resp) if resp.status().as_u16() == 200 => {
+            let latency_ms = start.elapsed().as_millis() as i64;
+            if let Ok(info) = resp.json::<HttpBinIpResponse>().await {
+                if let Some(origin) = info.origin {
+                    if !origin.is_empty() {
+                        return Ok((
+                            ProxyExitInfo {
+                                ip: origin,
+                                ..Default::default()
+                            },
+                            latency_ms,
+                        ));
+                    }
+                }
+            }
+            Err("httpbin 响应中未找到 IP".to_string())
+        }
+        Ok(resp) => Err(format!("httpbin 返回 HTTP {}", resp.status())),
+        Err(e) => Err(format!("所有探测 URL 均失败: {e}")),
+    }
+}
+
+/// 测试单个代理的连通性，返回出口 IP、地理信息和延迟
+pub async fn test_single_proxy(proxy_url: &str, timeout_sec: u64) -> ProxyTestResult {
+    let timeout = Duration::from_secs(timeout_sec.max(5));
+    let client = match build_proxy_client(proxy_url, timeout) {
+        Ok(c) => c,
+        Err(e) => {
+            return ProxyTestResult {
+                success: false,
+                message: e,
+                latency_ms: None,
+                ip_address: None,
+                city: None,
+                region: None,
+                country: None,
+                country_code: None,
+            };
+        }
+    };
+
+    match probe_proxy_exit_info(&client).await {
+        Ok((info, latency_ms)) => ProxyTestResult {
+            success: true,
+            message: "代理可用".to_string(),
+            latency_ms: Some(latency_ms),
+            ip_address: Some(info.ip),
+            city: if info.city.is_empty() { None } else { Some(info.city) },
+            region: if info.region.is_empty() { None } else { Some(info.region) },
+            country: if info.country.is_empty() { None } else { Some(info.country) },
+            country_code: if info.country_code.is_empty() { None } else { Some(info.country_code) },
+        },
+        Err(e) => ProxyTestResult {
+            success: false,
+            message: e,
+            latency_ms: None,
+            ip_address: None,
+            city: None,
+            region: None,
+            country: None,
+            country_code: None,
+        },
+    }
+}
+
+/// 对单个质量检测目标执行检测
+async fn run_quality_target(
+    client: &rquest::Client,
+    target: &QualityTarget,
+) -> ProxyQualityCheckItem {
+    let req = match target.method {
+        "GET" => client.get(target.url),
+        "POST" => client.post(target.url),
+        _ => client.get(target.url),
+    };
+
+    let req = req
+        .header("Accept", "application/json,text/html,*/*")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+
+    let start = std::time::Instant::now();
+    match req.send().await {
+        Ok(resp) => {
+            let latency_ms = start.elapsed().as_millis() as i64;
+            let status_code = resp.status().as_u16();
+
+            if target.allowed_statuses.contains(&status_code) {
+                if status_code == 200 {
+                    ProxyQualityCheckItem {
+                        target: target.target.to_string(),
+                        status: "pass".to_string(),
+                        http_status: Some(status_code),
+                        latency_ms: Some(latency_ms),
+                        message: None,
+                    }
+                } else {
+                    ProxyQualityCheckItem {
+                        target: target.target.to_string(),
+                        status: "warn".to_string(),
+                        http_status: Some(status_code),
+                        latency_ms: Some(latency_ms),
+                        message: Some("目标可达，需要认证".to_string()),
+                    }
+                }
+            } else {
+                ProxyQualityCheckItem {
+                    target: target.target.to_string(),
+                    status: "fail".to_string(),
+                    http_status: Some(status_code),
+                    latency_ms: Some(latency_ms),
+                    message: Some(format!("非预期状态码: {status_code}")),
+                }
+            }
+        }
+        Err(e) => {
+            let latency_ms = start.elapsed().as_millis() as i64;
+            ProxyQualityCheckItem {
+                target: target.target.to_string(),
+                status: "fail".to_string(),
+                http_status: None,
+                latency_ms: Some(latency_ms),
+                message: Some(format!("请求失败: {e}")),
+            }
+        }
+    }
+}
+
+/// 计算质量评分和等级
+fn finalize_quality_result(result: &mut ProxyQualityCheckResult) {
+    let score = 100 - result.warn_count * 10 - result.failed_count * 22 - result.challenge_count * 30;
+    result.score = score.max(0);
+    result.grade = match result.score {
+        s if s >= 90 => "A",
+        s if s >= 75 => "B",
+        s if s >= 60 => "C",
+        s if s >= 40 => "D",
+        _ => "F",
+    }
+    .to_string();
+    result.summary = format!(
+        "通过 {} 项，告警 {} 项，失败 {} 项，挑战 {} 项",
+        result.passed_count, result.warn_count, result.failed_count, result.challenge_count
+    );
+}
+
+/// 深度质量检测：基础连通性 + AI API 目标可达性检测 + 评分
+pub async fn check_proxy_quality(proxy_url: &str, timeout_sec: u64) -> ProxyQualityCheckResult {
+    let timeout = Duration::from_secs(timeout_sec.max(10));
+    let mut result = ProxyQualityCheckResult {
+        score: 100,
+        grade: "A".to_string(),
+        summary: String::new(),
+        exit_ip: None,
+        country: None,
+        country_code: None,
+        base_latency_ms: None,
+        passed_count: 0,
+        warn_count: 0,
+        failed_count: 0,
+        challenge_count: 0,
+        checked_at: chrono::Utc::now().timestamp(),
+        items: Vec::with_capacity(QUALITY_TARGETS.len() + 1),
+    };
+
+    let client = match build_proxy_client(proxy_url, timeout) {
+        Ok(c) => c,
+        Err(e) => {
+            result.items.push(ProxyQualityCheckItem {
+                target: "base_connectivity".to_string(),
+                status: "fail".to_string(),
+                http_status: None,
+                latency_ms: None,
+                message: Some(e),
+            });
+            result.failed_count += 1;
+            finalize_quality_result(&mut result);
+            return result;
+        }
+    };
+
+    // 阶段 1: 基础连通性探测
+    match probe_proxy_exit_info(&client).await {
+        Ok((info, latency_ms)) => {
+            result.items.push(ProxyQualityCheckItem {
+                target: "base_connectivity".to_string(),
+                status: "pass".to_string(),
+                http_status: Some(200),
+                latency_ms: Some(latency_ms),
+                message: None,
+            });
+            result.passed_count += 1;
+            result.exit_ip = Some(info.ip);
+            result.country = if info.country.is_empty() { None } else { Some(info.country) };
+            result.country_code = if info.country_code.is_empty() { None } else { Some(info.country_code) };
+            result.base_latency_ms = Some(latency_ms);
+        }
+        Err(e) => {
+            result.items.push(ProxyQualityCheckItem {
+                target: "base_connectivity".to_string(),
+                status: "fail".to_string(),
+                http_status: None,
+                latency_ms: None,
+                message: Some(e),
+            });
+            result.failed_count += 1;
+            finalize_quality_result(&mut result);
+            return result;
+        }
+    }
+
+    // 阶段 2: AI API 目标逐个检测
+    for target in QUALITY_TARGETS {
+        let item = run_quality_target(&client, target).await;
+        match item.status.as_str() {
+            "pass" => result.passed_count += 1,
+            "warn" => result.warn_count += 1,
+            "fail" => result.failed_count += 1,
+            "challenge" => result.challenge_count += 1,
+            _ => {}
+        }
+        result.items.push(item);
+    }
+
+    // 阶段 3: 评分计算
+    finalize_quality_result(&mut result);
+    result
 }

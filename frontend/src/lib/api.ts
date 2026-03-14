@@ -76,6 +76,42 @@ export const testGptMail = () => get<unknown>('/api/config/gptmail/test');
 export const saveD1Cleanup = (body: unknown) => put('/api/config/d1-cleanup', body);
 export const triggerD1Cleanup = () => post<{ message: string }>('/api/d1_cleanup/trigger');
 export const saveToFile = () => post('/api/config/save');
+export const addProxy = (proxy: string) => post<{ message: string }>('/api/config/proxy_pool', { proxy });
+export const deleteProxy = (proxy: string) => request<{ message: string }>('/api/config/proxy_pool', { method: 'DELETE', body: JSON.stringify({ proxy }), headers: { 'Content-Type': 'application/json' } });
+export const checkProxyHealth = () => post<{ proxy: string; ok: boolean; reason: string }[]>('/api/proxy/health-check');
+
+export const testProxy = (proxy_url: string) => post<{
+  success: boolean;
+  message: string;
+  latency_ms?: number;
+  ip_address?: string;
+  city?: string;
+  region?: string;
+  country?: string;
+  country_code?: string;
+}>('/api/proxy/test', { proxy_url });
+
+export const checkProxyQuality = (proxy_url: string) => post<{
+  score: number;
+  grade: string;
+  summary: string;
+  exit_ip?: string;
+  country?: string;
+  country_code?: string;
+  base_latency_ms?: number;
+  passed_count: number;
+  warn_count: number;
+  failed_count: number;
+  challenge_count: number;
+  checked_at: number;
+  items: Array<{
+    target: string;
+    status: string;
+    http_status?: number;
+    latency_ms?: number;
+    message?: string;
+  }>;
+}>('/api/proxy/quality-check', { proxy_url });
 
 // ─── Tasks ──
 export const fetchTasks = () => get<{ tasks: unknown[] }>('/api/tasks');

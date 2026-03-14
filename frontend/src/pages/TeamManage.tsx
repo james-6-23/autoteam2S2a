@@ -918,27 +918,29 @@ export default function TeamManage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="section-title mb-0">Team 管理</div>
-              <p className="mt-1 text-xs c-dim">当前已接入 owner_registry、缓存健康检查、批量邀请和批量任务面板。</p>
+              <p className="mt-1 text-xs c-dim">管理 Owner 账号、成员配额与批量操作</p>
             </div>
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1">
                 <span className="text-[.65rem] c-dim">并发:</span>
-                            <input
-                              type="number"
-                              min={1}
-                              value={checkConcurrency}
-                              onChange={event => {
-                                const value = Math.max(1, Number(event.target.value) || 1);
-                                setCheckConcurrency(value);
-                                localStorage.setItem("team-check-concurrency", String(value));
-                              }}
-                              className="field-input w-14 px-1 py-1 text-center text-xs"                />
+                <input
+                  type="number"
+                  min={1}
+                  value={checkConcurrency}
+                  onChange={event => {
+                    const value = Math.max(1, Number(event.target.value) || 1);
+                    setCheckConcurrency(value);
+                    localStorage.setItem("team-check-concurrency", String(value));
+                  }}
+                  className="field-input w-14 px-1 py-1 text-center text-xs"
+                />
               </div>
               <HSwitch
                 checked={forceRefreshHealth}
                 onChange={setForceRefreshHealth}
                 label="强制刷新"
               />
+              <span className="h-5 w-px shrink-0" style={{ background: "var(--border)" }} />
               <button
                 type="button"
                 onClick={batchCheck}
@@ -1005,6 +1007,7 @@ export default function TeamManage() {
               <span className="c-dim"> · 当前筛选共 {ownerTotal} 个</span>
             </div>
             <div className="team-manage-bulkbar__actions">
+              {/* 选择操作 */}
               <button type="button" onClick={toggleSelectPage} className="btn btn-ghost py-1.5 text-xs">
                 {allPageSelected ? "取消本页" : "全选本页"}
               </button>
@@ -1022,6 +1025,8 @@ export default function TeamManage() {
               >
                 清空选择
               </button>
+              <span className="h-5 w-px shrink-0" style={{ background: "var(--border)" }} />
+              {/* 批量操作 */}
               <button type="button" onClick={() => void batchRefreshSelectedMembers()} disabled={selectedOwnerCount === 0 || batchRefreshLoading} className="btn btn-ghost py-1.5 text-xs">
                 {batchRefreshLoading ? "刷新中..." : "批量刷新成员"}
               </button>
@@ -1061,6 +1066,8 @@ export default function TeamManage() {
               >
                 批量归档
               </button>
+              <span className="h-5 w-px shrink-0" style={{ background: "var(--border)" }} />
+              {/* 邀请操作 */}
               <button
                 type="button"
                 onClick={() => {
@@ -1087,7 +1094,6 @@ export default function TeamManage() {
               >
                 批量邀请入库
               </button>
-
             </div>
           </div>
         </div>
@@ -1239,16 +1245,33 @@ export default function TeamManage() {
                   ) : members.length === 0 ? (
                     <div className="py-12 text-center c-dim">无成员数据</div>
                   ) : (
-                    <div className="space-y-1.5">
+                    <>
+                      {/* 成员列表表头 */}
+                      <div
+                        className="flex items-center gap-3 px-4 py-2 text-[.62rem] font-semibold c-dim"
+                        style={{ borderBottom: "1px solid var(--border)", background: "rgba(255,255,255,0.015)" }}
+                      >
+                        <div className="min-w-0 flex-1">成员信息</div>
+                        <div className="shrink-0" style={{ width: 130 }}>额度状态</div>
+                        <div className="shrink-0 text-center" style={{ width: 52 }}>操作</div>
+                      </div>
+                      <div>
                       {pagedMembers.map(member => {
                         const quota = member.email ? memberQuotas[member.email] : undefined;
                         const quotaLoading = member.email ? memberQuotaLoading[member.email] : false;
                         return (
-                          <div key={member.user_id} className="card-inner flex items-center gap-3 px-4 py-3">
+                          <div
+                            key={member.user_id}
+                            className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[rgba(255,255,255,0.025)]"
+                            style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}
+                          >
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="truncate text-sm font-medium c-heading">{member.name || member.email || "未知"}</span>
-                                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[.6rem] font-medium ${member.role === "owner" ? "text-amber-400" : "c-dim"}`} style={{ background: "var(--ghost)" }}>
+                                <span
+                                  className={`shrink-0 rounded-md px-1.5 py-0.5 text-[.58rem] font-semibold ${member.role === "owner" ? "text-amber-400" : "c-dim"}`}
+                                  style={{ background: "var(--ghost)" }}
+                                >
                                   {member.role}
                                 </span>
                               </div>
@@ -1258,7 +1281,7 @@ export default function TeamManage() {
                               </div>
                             </div>
 
-                            <div className="shrink-0">
+                            <div className="shrink-0" style={{ width: 130 }}>
                               <MemberQuotaInline
                                 quota={quota}
                                 loading={quotaLoading}
@@ -1266,13 +1289,13 @@ export default function TeamManage() {
                               />
                             </div>
 
-                            <div className="shrink-0">
+                            <div className="shrink-0 text-center" style={{ width: 52 }}>
                               {member.role !== "owner" && member.role !== "account-owner" && (
                                 <button
                                   type="button"
                                   onClick={() => void kickMember(member.user_id)}
                                   disabled={kickLoading === member.user_id || kickAllLoading}
-                                  className="btn btn-danger px-2.5 py-1 text-xs"
+                                  className="btn btn-danger px-2 py-1 text-[.65rem]"
                                 >
                                   {kickLoading === member.user_id ? "..." : "踢除"}
                                 </button>
@@ -1282,6 +1305,7 @@ export default function TeamManage() {
                         );
                       })}
                     </div>
+                    </>
                   )}
                 </div>
 

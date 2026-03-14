@@ -24,7 +24,7 @@ use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2a
 use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::WorkflowReport;
-use crate::proxy_pool::{ProxyPool, health_check, resolve_proxies};
+use crate::proxy_pool::{ProxyPool, health_check, health_check_detailed, normalize_proxy, resolve_proxies, test_single_proxy, check_proxy_quality};
 use crate::redis_cache::RedisCache;
 use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService};
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
@@ -1141,6 +1141,108 @@ async fn delete_gptmail_domain_handler(
     Ok(Json(MsgResponse {
         message: format!("GPTMail 域名 {domain} 已删除"),
     }))
+}
+
+#[derive(Deserialize)]
+struct ProxyRequest {
+    proxy: String,
+}
+
+#[derive(Deserialize)]
+struct ProxyTestRequest {
+    proxy_url: String,
+}
+
+async fn add_proxy_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ProxyRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let proxy = req.proxy.trim().to_string();
+    if proxy.is_empty() {
+        return Err(error_json(StatusCode::BAD_REQUEST, "代理地址不能为空"));
+    }
+    let normalized = normalize_proxy(&proxy);
+    let mut cfg = state.config.write().await;
+    if cfg.proxy_pool.iter().any(|p| normalize_proxy(p) == normalized) {
+        return Err(error_json(
+            StatusCode::CONFLICT,
+            &format!("代理已存在: {proxy}"),
+        ));
+    }
+    cfg.proxy_pool.push(proxy.clone());
+    auto_save(&cfg, &state.config_path);
+    Ok((
+        StatusCode::CREATED,
+        Json(MsgResponse {
+            message: format!("代理 {proxy} 已添加"),
+        }),
+    ))
+}
+
+async fn delete_proxy_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ProxyRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let proxy = req.proxy.trim().to_string();
+    let normalized = normalize_proxy(&proxy);
+    let mut cfg = state.config.write().await;
+    let before = cfg.proxy_pool.len();
+    cfg.proxy_pool.retain(|p| normalize_proxy(p) != normalized);
+    if cfg.proxy_pool.len() == before {
+        return Err(error_json(
+            StatusCode::NOT_FOUND,
+            &format!("未找到代理: {proxy}"),
+        ));
+    }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse {
+        message: format!("代理 {proxy} 已删除"),
+    }))
+}
+
+async fn proxy_health_check_handler(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let (proxies, timeout_sec) = {
+        let cfg = state.config.read().await;
+        (cfg.proxy_pool.clone(), cfg.proxy_check_timeout_sec.unwrap_or(5))
+    };
+    let results = health_check_detailed(&proxies, timeout_sec).await;
+    Json(results)
+}
+
+/// 测试单个代理连通性
+async fn proxy_test_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ProxyTestRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let proxy_url = req.proxy_url.trim().to_string();
+    if proxy_url.is_empty() {
+        return Err(error_json(StatusCode::BAD_REQUEST, "代理地址不能为空"));
+    }
+    let timeout_sec = {
+        let cfg = state.config.read().await;
+        cfg.proxy_check_timeout_sec.unwrap_or(5)
+    };
+    let result = test_single_proxy(&proxy_url, timeout_sec.max(10)).await;
+    Ok(Json(result))
+}
+
+/// 深度质量检测单个代理
+async fn proxy_quality_check_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ProxyTestRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let proxy_url = req.proxy_url.trim().to_string();
+    if proxy_url.is_empty() {
+        return Err(error_json(StatusCode::BAD_REQUEST, "代理地址不能为空"));
+    }
+    let timeout_sec = {
+        let cfg = state.config.read().await;
+        cfg.proxy_check_timeout_sec.unwrap_or(5)
+    };
+    let result = check_proxy_quality(&proxy_url, timeout_sec.max(15)).await;
+    Ok(Json(result))
 }
 
 async fn update_d1_cleanup_handler(
@@ -2618,6 +2720,13 @@ pub async fn start_server(
             "/api/config/gptmail_domains",
             post(add_gptmail_domain_handler).delete(delete_gptmail_domain_handler),
         )
+        .route(
+            "/api/config/proxy_pool",
+            post(add_proxy_handler).delete(delete_proxy_handler),
+        )
+        .route("/api/proxy/health-check", post(proxy_health_check_handler))
+        .route("/api/proxy/test", post(proxy_test_handler))
+        .route("/api/proxy/quality-check", post(proxy_quality_check_handler))
         .route("/api/config/save", post(save_config_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))

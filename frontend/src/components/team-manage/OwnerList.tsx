@@ -42,22 +42,35 @@ export function OwnerList({
   }
 
   return (
-    <div className="grid gap-2">
-      {owners.map(owner => (
-        <OwnerRow
-          key={owner.account_id}
-          owner={owner}
-          memberCount={memberCounts[owner.account_id] ?? owner.member_count}
-          quota={ownerQuotas[owner.account_id]}
-          quotaLoading={ownerQuotaLoading[owner.account_id]}
-          health={healthMap[owner.account_id]}
-          selected={selectedOwnerIds.has(owner.account_id)}
-          onOpenMembers={onOpenMembers}
-          onToggleSelected={onToggleSelected}
-          onLoadOwnerQuota={onLoadOwnerQuota}
-          onRefreshMembers={onRefreshMembers}
-        />
-      ))}
+    <div className="team-manage-table">
+      {/* 表头 */}
+      <div className="team-manage-table__header team-manage-table-grid">
+        <span />
+        <span>Owner</span>
+        <span>状态</span>
+        <span>成员额度</span>
+        <span>Owner 额度</span>
+        <span className="text-center">成员</span>
+        <span />
+      </div>
+      {/* 表体 */}
+      <div className="team-manage-table__body">
+        {owners.map(owner => (
+          <OwnerRow
+            key={owner.account_id}
+            owner={owner}
+            memberCount={memberCounts[owner.account_id] ?? owner.member_count}
+            quota={ownerQuotas[owner.account_id]}
+            quotaLoading={ownerQuotaLoading[owner.account_id]}
+            health={healthMap[owner.account_id]}
+            selected={selectedOwnerIds.has(owner.account_id)}
+            onOpenMembers={onOpenMembers}
+            onToggleSelected={onToggleSelected}
+            onLoadOwnerQuota={onLoadOwnerQuota}
+            onRefreshMembers={onRefreshMembers}
+          />
+        ))}
+      </div>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { Select } from '../components/Select';
 interface ConfigData {
   defaults: { target_count?: number; register_workers?: number; rt_workers?: number; rt_retries?: number; team?: Record<string, number>; free?: Record<string, number> };
   register: Record<string, unknown>;
+  proxy_pool?: string[];
   email_domains: string[];
   chatgpt_mail_domains?: string[];
   d1_cleanup?: { enabled: boolean; account_id: string; api_key: string; keep_percent: number; batch_size: number; databases: { name: string; id: string }[]; cleanup_timing?: string };
@@ -24,6 +25,11 @@ export default function Config() {
   const [mailTimeout, setMailTimeout] = useState(20); const [otpRetries, setOtpRetries] = useState(3); const [reqTimeout, setReqTimeout] = useState(30);
   const [mailConc, setMailConc] = useState(50); const [logMode, setLogMode] = useState('verbose'); const [perfMode, setPerfMode] = useState('baseline');
   const [gptMailKey, setGptMailKey] = useState('');
+
+  // Proxy
+  const [newProxy, setNewProxy] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [healthResults, setHealthResults] = useState<{ proxy: string; ok: boolean; reason: string }[]>([]);
 
   // Domains
   const [newDomain, setNewDomain] = useState(''); const [newGptDomain, setNewGptDomain] = useState('');
@@ -84,6 +90,10 @@ export default function Config() {
     }
   };
 
+  const addProxy = async () => { if (!newProxy.trim()) return; try { await api.addProxy(newProxy.trim()); setNewProxy(''); toast('代理已添加', 'success'); load(); } catch (e: any) { toast(e.message || '添加失败', 'error'); } };
+  const delProxy = async (p: string) => { try { await api.deleteProxy(p); toast('代理已删除', 'success'); load(); } catch (e: any) { toast(e.message || '删除失败', 'error'); } };
+  const checkHealth = async () => { setChecking(true); setHealthResults([]); try { const r = await api.checkProxyHealth(); setHealthResults(r); } catch (e: any) { toast(e.message || '检测失败', 'error'); } finally { setChecking(false); } };
+
   return (
     <div className="space-y-4">
       {/* Defaults */}
@@ -114,6 +124,34 @@ export default function Config() {
           <div><label className="field-label">性能模式</label><Select value={perfMode} onChange={setPerfMode} options={[{ label: 'baseline', value: 'baseline' }, { label: 'adaptive', value: 'adaptive' }]} /></div>
         </div>
         <button onClick={saveRegister} className="btn btn-amber mt-3">保存</button>
+      </div>
+
+      {/* Proxy Pool */}
+      <div className="card p-5">
+        <div className="section-title">代理池 <span className="c-dim2 font-mono text-[.65rem]">{config?.proxy_pool?.length ?? 0}</span></div>
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {(config?.proxy_pool || []).map(p => (
+            <span key={p} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style={{ background: 'var(--domain-bg)', border: '1px solid var(--domain-border)', color: 'var(--text-dim2)' }}>
+              {p}<button onClick={() => delProxy(p)} className="text-red-400 hover:text-red-300 ml-1">&times;</button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2 mb-3">
+          <input className="field-input flex-1" placeholder="http://127.0.0.1:7890" value={newProxy} onChange={e => setNewProxy(e.target.value)} onKeyDown={e => e.key === 'Enter' && addProxy()} />
+          <button onClick={addProxy} className="btn btn-teal text-xs">添加</button>
+        </div>
+        <button onClick={checkHealth} disabled={checking} className="btn btn-amber text-xs">{checking ? '检测中...' : '健康检测'}</button>
+        {healthResults.length > 0 && (
+          <div className="mt-3 space-y-1">
+            {healthResults.map(r => (
+              <div key={r.proxy} className="flex items-center gap-2 text-xs font-mono">
+                <span className={r.ok ? 'text-green-400' : 'text-red-400'}>{r.ok ? '✓' : '✗'}</span>
+                <span className="c-dim2">{r.proxy}</span>
+                <span className="c-dim2 truncate">{r.reason}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Domains */}

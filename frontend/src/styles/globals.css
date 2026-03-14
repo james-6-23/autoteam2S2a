@@ -633,10 +633,65 @@ html.light .btn-danger {
   letter-spacing: -0.03em;
 }
 
-.team-manage-owner-row {
-  min-height: 92px;
+/* 表格容器 */
+.team-manage-table {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.008);
 }
 
+/* 共享网格列定义 */
+.team-manage-table-grid {
+  display: grid;
+  grid-template-columns: 36px minmax(200px, 1.5fr) 88px 1fr 130px 52px 72px;
+  align-items: center;
+  column-gap: 12px;
+}
+
+/* 表头 */
+.team-manage-table__header {
+  padding: 10px 16px;
+  font-size: 0.68rem;
+  font-weight: 650;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.025);
+  user-select: none;
+}
+
+.team-manage-table__header span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Owner 行 */
+.team-manage-owner-row {
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background 0.18s ease;
+}
+
+.team-manage-owner-row:last-child {
+  border-bottom: none;
+}
+
+.team-manage-owner-row:hover {
+  background: var(--bg-row-hover);
+}
+
+.team-manage-owner-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.team-manage-owner-row:nth-child(even):hover {
+  background: var(--bg-row-hover);
+}
+
+/* 复选框 */
 .team-manage-owner-row__check {
   display: inline-flex;
   align-items: center;
@@ -644,60 +699,54 @@ html.light .btn-danger {
   width: 22px;
   height: 22px;
   flex-shrink: 0;
-  border-radius: 999px;
-  border: 1px solid var(--border);
+  border-radius: 6px;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.team-manage-owner-row__check:hover {
+  border-color: var(--border-hover);
   background: var(--ghost);
 }
 
 .team-manage-owner-row__check--selected {
-  border-color: rgba(20, 184, 166, 0.55);
+  border-color: rgba(20, 184, 166, 0.6);
   background: rgba(20, 184, 166, 0.12);
 }
 
 .team-manage-owner-row__check-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
   background: transparent;
+  transition: background 0.2s ease;
 }
 
 .team-manage-owner-row__check--selected .team-manage-owner-row__check-dot {
-  background: linear-gradient(135deg, rgba(20, 184, 166, 0.95), rgba(59, 130, 246, 0.92));
+  background: linear-gradient(135deg, #14b8a6, #3b82f6);
 }
 
+/* 告警行：左侧色条 + 渐变背景 */
 .team-manage-owner-row--alert {
-  border-color: rgba(248, 113, 113, 0.45);
-  background: linear-gradient(180deg, rgba(248, 113, 113, 0.06), rgba(248, 113, 113, 0.02));
+  border-left: 3px solid rgba(248, 113, 113, 0.5);
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.04), transparent 40%);
+}
+
+.team-manage-owner-row--alert:nth-child(even) {
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.04), rgba(255, 255, 255, 0.012) 40%);
 }
 
 .team-manage-owner-row--owner-banned {
-  border-color: rgba(239, 68, 68, 0.6);
-  background: rgba(239, 68, 68, 0.12);
+  border-left: 3px solid rgba(239, 68, 68, 0.7);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.06), transparent 40%);
+  opacity: 0.85;
 }
 
 .team-manage-owner-row--owner-banned:hover {
-  background: rgba(239, 68, 68, 0.18);
-}
-
-.team-manage-owner-row--owner-banned .c-heading,
-.team-manage-owner-row--owner-banned .c-dim,
-.team-manage-owner-row--owner-banned .c-dim2 {
-  color: inherit;
-}
-
-.team-manage-owner-row__identity {
-  width: 320px;
-  word-break: break-all;
-}
-
-.team-manage-owner-row__status {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 6px;
-  width: 124px;
-  flex-shrink: 0;
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.1), transparent 40%);
+  opacity: 1;
 }
 
 .team-manage-bulkbar {
@@ -1439,11 +1488,16 @@ html.light .team-modal-card {
   .team-manage-dashboard {
     grid-template-columns: 1fr;
   }
-  .team-manage-owner-row {
-    padding: 14px;
-  }
-  .team-manage-owner-row > div:first-child {
+  .team-manage-table-grid {
+    display: flex;
     flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .team-manage-table__header {
+    display: none;
+  }
+  .team-manage-owner-row {
+    padding: 12px 14px;
   }
   .team-manage-bulkbar {
     flex-direction: column;
@@ -1466,12 +1520,8 @@ html.light .team-modal-card {
   .team-manage-invite-task__summary {
     grid-template-columns: 1fr;
   }
-  .team-manage-owner-row__identity {
+  .team-manage-owner-row .min-w-0 {
     width: 100%;
-  }
-  .team-manage-owner-row__status {
-    width: auto;
-    align-items: flex-start;
   }
   .team-manage-pagination__rail {
     grid-template-columns: 1fr;
