@@ -1251,7 +1251,7 @@ export default function TeamManage() {
                         `}'`,
                       ].join(" \\\n");
                       navigator.clipboard.writeText(curl).then(() => {
-                        toast.success("已复制邀请 cURL 命令");
+                        toast("已复制邀请 cURL 命令", "success");
                       });
                     }}
                     className="btn btn-ghost flex items-center gap-1 px-2 py-1 text-[.65rem]"
