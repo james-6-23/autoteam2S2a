@@ -342,16 +342,17 @@ async fn fetch_pending_invites(
         .unwrap_or_else(|_| rquest::Client::new());
 
     let url = format!(
-        "https://chatgpt.com/backend-api/accounts/{}/invites",
+        "https://chatgpt.com/backend-api/accounts/{}/invites?offset=0&limit=100&query=",
         owner.account_id
     );
 
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {}", owner.access_token))
+        .header("Chatgpt-Account-Id", &owner.account_id)
         .header("User-Agent", &invite_cfg.user_agent)
         .header("Origin", "https://chatgpt.com")
-        .header("Referer", "https://chatgpt.com/")
+        .header("Referer", "https://chatgpt.com/admin/members?tab=invites")
         .send()
         .await?;
 
@@ -361,12 +362,10 @@ async fn fetch_pending_invites(
 
     let body: serde_json::Value = resp.json().await?;
 
-    // 兼容多种响应格式：
-    // { "account_invites": [...] } / { "invites": [...] } / { "items": [...] } / 直接数组
-    let invites = body["account_invites"]
+    // 响应格式：{ "items": [...], "total": N, "limit": N, "offset": N }
+    let invites = body["items"]
         .as_array()
-        .or_else(|| body["invites"].as_array())
-        .or_else(|| body["items"].as_array())
+        .or_else(|| body["account_invites"].as_array())
         .or_else(|| body.as_array());
 
     let invites = match invites {
@@ -431,10 +430,11 @@ async fn delete_pending_invites(
         match client
             .delete(&url)
             .header("Authorization", format!("Bearer {}", owner.access_token))
+            .header("Chatgpt-Account-Id", &owner.account_id)
             .header("Content-Type", "application/json")
             .header("User-Agent", &invite_cfg.user_agent)
             .header("Origin", "https://chatgpt.com")
-            .header("Referer", "https://chatgpt.com/")
+            .header("Referer", "https://chatgpt.com/admin/members?tab=invites")
             .json(&payload)
             .send()
             .await
