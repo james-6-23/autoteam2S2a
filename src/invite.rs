@@ -417,51 +417,56 @@ async fn delete_pending_invites(
         owner.account_id
     );
 
-    for invite in pending {
-        #[derive(serde::Serialize)]
-        struct DeletePayload {
-            email_address: String,
-        }
-
-        let payload = DeletePayload {
-            email_address: invite.email.clone(),
-        };
-
-        match client
-            .delete(&url)
-            .header("Authorization", format!("Bearer {}", owner.access_token))
-            .header("Chatgpt-Account-Id", &owner.account_id)
-            .header("Content-Type", "application/json")
-            .header("User-Agent", &invite_cfg.user_agent)
-            .header("Origin", "https://chatgpt.com")
-            .header("Referer", "https://chatgpt.com/admin/members?tab=invites")
-            .json(&payload)
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                broadcast_log(&format!("[清理] 已删除 pending invite: {}", invite.email));
-            }
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                broadcast_log(&format!(
-                    "[清理] 删除 pending invite {} 失败: HTTP {} - {}",
-                    invite.email,
-                    status.as_u16(),
-                    if body.len() > 200 { &body[..200] } else { &body }
-                ));
-            }
-            Err(e) => {
-                broadcast_log(&format!(
-                    "[清理] 删除 pending invite {} 请求失败: {e}",
-                    invite.email
-                ));
-            }
-        }
-        // 删除间短暂等待
-        tokio::time::sleep(Duration::from_millis(300)).await;
+    #[derive(serde::Serialize)]
+    struct DeletePayload {
+        email_address: String,
     }
+
+    // 并发删除所有 pending invites
+    let futs = pending.iter().map(|invite| {
+        let client = &client;
+        let url = &url;
+        let owner = &owner;
+        let invite_cfg = &invite_cfg;
+        async move {
+            let payload = DeletePayload {
+                email_address: invite.email.clone(),
+            };
+            match client
+                .delete(url.as_str())
+                .header("Authorization", format!("Bearer {}", owner.access_token))
+                .header("Chatgpt-Account-Id", &owner.account_id)
+                .header("Content-Type", "application/json")
+                .header("User-Agent", &invite_cfg.user_agent)
+                .header("Origin", "https://chatgpt.com")
+                .header("Referer", "https://chatgpt.com/admin/members?tab=invites")
+                .json(&payload)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    broadcast_log(&format!("[清理] 已删除 pending invite: {}", invite.email));
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    broadcast_log(&format!(
+                        "[清理] 删除 pending invite {} 失败: HTTP {} - {}",
+                        invite.email,
+                        status.as_u16(),
+                        if body.len() > 200 { &body[..200] } else { &body }
+                    ));
+                }
+                Err(e) => {
+                    broadcast_log(&format!(
+                        "[清理] 删除 pending invite {} 请求失败: {e}",
+                        invite.email
+                    ));
+                }
+            }
+        }
+    });
+    futures::future::join_all(futs).await;
 }
 
 // ─── 注销 Owner 账号 ────────────────────────────────────────────────────────
