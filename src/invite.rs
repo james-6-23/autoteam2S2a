@@ -143,12 +143,29 @@ pub async fn invite_emails(
         .unwrap_or_else(|_| rquest::Client::new());
 
     let mut results = Vec::with_capacity(emails.len());
+    let total = emails.len();
 
-    for email in emails {
+    for (i, email) in emails.iter().enumerate() {
+        broadcast_log(&format!(
+            "[邀请] 发送 ({}/{}) {}",
+            i + 1, total, email
+        ));
         let result = invite_single_email(&client, owner, email, invite_cfg).await;
+        // 实时输出单个结果
+        if result.success {
+            broadcast_log(&format!("[邀请成功] {}", email));
+        } else {
+            broadcast_log(&format!(
+                "[邀请失败] {}: {}",
+                email,
+                result.error.as_deref().unwrap_or("未知错误")
+            ));
+        }
         results.push(result);
         // 邀请间短暂等待，避免触发频率限制
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        if i + 1 < total {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
     }
 
     results
@@ -834,7 +851,6 @@ pub async fn run_invite_workflow(
                     },
                 );
                 invited_emails_ok.push((i, email_db_id));
-                broadcast_log(&format!("[邀请成功] {}", result.email));
             } else {
                 invited_failed += 1;
                 progress.invited_failed.fetch_add(1, Ordering::Relaxed);
@@ -846,11 +862,6 @@ pub async fn run_invite_workflow(
                         ..Default::default()
                     },
                 );
-                broadcast_log(&format!(
-                    "[邀请失败] {}: {}",
-                    result.email,
-                    result.error.as_deref().unwrap_or("未知")
-                ));
             }
         }
 
