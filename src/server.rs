@@ -4574,102 +4574,101 @@ async fn team_manage_batch_kick_handler(
 
         owner_handles.push(tokio::spawn(async move {
             let _permit = owner_sem.acquire().await;
-            let member_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(5));
-            let mut member_handles = Vec::new();
 
-            for (user_id, email) in members {
-                let proxy_clients = proxy_clients.clone();
-                let proxy_idx = proxy_idx.clone();
-                let access_token = access_token.clone();
-                let account_id = account_id.clone();
-                let success = success.clone();
-                let failed = failed.clone();
-                let done = done.clone();
-                let member_sem = member_sem.clone();
+            for (user_id, email) in &members {
+                let url = format!(
+                    "https://chatgpt.com/backend-api/accounts/{}/users/{}",
+                    account_id, user_id
+                );
+                let device_id = uuid::Uuid::new_v4().to_string();
 
-                member_handles.push(tokio::spawn(async move {
-                    let _permit = member_sem.acquire().await;
-                    let url = format!(
-                        "https://chatgpt.com/backend-api/accounts/{}/users/{}",
-                        account_id, user_id
-                    );
-                    let device_id = uuid::Uuid::new_v4().to_string();
+                // 轮询选取代理客户端
+                let idx = proxy_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let client = &proxy_clients[idx % proxy_clients.len()];
 
-                    // 轮询选取代理客户端
-                    let idx = proxy_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let client = &proxy_clients[idx % proxy_clients.len()];
+                let result = client
+                    .delete(&url)
+                    .header("Accept", "*/*")
+                    .header("Accept-Language", "zh-CN,zh;q=0.9")
+                    .header("Authorization", format!("Bearer {}", access_token))
+                    .header("Chatgpt-Account-Id", &account_id)
+                    .header("Oai-Language", "zh-CN")
+                    .header("Oai-Device-Id", &device_id)
+                    .header("Referer", "https://chatgpt.com/admin/members")
+                    .header("Origin", "https://chatgpt.com")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
+                    .send()
+                    .await;
 
-                    let result = client
-                        .delete(&url)
-                        .header("Accept", "*/*")
-                        .header("Accept-Language", "zh-CN,zh;q=0.9")
-                        .header("Authorization", format!("Bearer {}", access_token))
-                        .header("Chatgpt-Account-Id", &account_id)
-                        .header("Oai-Language", "zh-CN")
-                        .header("Oai-Device-Id", &device_id)
-                        .header("Referer", "https://chatgpt.com/admin/members")
-                        .header("Origin", "https://chatgpt.com")
-                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
-                        .send()
-                        .await;
-
-                    let ok = match result {
-                        Ok(resp) if resp.status().is_success() => {
-                            crate::log_broadcast::broadcast_log(&format!(
-                                "[批量清理] ✓ {} 踢除 {}",
-                                account_id, email
-                            ));
-                            true
-                        }
-                        Ok(resp) => {
-                            let status = resp.status();
-                            let body = resp.text().await.unwrap_or_default();
-                            let preview = if body.len() > 200 { &body[..200] } else { &body };
-                            crate::log_broadcast::broadcast_log(&format!(
-                                "[批量清理] ✗ {} 踢除 {} 失败 HTTP {}",
-                                account_id, email, status.as_u16()
-                            ));
-                            tracing::warn!(
-                                "[批量清理] 踢除失败 {} {} HTTP {}: {}",
-                                account_id, email, status.as_u16(), preview
-                            );
-                            false
-                        }
-                        Err(e) => {
-                            crate::log_broadcast::broadcast_log(&format!(
-                                "[批量清理] ✗ {} 踢除 {} 失败: {}",
-                                account_id, email, e
-                            ));
-                            tracing::warn!(
-                                "[批量清理] 踢除失败 {} {}: {}",
-                                account_id, email, e
-                            );
-                            false
-                        }
-                    };
-
-                    if ok {
-                        success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    } else {
-                        failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    let current_done = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-
-                    // 每 50 个输出一次进度
-                    if current_done % 50 == 0 || current_done == total {
+                let (ok, is_403) = match result {
+                    Ok(resp) if resp.status().is_success() => {
                         crate::log_broadcast::broadcast_log(&format!(
-                            "[批量清理] 进度 {}/{} (成功 {}, 失败 {})",
-                            current_done,
-                            total,
-                            success.load(std::sync::atomic::Ordering::Relaxed),
-                            failed.load(std::sync::atomic::Ordering::Relaxed),
+                            "[批量清理] ✓ {} 踢除 {}",
+                            account_id, email
+                        ));
+                        (true, false)
+                    }
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let status_code = status.as_u16();
+                        let body = resp.text().await.unwrap_or_default();
+                        let preview = if body.len() > 200 { &body[..200] } else { &body };
+                        crate::log_broadcast::broadcast_log(&format!(
+                            "[批量清理] ✗ {} 踢除 {} 失败 HTTP {}: {}",
+                            account_id, email, status_code, preview
+                        ));
+                        tracing::warn!(
+                            "[批量清理] 踢除失败 {} {} HTTP {}: {}",
+                            account_id, email, status_code, preview
+                        );
+                        (false, status_code == 403)
+                    }
+                    Err(e) => {
+                        crate::log_broadcast::broadcast_log(&format!(
+                            "[批量清理] ✗ {} 踢除 {} 失败: {}",
+                            account_id, email, e
+                        ));
+                        tracing::warn!(
+                            "[批量清理] 踢除失败 {} {}: {}",
+                            account_id, email, e
+                        );
+                        (false, false)
+                    }
+                };
+
+                if ok {
+                    success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // 首次 403 → owner token 失效，跳过该 owner 剩余成员
+                if is_403 {
+                    let processed_so_far = members.iter().position(|(uid, _)| uid == user_id).unwrap_or(0) + 1;
+                    let skip = members.len() - processed_so_far;
+                    if skip > 0 {
+                        failed.fetch_add(skip, std::sync::atomic::Ordering::Relaxed);
+                        done.fetch_add(skip, std::sync::atomic::Ordering::Relaxed);
+                        crate::log_broadcast::broadcast_log(&format!(
+                            "[批量清理] ⚠ {} token 无效(403)，跳过剩余 {} 个成员",
+                            account_id, skip
                         ));
                     }
-                }));
-            }
+                    break;
+                }
 
-            for h in member_handles {
-                let _ = h.await;
+                // 每完成一个检查是否需要输出进度
+                let current_done = done.load(std::sync::atomic::Ordering::Relaxed);
+                if current_done % 50 == 0 || current_done == total {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[批量清理] 进度 {}/{} (成功 {}, 失败 {})",
+                        current_done,
+                        total,
+                        success.load(std::sync::atomic::Ordering::Relaxed),
+                        failed.load(std::sync::atomic::Ordering::Relaxed),
+                    ));
+                }
             }
         }));
     }
