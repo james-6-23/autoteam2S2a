@@ -395,7 +395,7 @@ pub async fn run_invite_workflow(
     let register_runtime = cfg.register_runtime();
     let codex_runtime = cfg.codex_runtime();
     let proxy_pool = if cfg.proxy_enabled.unwrap_or(true) {
-        Arc::new(ProxyPool::new(cfg.proxy_pool.clone()))
+        Arc::new(ProxyPool::with_refresh_urls(cfg.proxy_pool.clone(), cfg.proxy_refresh_urls.clone()))
     } else {
         broadcast_log("[邀请] 代理池已禁用，使用直连模式");
         Arc::new(ProxyPool::new(vec![]))
@@ -499,8 +499,11 @@ pub async fn run_invite_workflow(
 
             for member in &existing_members {
                 if let Some(password) = pw_map.get(&member.email) {
+                    // 住宅代理：每次 RT 请求前刷新 IP
+                    if proxy_pool.has_refresh_urls() {
+                        proxy_pool.refresh_all_and_wait().await;
+                    }
                     let proxy = proxy_pool.next();
-                    let proxy_str = proxy.clone();
                     let proxy_label = proxy.as_deref().map(|p| mask_proxy(p)).unwrap_or_else(|| "直连".to_string());
 
                     let fake_registered = crate::models::RegisteredAccount {
@@ -516,8 +519,6 @@ pub async fn run_invite_workflow(
                     let rt_result = codex_service
                         .fetch_refresh_token(&fake_registered, proxy, 1)
                         .await;
-                    // 代理已使用，触发 IP 刷新
-                    proxy_pool.notify_used(proxy_str.as_deref());
                     match rt_result {
                         Ok(rt) => {
                             cum_rt_ok += 1;
@@ -733,6 +734,13 @@ pub async fn run_invite_workflow(
 
         // ─── 阶段 2: 注册 + RT ──────────────────────────────────────────
         progress.set_stage("注册 + RT");
+
+        // 住宅代理：批次开始前同步刷新 IP，确保本 owner 使用新 IP
+        if proxy_pool.has_refresh_urls() {
+            broadcast_log("[代理] 刷新住宅代理 IP（等待完成）...");
+            proxy_pool.refresh_all_and_wait().await;
+        }
+
         broadcast_log(&format!(
             "[注册+RT] 开始并发处理 {} 个已邀请邮箱",
             invited_emails_ok.len()
@@ -786,12 +794,10 @@ pub async fn run_invite_workflow(
 
                         match register_service.register(input).await {
                             Ok(acc) => {
-                                proxy_pool.notify_used(proxy.as_deref());
                                 registered = Some(acc);
                                 break;
                             }
                             Err(e) => {
-                                proxy_pool.notify_used(proxy.as_deref());
                                 last_reg_err = format!("{e:#}");
                             }
                         }
@@ -853,12 +859,10 @@ pub async fn run_invite_workflow(
                             .await
                         {
                             Ok(rt) => {
-                                proxy_pool.notify_used(proxy.as_deref());
                                 rt_result = Some(rt);
                                 break;
                             }
                             Err(e) => {
-                                proxy_pool.notify_used(proxy.as_deref());
                                 last_rt_err = format!("{e:#}");
                             }
                         }

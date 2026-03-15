@@ -11,6 +11,8 @@ pub struct ProxyPool {
     index: AtomicUsize,
     /// 代理地址 → 刷新 URL 映射（仅住宅/动态代理需要配置）
     refresh_urls: std::sync::Mutex<HashMap<String, String>>,
+    /// 刷新锁：确保同一时刻只有一个调用方在执行刷新
+    refresh_lock: tokio::sync::Mutex<()>,
 }
 
 impl ProxyPool {
@@ -23,6 +25,7 @@ impl ProxyPool {
                 .collect(),
             index: AtomicUsize::new(0),
             refresh_urls: std::sync::Mutex::new(HashMap::new()),
+            refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -56,6 +59,59 @@ impl ProxyPool {
             "single-proxy"
         } else {
             "proxy-pool"
+        }
+    }
+
+    /// 是否有任何代理配置了刷新 URL
+    pub fn has_refresh_urls(&self) -> bool {
+        !self.refresh_urls.lock().unwrap().is_empty()
+    }
+
+    /// 同步刷新所有配置了刷新 URL 的代理 IP（await 等待完成）
+    /// 用于 owner 级别的批次间刷新，确保新批次拿到新 IP
+    /// 内部加锁，多个并发调用方排队执行
+    pub async fn refresh_all_and_wait(&self) {
+        let _guard = self.refresh_lock.lock().await;
+        let urls: Vec<(String, String)> = self
+            .refresh_urls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if urls.is_empty() {
+            return;
+        }
+        let client = match rquest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        for (proxy, url) in &urls {
+            match client.get(url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[代理] 刷新 IP 完成 ({})",
+                        proxy
+                    ));
+                }
+                Ok(resp) => {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[代理] 刷新 IP 失败 ({}) HTTP {}",
+                        proxy,
+                        resp.status().as_u16()
+                    ));
+                }
+                Err(e) => {
+                    crate::log_broadcast::broadcast_log(&format!(
+                        "[代理] 刷新 IP 请求失败 ({}): {e}",
+                        proxy
+                    ));
+                }
+            }
         }
     }
 
