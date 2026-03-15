@@ -360,9 +360,30 @@ async fn fetch_pending_invites(
     }
 
     let body: serde_json::Value = resp.json().await?;
+
+    // 兼容多种响应格式：
+    // { "account_invites": [...] } / { "invites": [...] } / { "items": [...] } / 直接数组
     let invites = body["account_invites"]
         .as_array()
-        .ok_or_else(|| anyhow::anyhow!("pending invites 响应格式异常"))?;
+        .or_else(|| body["invites"].as_array())
+        .or_else(|| body["items"].as_array())
+        .or_else(|| body.as_array());
+
+    let invites = match invites {
+        Some(arr) => arr,
+        None => {
+            // 打印实际响应的顶层 key 便于调试
+            let keys: Vec<&str> = body.as_object()
+                .map(|obj| obj.keys().map(|k| k.as_str()).collect())
+                .unwrap_or_default();
+            broadcast_log(&format!(
+                "[调试] pending invites 响应顶层 key: {:?}, 前200字符: {}",
+                keys,
+                &body.to_string().chars().take(200).collect::<String>()
+            ));
+            bail!("pending invites 响应格式异常 (keys={:?})", keys);
+        }
+    };
 
     let mut pending = Vec::new();
     for item in invites {
