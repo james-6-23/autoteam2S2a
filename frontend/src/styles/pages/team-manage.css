@@ -103,10 +103,9 @@
 
 .team-manage-members-list__header,
 .team-manage-members-list__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px 72px;
+  display: flex;
   align-items: center;
-  column-gap: 12px;
+  gap: 12px;
 }
 
 .team-manage-members-list__header {
@@ -114,16 +113,25 @@
   background: rgba(255, 255, 255, 0.015);
 }
 
+.team-manage-members-list__header > :first-child,
+.team-manage-members-list__info-col {
+  flex: 0 1 460px;
+  min-width: 0;
+  max-width: 520px;
+}
+
 .team-manage-members-list__row {
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
 }
 
-.team-manage-members-list__info-col,
 .team-manage-members-list__quota-col {
+  flex: 0 0 180px;
   min-width: 0;
 }
 
 .team-manage-members-list__action-col {
+  flex: 0 0 72px;
+  margin-left: auto;
   display: flex;
   justify-content: flex-end;
 }
@@ -422,6 +430,7 @@
     display: none;
   }
   .team-manage-members-list__row {
+    display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "info action"
@@ -430,13 +439,18 @@
     row-gap: 10px;
   }
   .team-manage-members-list__info-col {
+    flex: initial;
     grid-area: info;
+    max-width: none;
   }
   .team-manage-members-list__quota-col {
+    flex: initial;
     grid-area: quota;
   }
   .team-manage-members-list__action-col {
+    flex: initial;
     grid-area: action;
+    margin-left: 0;
     align-self: center;
   }
 }
