@@ -3716,6 +3716,7 @@ fn team_manage_cached_results_map(
                 owner_status,
                 members,
                 checked_at,
+                owner_quota: None,
             };
             (account_id, result)
         })
@@ -3734,6 +3735,7 @@ fn team_manage_owner_health_result_from_record(
             .and_then(|value| serde_json::from_str::<Vec<MemberHealthInfo>>(value).ok())
             .unwrap_or_default(),
         checked_at: record.checked_at.clone(),
+        owner_quota: None,
     }
 }
 
@@ -4669,7 +4671,7 @@ async fn team_manage_list_owner_audits_handler(
 
 // ─── Codex Quota ─────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct QuotaWindow {
     used_percent: f64,
     remaining_percent: f64,
@@ -4677,7 +4679,7 @@ struct QuotaWindow {
     window_minutes: u64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct CodexQuota {
     five_hour: Option<QuotaWindow>,
     seven_day: Option<QuotaWindow>,
@@ -6258,6 +6260,8 @@ struct MemberHealthInfo {
     name: Option<String>,
     status: String,
     seven_day_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -6266,6 +6270,8 @@ struct OwnerHealthResult {
     owner_status: String,
     members: Vec<MemberHealthInfo>,
     checked_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_quota: Option<CodexQuota>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -6551,6 +6557,7 @@ async fn team_manage_batch_check_handler(
                     owner_status: "lock_conflict".to_string(),
                     members: vec![],
                     checked_at: crate::util::beijing_now().to_rfc3339(),
+                    owner_quota: None,
                 };
             };
             // 单 owner 检查整体超时 60 秒，防止一个慢 owner 卡住整个 chunk
@@ -6572,6 +6579,7 @@ async fn team_manage_batch_check_handler(
                         owner_status: "check_failed".to_string(),
                         members: vec![],
                         checked_at: crate::util::beijing_now().to_rfc3339(),
+                        owner_quota: None,
                     }
                 }
                 Err(_) => {
@@ -6585,6 +6593,7 @@ async fn team_manage_batch_check_handler(
                         owner_status: "timeout".to_string(),
                         members: vec![],
                         checked_at: crate::util::beijing_now().to_rfc3339(),
+                        owner_quota: None,
                     }
                 }
             };
@@ -6714,6 +6723,7 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
             None => continue,
         };
         let member_name = m.name.clone();
+        let member_user_id = m.user_id.clone();
         let state_clone = state.clone();
         let config_clone = config_clone.clone();
         let account_id = account_id.to_string();
@@ -6781,6 +6791,7 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
                 name: member_name,
                 status,
                 seven_day_pct: seven_day_pct.map(|p| (p * 10.0).round() / 10.0),
+                user_id: Some(member_user_id),
             }
         }));
     }
@@ -6804,6 +6815,7 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
         owner_status,
         members: member_infos,
         checked_at: crate::util::beijing_now().to_rfc3339(),
+        owner_quota: Some(owner_quota),
     })
 }
 

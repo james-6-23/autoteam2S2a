@@ -147,6 +147,15 @@ export default function TeamManage() {
   const [fillSlotsLoading, setFillSlotsLoading] = useState(false);
   const [fillSlotsPools, setFillSlotsPools] = useState<Array<{ team: string; weight: number }>>([]);
 
+  const [showBatchCleanupModal, setShowBatchCleanupModal] = useState(false);
+  const [batchCleanupLoading, setBatchCleanupLoading] = useState(false);
+  const [batchCleanupProgress, setBatchCleanupProgress] = useState({ done: 0, total: 0 });
+  const [cleanupOptions, setCleanupOptions] = useState({
+    cleanBanned: true,
+    cleanPoolNotFound: false,
+    cleanWeeklyZero: false,
+  });
+
   const [batchCheckLoading, setBatchCheckLoading] = useState(false);
   const [batchCheckProgress, setBatchCheckProgress] = useState({ done: 0, total: 0 });
   const batchCheckCancelledRef = useRef(false);
@@ -609,6 +618,17 @@ export default function TeamManage() {
             return next;
           });
 
+          // 如果后端返回了 owner_quota，填充到 ownerQuotas
+          const quotaUpdates: Record<string, CodexQuota> = {};
+          for (const record of res.results || []) {
+            if (record.owner_quota) {
+              quotaUpdates[record.account_id] = record.owner_quota;
+            }
+          }
+          if (Object.keys(quotaUpdates).length > 0) {
+            setOwnerQuotas(prev => ({ ...prev, ...quotaUpdates }));
+          }
+
           for (const record of res.results || []) {
             setMemberCounts(prev => ({ ...prev, [record.account_id]: record.members.length }));
           }
@@ -649,6 +669,76 @@ export default function TeamManage() {
       );
     }
     updateBatchCheckState(false);
+  };
+
+  // 批量清理：统计匹配条件的成员
+  const cleanupMatchCount = useMemo(() => {
+    let count = 0;
+    for (const health of Object.values(healthMap)) {
+      for (const m of health.members) {
+        if (!m.user_id) continue;
+        if (cleanupOptions.cleanBanned && m.status === "banned") count++;
+        else if (cleanupOptions.cleanPoolNotFound && m.status === "pool_not_found") count++;
+        else if (cleanupOptions.cleanWeeklyZero && m.seven_day_pct === 0) count++;
+      }
+    }
+    return count;
+  }, [healthMap, cleanupOptions]);
+
+  // 批量清理：执行踢除
+  const executeBatchCleanup = async () => {
+    const toKick: Array<{ accountId: string; userId: string; email: string }> = [];
+    for (const health of Object.values(healthMap)) {
+      for (const m of health.members) {
+        if (!m.user_id) continue;
+        const match =
+          (cleanupOptions.cleanBanned && m.status === "banned") ||
+          (cleanupOptions.cleanPoolNotFound && m.status === "pool_not_found") ||
+          (cleanupOptions.cleanWeeklyZero && m.seven_day_pct === 0);
+        if (match) {
+          toKick.push({ accountId: health.account_id, userId: m.user_id, email: m.email });
+        }
+      }
+    }
+
+    if (toKick.length === 0) {
+      toast("没有匹配的成员需要清理", "success");
+      return;
+    }
+
+    if (!confirm(`确定要踢除 ${toKick.length} 个匹配成员？此操作不可撤销。`)) return;
+
+    setBatchCleanupLoading(true);
+    setBatchCleanupProgress({ done: 0, total: toKick.length });
+
+    let success = 0;
+    let failed = 0;
+    let cursor = 0;
+
+    const worker = async () => {
+      while (cursor < toKick.length) {
+        const idx = cursor++;
+        const item = toKick[idx];
+        try {
+          await api.post(`/api/team-manage/owners/${encodeURIComponent(item.accountId)}/members/${encodeURIComponent(item.userId)}/kick`);
+          success++;
+        } catch {
+          failed++;
+        }
+        setBatchCleanupProgress({ done: success + failed, total: toKick.length });
+      }
+    };
+
+    const workerCount = Math.min(20, toKick.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    setBatchCleanupLoading(false);
+    setShowBatchCleanupModal(false);
+    toast(`清理完成: 成功 ${success}，失败 ${failed}`, failed > 0 ? "error" : "success");
+
+    // 刷新 dashboard 和成员数据
+    void loadDashboard();
+    void loadOwners();
   };
 
   const toggleOwnerSelected = (accountId: string) => {
@@ -1065,6 +1155,15 @@ export default function TeamManage() {
                 className="btn btn-ghost py-1.5 text-xs"
               >
                 批量归档
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowBatchCleanupModal(true)}
+                disabled={Object.keys(healthMap).length === 0}
+                className="btn btn-ghost py-1.5 text-xs"
+                style={{ color: "#f87171" }}
+              >
+                <Trash2 size={12} /> 批量清理
               </button>
               <span className="h-5 w-px shrink-0" style={{ background: "var(--border)" }} />
               {/* 邀请操作 */}
@@ -1603,6 +1702,70 @@ export default function TeamManage() {
               >
                 {fillSlotsLoading ? <span className="inline-flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> 提交中</span> : "确认补位"}
               </button>
+            </div>
+          </div>
+        </div>
+      , document.body)}
+
+      {showBatchCleanupModal && createPortal(
+        <div className="team-modal" onClick={event => { if (event.target === event.currentTarget) setShowBatchCleanupModal(false); }}>
+          <div className="team-modal-card p-5" style={{ maxWidth: 480, width: "96vw" }} onClick={event => event.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <div className="section-title mb-0">批量清理成员</div>
+                <div className="mt-1 text-xs c-dim">踢除匹配条件的子号，为新邀请腾出席位</div>
+              </div>
+              <button type="button" onClick={() => setShowBatchCleanupModal(false)} className="btn btn-ghost p-1.5 -mr-1 -mt-1">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-3 rounded-lg p-3" style={{ background: "var(--ghost)" }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-medium">清理封禁子号</div>
+                  <div className="text-[.65rem] c-dim">踢除状态为"封禁"的成员</div>
+                </div>
+                <HSwitch checked={cleanupOptions.cleanBanned} onChange={v => setCleanupOptions(prev => ({ ...prev, cleanBanned: v }))} />
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-medium">清理未知账号</div>
+                  <div className="text-[.65rem] c-dim">踢除显示"未"的成员（号池未找到）</div>
+                </div>
+                <HSwitch checked={cleanupOptions.cleanPoolNotFound} onChange={v => setCleanupOptions(prev => ({ ...prev, cleanPoolNotFound: v }))} />
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-medium">清理周限子号</div>
+                  <div className="text-[.65rem] c-dim">踢除 7d=0% 的成员</div>
+                </div>
+                <HSwitch checked={cleanupOptions.cleanWeeklyZero} onChange={v => setCleanupOptions(prev => ({ ...prev, cleanWeeklyZero: v }))} />
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between">
+              <span className="text-xs c-dim">
+                {Object.keys(healthMap).length === 0
+                  ? "请先执行一键检查"
+                  : `匹配 ${cleanupMatchCount} 个成员`}
+              </span>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setShowBatchCleanupModal(false)} className="btn btn-ghost">
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void executeBatchCleanup()}
+                  disabled={batchCleanupLoading || cleanupMatchCount === 0}
+                  className="btn"
+                  style={{ background: "#f87171", color: "#fff" }}
+                >
+                  {batchCleanupLoading
+                    ? <span className="inline-flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> {batchCleanupProgress.done}/{batchCleanupProgress.total}</span>
+                    : "执行清理"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

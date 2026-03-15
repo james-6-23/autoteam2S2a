@@ -48,6 +48,7 @@ export interface MemberHealth {
   name?: string;
   status: string;
   seven_day_pct: number | null;
+  user_id?: string;
 }
 
 export interface OwnerHealth {
@@ -59,6 +60,7 @@ export interface OwnerHealth {
   expires_at?: string;
   source?: string;
   last_error?: string;
+  owner_quota?: CodexQuota;
 }
 
 export interface TeamManageOwnerPageSummary {
