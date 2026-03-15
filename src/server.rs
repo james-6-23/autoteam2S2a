@@ -3552,6 +3552,7 @@ struct TeamManageBatchFilters {
 struct TeamManageOwnerListItem {
     email: String,
     account_id: String,
+    access_token: Option<String>,
     member_count: Option<usize>,
     state: Option<String>,
     disabled_reason: Option<String>,
@@ -4089,6 +4090,7 @@ async fn team_manage_list_owners_handler(
             TeamManageOwnerListItem {
                 email: record.display_email.clone(),
                 account_id: record.account_id.clone(),
+                access_token: record.latest_access_token.clone(),
                 member_count: Some(record.member_count_cached),
                 state: Some(record.state.clone()),
                 disabled_reason: record.disabled_reason.clone(),
