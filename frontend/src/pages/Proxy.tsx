@@ -115,10 +115,25 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   );
 }
 
-function ProxyTableHeader() {
+function ProxyTableHeader({ allSelected, someSelected, onToggleAll }: {
+  allSelected: boolean;
+  someSelected: boolean;
+  onToggleAll: () => void;
+}) {
   return (
     <div className="proxy-table-grid proxy-table-header">
-      <span />
+      <div className="flex items-center justify-center">
+        <button
+          type="button"
+          onClick={onToggleAll}
+          className={`proxy-check ${allSelected ? "proxy-check--selected" : someSelected ? "proxy-check--partial" : ""}`}
+        >
+          {allSelected && <CheckCircle2 size={14} />}
+          {!allSelected && someSelected && (
+            <span className="w-2 h-0.5 rounded" style={{ background: "currentColor" }} />
+          )}
+        </button>
+      </div>
       <span>地址</span>
       <span>协议</span>
       <span>认证</span>
@@ -777,7 +792,11 @@ export default function Proxy() {
           <EmptyState onAdd={() => setShowAddModal(true)} />
         ) : (
           <div className="proxy-table">
-            <ProxyTableHeader />
+            <ProxyTableHeader
+              allSelected={allSelected}
+              someSelected={selectedIds.size > 0 && !allSelected}
+              onToggleAll={toggleSelectAll}
+            />
             <div className="proxy-table-body">
               {proxies.map(entry => (
                 <ProxyRow

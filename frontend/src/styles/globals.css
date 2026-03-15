@@ -998,6 +998,12 @@ html.light .btn-danger {
   color: #14b8a6;
 }
 
+.proxy-check--partial {
+  border-color: rgba(20, 184, 166, 0.4);
+  background: rgba(20, 184, 166, 0.08);
+  color: #14b8a6;
+}
+
 /* 操作按钮 */
 .proxy-action-btn {
   display: inline-flex;
