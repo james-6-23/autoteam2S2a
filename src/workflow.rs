@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use futures::{StreamExt, stream};
+use rand::Rng;
 use tokio::sync::mpsc;
 
 use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig};
@@ -487,10 +488,49 @@ impl WorkflowRunner {
             return (0, 0);
         }
 
+        // 如果开启了 bind_proxy，获取 S2A 代理列表
+        let proxy_ids: Vec<i64> = if team.bind_proxy == Some(true) {
+            match self.s2a_service.fetch_proxy_ids(team).await {
+                Ok(ids) if !ids.is_empty() => {
+                    broadcast_log(&format!(
+                        "[S2A] 已获取 {} 个代理，将随机分配 proxy_id",
+                        ids.len()
+                    ));
+                    ids
+                }
+                Ok(_) => {
+                    broadcast_log("[S2A] 代理列表为空，跳过 proxy_id 绑定");
+                    vec![]
+                }
+                Err(err) => {
+                    broadcast_log(&format!(
+                        "[S2A] 获取代理列表失败（不阻断入库）: {err}"
+                    ));
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        };
+
         let s2a_concurrency = team.concurrency.max(1).min(accounts.len().max(1));
         let mut s2a_ok = 0usize;
         let mut created_ids: Vec<i64> = Vec::new();
-        let mut pending = accounts;
+        let mut pending: Vec<(AccountWithRt, Option<i64>)> = {
+            let mut rng = rand::rng();
+            accounts
+                .into_iter()
+                .map(|acc| {
+                    let pid = if proxy_ids.is_empty() {
+                        None
+                    } else {
+                        let idx = rng.random_range(0..proxy_ids.len());
+                        Some(proxy_ids[idx])
+                    };
+                    (acc, pid)
+                })
+                .collect()
+        };
         let mut final_failed: Vec<AccountWithRt> = Vec::new();
 
         for retry_round in 0..S2A_MAX_RETRIES {
@@ -510,12 +550,12 @@ impl WorkflowRunner {
             }
 
             let s2a_results = stream::iter(pending)
-                .map(|acc| {
+                .map(|(acc, proxy_id)| {
                     let s2a_service = Arc::clone(&self.s2a_service);
                     let team = team.clone();
                     async move {
-                        let ret = s2a_service.add_account(&team, &acc).await;
-                        (acc, ret)
+                        let ret = s2a_service.add_account(&team, &acc, proxy_id).await;
+                        (acc, proxy_id, ret)
                     }
                 })
                 .buffer_unordered(s2a_concurrency)
@@ -523,7 +563,7 @@ impl WorkflowRunner {
                 .await;
 
             let mut round_failed = Vec::new();
-            for (acc, ret) in s2a_results {
+            for (acc, proxy_id, ret) in s2a_results {
                 match ret {
                     Ok(opt_id) => {
                         s2a_ok += 1;
@@ -533,20 +573,24 @@ impl WorkflowRunner {
                         if let Some(p) = progress {
                             p.s2a_ok.fetch_add(1, Ordering::Relaxed);
                         }
-                        broadcast_log(&format!("[S2A成功] {}", acc.account));
+                        if proxy_id.is_some() {
+                            broadcast_log(&format!("[S2A成功] {} (proxy_id={})", acc.account, proxy_id.unwrap()));
+                        } else {
+                            broadcast_log(&format!("[S2A成功] {}", acc.account));
+                        }
                     }
                     Err(err) => {
                         if let Some(p) = progress {
                             p.s2a_failed.fetch_add(1, Ordering::Relaxed);
                         }
                         broadcast_log(&format!("[S2A失败] {}: {err}", acc.account));
-                        round_failed.push(acc);
+                        round_failed.push((acc, proxy_id));
                     }
                 }
             }
 
             if retry_round + 1 >= S2A_MAX_RETRIES || round_failed.is_empty() {
-                final_failed = round_failed;
+                final_failed = round_failed.into_iter().map(|(acc, _)| acc).collect();
                 break;
             }
 

@@ -255,6 +255,9 @@ pub struct S2aConfig {
     pub free_concurrency: Option<usize>,
     #[serde(default)]
     pub extra: S2aExtraConfig,
+    /// 入库时是否从 S2A 获取代理列表并绑定 proxy_id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_proxy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -505,6 +508,7 @@ impl AppConfig {
                 free_priority: None,
                 free_concurrency: None,
                 extra: S2aExtraConfig::default(),
+                bind_proxy: None,
             }];
         }
         Vec::new()

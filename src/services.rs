@@ -55,7 +55,8 @@ pub trait CodexService: Send + Sync {
 #[async_trait]
 pub trait S2aService: Send + Sync {
     async fn test_connection(&self, team: &S2aConfig) -> Result<()>;
-    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt) -> Result<Option<i64>>;
+    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt, proxy_id: Option<i64>) -> Result<Option<i64>>;
+    async fn fetch_proxy_ids(&self, team: &S2aConfig) -> Result<Vec<i64>>;
     async fn batch_refresh(&self, team: &S2aConfig, account_ids: &[i64]) -> Result<usize>;
 }
 
@@ -1774,10 +1775,14 @@ impl S2aService for DryRunS2aService {
         Ok(())
     }
 
-    async fn add_account(&self, _team: &S2aConfig, _account: &AccountWithRt) -> Result<Option<i64>> {
+    async fn add_account(&self, _team: &S2aConfig, _account: &AccountWithRt, _proxy_id: Option<i64>) -> Result<Option<i64>> {
         let wait_ms = random_delay_ms(40, 120);
         sleep(Duration::from_millis(wait_ms)).await;
         Ok(None)
+    }
+
+    async fn fetch_proxy_ids(&self, _team: &S2aConfig) -> Result<Vec<i64>> {
+        Ok(vec![])
     }
 
     async fn batch_refresh(&self, _team: &S2aConfig, _account_ids: &[i64]) -> Result<usize> {
@@ -1927,6 +1932,60 @@ impl S2aHttpService {
                 json.get("id").and_then(|v| v.as_i64())
             })
     }
+
+    /// 从 S2A 获取代理列表，返回所有代理 ID
+    pub async fn do_fetch_proxy_ids(&self, team: &S2aConfig) -> Result<Vec<i64>> {
+        let base = Self::normalized_api_base(&team.api_base);
+        let url = format!("{base}/admin/proxies?page=1&page_size=500");
+        let modes = self.mode_candidates(&base);
+        let mut failures = Vec::new();
+
+        for mode in modes {
+            let resp = self
+                .with_auth_headers(self.client.get(&url), &team.admin_key, mode)
+                .send()
+                .await;
+            let resp = match resp {
+                Ok(v) => v,
+                Err(err) => {
+                    failures.push(format!("{} 请求异常: {err}", mode.name()));
+                    continue;
+                }
+            };
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+
+            if status == StatusCode::OK {
+                self.remember_mode(&base, mode);
+                let json: serde_json::Value = serde_json::from_str(&body)
+                    .context("S2A proxies 响应解析失败")?;
+                // 提取 data.items[].id
+                let ids = json
+                    .get("data")
+                    .and_then(|d| d.get("items"))
+                    .and_then(|items| items.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.get("id").and_then(|v| v.as_i64()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                return Ok(ids);
+            }
+
+            failures.push(format!(
+                "{} HTTP {} {}",
+                mode.name(),
+                status,
+                truncate_text(&body, 120)
+            ));
+            if status != StatusCode::UNAUTHORIZED && status != StatusCode::FORBIDDEN {
+                break;
+            }
+        }
+
+        bail!("S2A 获取代理列表失败: {}", failures.join(" | "))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1939,6 +1998,8 @@ struct S2aAddPayload<'a> {
     priority: usize,
     group_ids: &'a [i64],
     extra: S2aExtraConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1984,7 +2045,7 @@ impl S2aService for S2aHttpService {
         bail!("S2A 连接测试失败: {}", failures.join(" | "))
     }
 
-    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt) -> Result<Option<i64>> {
+    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt, proxy_id: Option<i64>) -> Result<Option<i64>> {
         let prefix = if account.plan_type.contains("team") {
             "team"
         } else {
@@ -2002,6 +2063,7 @@ impl S2aService for S2aHttpService {
             priority: team.priority,
             group_ids: &team.group_ids,
             extra: team.extra.clone(),
+            proxy_id,
         };
 
         let base = Self::normalized_api_base(&team.api_base);
@@ -2121,6 +2183,10 @@ impl S2aService for S2aHttpService {
         }
 
         bail!("S2A batch-refresh 失败: {}", failures.join(" | "));
+    }
+
+    async fn fetch_proxy_ids(&self, team: &S2aConfig) -> Result<Vec<i64>> {
+        self.do_fetch_proxy_ids(team).await
     }
 }
 
@@ -2312,6 +2378,7 @@ mod tests {
                 priority: 50,
                 group_ids: &[2],
                 extra,
+                proxy_id: None,
             };
 
             let json = serde_json::to_value(&payload).expect("payload 应可序列化");

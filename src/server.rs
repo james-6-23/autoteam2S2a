@@ -399,6 +399,7 @@ struct AddS2aRequest {
     free_concurrency: Option<usize>,
     #[serde(default)]
     extra: S2aExtraConfig,
+    bind_proxy: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -585,6 +586,7 @@ async fn add_s2a_handler(
         free_priority: req.free_priority,
         free_concurrency: req.free_concurrency,
         extra: req.extra,
+        bind_proxy: req.bind_proxy,
     });
     auto_save(&cfg, &state.config_path);
     Ok((
@@ -606,6 +608,7 @@ struct UpdateS2aRequest {
     free_priority: Option<Option<usize>>,
     free_concurrency: Option<Option<usize>>,
     extra: Option<S2aExtraConfig>,
+    bind_proxy: Option<bool>,
 }
 
 async fn update_s2a_handler(
@@ -646,6 +649,9 @@ async fn update_s2a_handler(
     }
     if let Some(v) = req.extra {
         team.extra = v;
+    }
+    if let Some(v) = req.bind_proxy {
+        team.bind_proxy = Some(v);
     }
     auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse {

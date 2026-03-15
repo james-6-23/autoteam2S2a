@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 interface TeamData {
   name: string; api_base: string; admin_key: string; concurrency: number; priority: number;
   group_ids?: number[]; free_group_ids?: number[]; free_priority?: number; free_concurrency?: number;
-  extra?: Record<string, unknown>;
+  extra?: Record<string, unknown>; bind_proxy?: boolean;
 }
 interface GroupInfo { id: number; name: string; account_count: number; status: string; }
 interface TeamStats { available: number; active: number; rate_limited: number; free_available?: number; free_active?: number; free_rate_limited?: number; }
@@ -30,6 +30,7 @@ export default function Teams() {
   const [atGroups, setAtGroups] = useState<GroupInfo[]>([]); const [atChecked, setAtChecked] = useState<number[]>([]);
   const [atFreeChecked, setAtFreeChecked] = useState<number[]>([]);
   const [atPassthrough, setAtPassthrough] = useState(true); const [atWsV2, setAtWsV2] = useState(true);
+  const [atBindProxy, setAtBindProxy] = useState(false);
   const [fetchingGroups, setFetchingGroups] = useState(false);
 
   // Edit form
@@ -39,6 +40,7 @@ export default function Teams() {
   const [etGroups, setEtGroups] = useState<GroupInfo[]>([]); const [etChecked, setEtChecked] = useState<number[]>([]);
   const [etFreeChecked, setEtFreeChecked] = useState<number[]>([]);
   const [etPassthrough, setEtPassthrough] = useState(true); const [etWsV2, setEtWsV2] = useState(true);
+  const [etBindProxy, setEtBindProxy] = useState(false);
 
   // Groups modal data
   const [modalGroups, setModalGroups] = useState<GroupInfo[]>([]);
@@ -103,9 +105,10 @@ export default function Teams() {
         concurrency: atConc, priority: atPri, group_ids: atChecked, free_group_ids: atFreeChecked,
         free_priority: atFreePri ? Number(atFreePri) : undefined,
         free_concurrency: atFreeConc ? Number(atFreeConc) : undefined, extra,
+        bind_proxy: atBindProxy || undefined,
       });
       toast('号池已添加', 'success'); setAddModal(false);
-      setAtName(''); setAtApi(''); setAtKey(''); setAtGroups([]); setAtChecked([]); setAtFreeChecked([]);
+      setAtName(''); setAtApi(''); setAtKey(''); setAtGroups([]); setAtChecked([]); setAtFreeChecked([]); setAtBindProxy(false);
       loadTeams();
     } catch (e) { toast(String(e), 'error'); }
   };
@@ -120,6 +123,7 @@ export default function Teams() {
       concurrency: etConc || undefined, priority: etPri || undefined,
       free_priority: etFreePri ? Number(etFreePri) : null,
       free_concurrency: etFreeConc ? Number(etFreeConc) : null, extra,
+      bind_proxy: etBindProxy,
     };
     if (etGroups.length > 0) { body.group_ids = etChecked; body.free_group_ids = etFreeChecked; }
     try {
@@ -148,6 +152,7 @@ export default function Teams() {
     setEtChecked(t.group_ids || []); setEtFreeChecked(t.free_group_ids || []);
     setEtPassthrough(t.extra?.openai_passthrough === true);
     setEtWsV2((t.extra as Record<string, unknown>)?.openai_oauth_responses_websockets_v2_enabled === true);
+    setEtBindProxy(t.bind_proxy === true);
     setEtGroups([]);
     if (t.api_base && t.admin_key) doFetchGroups(t.api_base, t.admin_key, setEtGroups);
   };
@@ -328,6 +333,7 @@ export default function Teams() {
                 <div className="flex flex-col gap-2.5">
                   <label className="switch"><input className="switch-input" type="checkbox" checked={atPassthrough} onChange={e => setAtPassthrough(e.target.checked)} /><span className="switch-slider" /><span className="switch-text">自动透传</span></label>
                   <label className="switch"><input className="switch-input" type="checkbox" checked={atWsV2} onChange={e => setAtWsV2(e.target.checked)} /><span className="switch-slider" /><span className="switch-text">启用 WS v2</span></label>
+                  <label className="switch"><input className="switch-input" type="checkbox" checked={atBindProxy} onChange={e => setAtBindProxy(e.target.checked)} /><span className="switch-slider" /><span className="switch-text">入库绑定代理</span></label>
                 </div>
               </div>
             </div>
@@ -382,6 +388,7 @@ export default function Teams() {
                 <div className="flex flex-col gap-2.5">
                   <label className="switch"><input className="switch-input" type="checkbox" checked={etPassthrough} onChange={e => setEtPassthrough(e.target.checked)} /><span className="switch-slider" /><span className="switch-text">自动透传</span></label>
                   <label className="switch"><input className="switch-input" type="checkbox" checked={etWsV2} onChange={e => setEtWsV2(e.target.checked)} /><span className="switch-slider" /><span className="switch-text">启用 WS v2</span></label>
+                  <label className="switch"><input className="switch-input" type="checkbox" checked={etBindProxy} onChange={e => setEtBindProxy(e.target.checked)} /><span className="switch-slider" /><span className="switch-text">入库绑定代理</span></label>
                 </div>
               </div>
             </div>
