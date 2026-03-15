@@ -687,7 +687,7 @@ export default function TeamManage() {
 
   // 批量清理：执行踢除
   const executeBatchCleanup = async () => {
-    const toKick: Array<{ accountId: string; userId: string; email: string }> = [];
+    const toKick: Array<{ account_id: string; user_id: string; email: string }> = [];
     for (const health of Object.values(healthMap)) {
       for (const m of health.members) {
         if (!m.user_id) continue;
@@ -696,7 +696,7 @@ export default function TeamManage() {
           (cleanupOptions.cleanPoolNotFound && m.status === "pool_not_found") ||
           (cleanupOptions.cleanWeeklyZero && m.seven_day_pct === 0);
         if (match) {
-          toKick.push({ accountId: health.account_id, userId: m.user_id, email: m.email });
+          toKick.push({ account_id: health.account_id, user_id: m.user_id, email: m.email });
         }
       }
     }
@@ -711,30 +711,19 @@ export default function TeamManage() {
     setBatchCleanupLoading(true);
     setBatchCleanupProgress({ done: 0, total: toKick.length });
 
-    let success = 0;
-    let failed = 0;
-    let cursor = 0;
-
-    const worker = async () => {
-      while (cursor < toKick.length) {
-        const idx = cursor++;
-        const item = toKick[idx];
-        try {
-          await api.post(`/api/team-manage/owners/${encodeURIComponent(item.accountId)}/members/${encodeURIComponent(item.userId)}/kick`);
-          success++;
-        } catch {
-          failed++;
-        }
-        setBatchCleanupProgress({ done: success + failed, total: toKick.length });
-      }
-    };
-
-    const workerCount = Math.min(20, toKick.length);
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    try {
+      const res = await api.batchKickMembers({ items: toKick });
+      setBatchCleanupProgress({ done: res.total, total: res.total });
+      toast(
+        `清理完成: 成功 ${res.success}，失败 ${res.failed}${res.skipped_owners > 0 ? `，跳过 ${res.skipped_owners} 个 owner(无token)` : ""}`,
+        res.failed > 0 ? "error" : "success",
+      );
+    } catch (e) {
+      toast(`批量清理请求失败: ${e}`, "error");
+    }
 
     setBatchCleanupLoading(false);
     setShowBatchCleanupModal(false);
-    toast(`清理完成: 成功 ${success}，失败 ${failed}`, failed > 0 ? "error" : "success");
 
     // 刷新 dashboard 和成员数据
     void loadDashboard();

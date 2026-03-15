@@ -243,6 +243,13 @@ export const batchRefreshTeamManageOwnerMembers = (body: {
   filters?: TeamManageBatchOwnerStateRequest["filters"];
 }) =>
   post<TeamManageBatchRefreshMembersResponse>('/api/team-manage/batch-refresh-members', body);
+export const batchKickMembers = (body: {
+  items: Array<{ account_id: string; user_id: string; email: string }>;
+}) =>
+  post<{ total: number; success: number; failed: number; skipped_owners: number }>(
+    '/api/team-manage/batch-kick',
+    body,
+  );
 export const batchDisableTeamManageOwners = (body: TeamManageBatchOwnerStateRequest) =>
   post<TeamManageBatchOwnerStateResponse>('/api/team-manage/owners/batch-disable', body);
 export const batchRestoreTeamManageOwners = (body: TeamManageBatchOwnerStateRequest) =>

@@ -3085,6 +3085,10 @@ pub async fn start_server(
             post(team_manage_kick_member_handler),
         )
         .route(
+            "/api/team-manage/batch-kick",
+            post(team_manage_batch_kick_handler),
+        )
+        .route(
             "/api/team-manage/owners/{accountId}/refresh",
             post(team_manage_refresh_members_handler),
         )
@@ -4431,6 +4435,203 @@ async fn team_manage_kick_member_handler(
     Ok(Json(
         serde_json::json!({ "success": true, "message": "成员已踢除" }),
     ))
+}
+
+// ─── 批量踢除成员 ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct BatchKickRequest {
+    items: Vec<BatchKickItem>,
+}
+
+#[derive(Deserialize)]
+struct BatchKickItem {
+    account_id: String,
+    user_id: String,
+    #[serde(default)]
+    email: String,
+}
+
+async fn team_manage_batch_kick_handler(
+    State(state): State<AppState>,
+    Json(body): Json<BatchKickRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let total = body.items.len();
+    if total == 0 {
+        return Err(error_json(StatusCode::BAD_REQUEST, "items 不能为空"));
+    }
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[批量清理] 开始: 共 {} 个成员待踢除",
+        total
+    ));
+
+    // 按 owner 分组，复用 access_token
+    let mut groups: std::collections::HashMap<String, Vec<(String, String)>> =
+        std::collections::HashMap::new();
+    for item in &body.items {
+        groups
+            .entry(item.account_id.clone())
+            .or_default()
+            .push((item.user_id.clone(), item.email.clone()));
+    }
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[批量清理] 涉及 {} 个 Owner",
+        groups.len()
+    ));
+
+    // 预取所有 owner 的 access_token
+    let mut owner_tokens: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut skipped_owners = 0usize;
+    for account_id in groups.keys() {
+        match state
+            .run_history_db
+            .get_owner_token_by_account_id(account_id)
+        {
+            Ok(Some(token)) => {
+                owner_tokens.insert(account_id.clone(), token);
+            }
+            _ => {
+                skipped_owners += 1;
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[批量清理] {} 无 token，跳过该 owner 下所有成员",
+                    account_id
+                ));
+            }
+        }
+    }
+
+    let client = shared_http_client_15s();
+    let success = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let failed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    // Owner 级并发 10，每 owner 内成员级并发 5
+    let owner_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+    let mut owner_handles = Vec::new();
+
+    for (account_id, members) in groups {
+        let Some(access_token) = owner_tokens.get(&account_id).cloned() else {
+            let skip_count = members.len();
+            failed.fetch_add(skip_count, std::sync::atomic::Ordering::Relaxed);
+            done.fetch_add(skip_count, std::sync::atomic::Ordering::Relaxed);
+            continue;
+        };
+
+        let client = client.clone();
+        let success = success.clone();
+        let failed = failed.clone();
+        let done = done.clone();
+        let owner_sem = owner_sem.clone();
+
+        owner_handles.push(tokio::spawn(async move {
+            let _permit = owner_sem.acquire().await;
+            let member_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(5));
+            let mut member_handles = Vec::new();
+
+            for (user_id, email) in members {
+                let client = client.clone();
+                let access_token = access_token.clone();
+                let account_id = account_id.clone();
+                let success = success.clone();
+                let failed = failed.clone();
+                let done = done.clone();
+                let member_sem = member_sem.clone();
+
+                member_handles.push(tokio::spawn(async move {
+                    let _permit = member_sem.acquire().await;
+                    let url = format!(
+                        "https://chatgpt.com/backend-api/accounts/{}/users/{}",
+                        account_id, user_id
+                    );
+                    let device_id = uuid::Uuid::new_v4().to_string();
+
+                    let result = client
+                        .delete(&url)
+                        .header("Accept", "*/*")
+                        .header("Accept-Language", "zh-CN,zh;q=0.9")
+                        .header("Authorization", format!("Bearer {}", access_token))
+                        .header("Chatgpt-Account-Id", &account_id)
+                        .header("Oai-Language", "zh-CN")
+                        .header("Oai-Device-Id", &device_id)
+                        .header("Referer", "https://chatgpt.com/admin/members")
+                        .header("Origin", "https://chatgpt.com")
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
+                        .send()
+                        .await;
+
+                    let ok = match result {
+                        Ok(resp) if resp.status().is_success() => true,
+                        Ok(resp) => {
+                            let status = resp.status();
+                            let body = resp.text().await.unwrap_or_default();
+                            let preview = if body.len() > 200 { &body[..200] } else { &body };
+                            tracing::warn!(
+                                "[批量清理] 踢除失败 {} {} HTTP {}: {}",
+                                account_id, email, status.as_u16(), preview
+                            );
+                            false
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "[批量清理] 踢除失败 {} {}: {}",
+                                account_id, email, e
+                            );
+                            false
+                        }
+                    };
+
+                    if ok {
+                        success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let current_done = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+
+                    // 每 50 个输出一次进度
+                    if current_done % 50 == 0 || current_done == total {
+                        crate::log_broadcast::broadcast_log(&format!(
+                            "[批量清理] 进度 {}/{} (成功 {}, 失败 {})",
+                            current_done,
+                            total,
+                            success.load(std::sync::atomic::Ordering::Relaxed),
+                            failed.load(std::sync::atomic::Ordering::Relaxed),
+                        ));
+                    }
+                }));
+            }
+
+            for h in member_handles {
+                let _ = h.await;
+            }
+        }));
+    }
+
+    for h in owner_handles {
+        let _ = h.await;
+    }
+
+    let success_count = success.load(std::sync::atomic::Ordering::Relaxed);
+    let failed_count = failed.load(std::sync::atomic::Ordering::Relaxed);
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[批量清理] 完成: 共 {} 个, 成功 {}, 失败 {}, 跳过 {} 个 owner(无token)",
+        total, success_count, failed_count, skipped_owners
+    ));
+
+    tracing::info!(
+        "[TeamManage] 批量清理完成: total={}, success={}, failed={}, skipped_owners={}",
+        total, success_count, failed_count, skipped_owners
+    );
+
+    Ok(Json(serde_json::json!({
+        "total": total,
+        "success": success_count,
+        "failed": failed_count,
+        "skipped_owners": skipped_owners,
+    })))
 }
 
 async fn team_manage_refresh_members_handler(
