@@ -148,6 +148,8 @@ export default function TeamManage() {
   const [showFillSlotsModal, setShowFillSlotsModal] = useState(false);
   const [fillSlotsLoading, setFillSlotsLoading] = useState(false);
   const [fillSlotsPools, setFillSlotsPools] = useState<Array<{ team: string; weight: number }>>([]);
+  // 0 = 不限制（全部补位）
+  const [fillSlotsLimit, setFillSlotsLimit] = useState(0);
 
   const [showBatchCleanupModal, setShowBatchCleanupModal] = useState(false);
   const [batchCleanupLoading, setBatchCleanupLoading] = useState(false);
@@ -966,19 +968,41 @@ export default function TeamManage() {
     }
 
     setFillSlotsLoading(true);
+    const ownerLimit = fillSlotsLimit > 0 ? fillSlotsLimit : undefined;
 
     // 单号池：直接让后端筛选，无需前端分页拉取
     if (activePools.length === 1) {
       try {
-        const result = await api.batchInviteTeamManageOwners({
-          account_ids: [],
-          s2a_team: activePools[0].team,
-          strategy: "fill_to_limit",
-          scope: "filtered",
-          filters: { has_slots: true },
-          skip_banned: true,
-          only_with_slots: true,
-        });
+        // 有数量限制时需要前端拉取指定数量的 owner，再手动指定 ids
+        let requestParams: Parameters<typeof api.batchInviteTeamManageOwners>[0];
+        if (ownerLimit) {
+          const data = await api.fetchTeamManageOwnersPage({ page: 1, page_size: ownerLimit, has_slots: true });
+          const ids = (data.items || []).map(o => o.account_id);
+          if (ids.length === 0) {
+            setFillSlotsLoading(false);
+            toast("没有可补位的 Owner", "error");
+            return;
+          }
+          requestParams = {
+            account_ids: ids,
+            s2a_team: activePools[0].team,
+            strategy: "fill_to_limit",
+            scope: "manual",
+            skip_banned: true,
+            only_with_slots: true,
+          };
+        } else {
+          requestParams = {
+            account_ids: [],
+            s2a_team: activePools[0].team,
+            strategy: "fill_to_limit",
+            scope: "filtered",
+            filters: { has_slots: true },
+            skip_banned: true,
+            only_with_slots: true,
+          };
+        }
+        const result = await api.batchInviteTeamManageOwners(requestParams);
         setFillSlotsLoading(false);
         setShowFillSlotsModal(false);
         toast(`补位任务已创建: 接受 ${result.accepted}，跳过 ${result.skipped}`, "success");
@@ -989,7 +1013,7 @@ export default function TeamManage() {
       return;
     }
 
-    // 多号池：先拉取所有有空位 owner，再按权重分配到不同号池
+    // 多号池：先拉取有空位 owner，再按权重分配到不同号池
     const allIds: string[] = [];
     let page = 1;
     try {
@@ -998,6 +1022,8 @@ export default function TeamManage() {
           page, page_size: 200, has_slots: true,
         });
         for (const owner of data.items || []) allIds.push(owner.account_id);
+        // 达到限制数量则截断
+        if (ownerLimit && allIds.length >= ownerLimit) break;
         if (page >= data.total_pages) break;
         page += 1;
       }
@@ -1007,7 +1033,10 @@ export default function TeamManage() {
       return;
     }
 
-    if (allIds.length === 0) {
+    // 截断到限制数量
+    const limitedIds = ownerLimit ? allIds.slice(0, ownerLimit) : allIds;
+
+    if (limitedIds.length === 0) {
       setFillSlotsLoading(false);
       toast("没有可补位的 Owner", "error");
       return;
@@ -1020,9 +1049,9 @@ export default function TeamManage() {
     for (let i = 0; i < activePools.length; i++) {
       const pool = activePools[i];
       const count = i === activePools.length - 1
-        ? allIds.length - offset
-        : Math.round((pool.weight / totalWeight) * allIds.length);
-      poolAssignments.push({ team: pool.team, ids: allIds.slice(offset, offset + count) });
+        ? limitedIds.length - offset
+        : Math.round((pool.weight / totalWeight) * limitedIds.length);
+      poolAssignments.push({ team: pool.team, ids: limitedIds.slice(offset, offset + count) });
       offset += count;
     }
 
@@ -1805,6 +1834,20 @@ export default function TeamManage() {
               + 添加号池
             </button>
 
+            {/* 限制数量 */}
+            <div className="mt-4 flex items-center gap-3 rounded-lg px-3 py-2.5" style={{ background: "var(--ghost)" }}>
+              <span className="text-xs c-dim shrink-0">补位 Owner 数</span>
+              <input
+                type="number"
+                min={0}
+                value={fillSlotsLimit || ""}
+                placeholder="不限"
+                onChange={event => setFillSlotsLimit(Math.max(0, Number(event.target.value) || 0))}
+                className="field-input w-20 px-2 py-1 text-center text-xs"
+              />
+              <span className="text-[.6rem] c-dim">{fillSlotsLimit > 0 ? `仅处理前 ${fillSlotsLimit} 个有空位的 Owner` : "处理全部有空位的 Owner"}</span>
+            </div>
+
             {/* 底部操作 */}
             <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setShowFillSlotsModal(false)} className="btn btn-ghost">
@@ -1817,7 +1860,7 @@ export default function TeamManage() {
                 className="btn"
                 style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.84), rgba(20,184,166,0.82))", color: "#fff" }}
               >
-                {fillSlotsLoading ? <span className="inline-flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> 提交中</span> : "确认补位"}
+                {fillSlotsLoading ? <span className="inline-flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> 提交中</span> : fillSlotsLimit > 0 ? `确认补位 (${fillSlotsLimit} 个 Owner)` : "确认补位 (全部)"}
               </button>
             </div>
           </div>

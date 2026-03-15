@@ -2729,6 +2729,33 @@ impl RunHistoryDb {
         Ok(rows)
     }
 
+    /// 批量获取 owner_registry 中缓存的成员数
+    pub fn get_owner_registry_member_counts(
+        &self,
+        account_ids: &[String],
+    ) -> Result<Vec<(String, usize)>> {
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders = std::iter::repeat("?")
+            .take(account_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT account_id, member_count_cached FROM owner_registry WHERE account_id IN ({})",
+            placeholders
+        );
+        let params: Vec<&dyn ToSql> = account_ids.iter().map(|id| id as &dyn ToSql).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn insert_team_manage_owner_audits(
         &self,
         items: Vec<NewTeamManageOwnerAudit>,

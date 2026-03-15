@@ -256,6 +256,8 @@ pub struct AppState {
     team_manage_health_locks: Arc<Mutex<HashMap<String, Instant>>>,
     /// 上次执行 sync_owner_registry 的时间，用于节流
     last_owner_registry_sync: Arc<Mutex<Option<Instant>>>,
+    /// TeamManage 邀请任务并发信号量（复用邀请模块的限流策略）
+    team_manage_invite_sem: Arc<tokio::sync::Semaphore>,
 }
 
 // ─── Request / Response types ────────────────────────────────────────────────
@@ -2981,6 +2983,7 @@ pub async fn start_server(
         redis_cache,
         team_manage_health_locks: Arc::new(Mutex::new(HashMap::new())),
         last_owner_registry_sync: Arc::new(Mutex::new(None)),
+        team_manage_invite_sem: Arc::new(tokio::sync::Semaphore::new(20)),
     };
 
     // 启动后台调度器
@@ -5476,8 +5479,11 @@ async fn create_team_manage_invite_task(
     let invite_cfg = config_snapshot.invite_runtime();
     let max_members = invite_cfg.default_invite_count;
     let task_id_clone = task_id.clone();
+    let sem = state.team_manage_invite_sem.clone();
 
     tokio::spawn(async move {
+        // 信号量限流：与邀请模块保持一致，最多 20 个并发邀请任务
+        let _permit = sem.acquire().await;
         crate::invite::run_invite_workflow(
             task_id_clone,
             owner_db_id,
@@ -5687,6 +5693,7 @@ async fn team_manage_sync_batch_job_cache(state: &AppState, job_id: &str) {
     }
 }
 
+#[allow(dead_code)]
 async fn team_manage_live_member_count(
     state: &AppState,
     account_id: &str,
@@ -5964,6 +5971,13 @@ async fn team_manage_batch_invite_handler(
             .unwrap_or_default()
             .into_iter()
             .collect();
+        // 批量获取 owner_registry 缓存的成员数，避免逐个调 API（run_invite_workflow 内部会做最终校正）
+        let member_count_cache: std::collections::HashMap<String, usize> = state_clone
+            .run_history_db
+            .get_owner_registry_member_counts(&req_for_task.account_ids)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         crate::log_broadcast::broadcast_log(&format!(
             "[Team管理] 批量邀请任务开始: job={}, {} 个 owner",
@@ -6031,40 +6045,9 @@ async fn team_manage_batch_invite_handler(
             let invite_count = if strategy == "fixed_count" {
                 req_for_task.fixed_count.unwrap_or(1).clamp(1, 25)
             } else {
-                match team_manage_live_member_count(&state_clone, &account_id).await {
-                    Ok(member_count) => max_members.saturating_sub(member_count),
-                    Err(error) => {
-                        // 检测席位上限错误，标记 owner 为 seat_limited
-                        let err_lower = error.to_ascii_lowercase();
-                        if err_lower.contains("maximum number of seats")
-                            || err_lower.contains("seats allowed")
-                            || err_lower.contains("seat limit")
-                        {
-                            let now = chrono::Utc::now().to_rfc3339();
-                            let _ = state_clone.run_history_db.batch_update_owner_registry_state(
-                                &[account_id.clone()],
-                                "seat_limited",
-                                Some("free_trial_seat_limit"),
-                                &now,
-                            );
-                            crate::log_broadcast::broadcast_log(&format!(
-                                "[Team管理] 已标记 owner {} 为 seat_limited", account_id
-                            ));
-                        }
-                        team_manage_update_batch_job_item(
-                            &state_clone,
-                            &job_id_clone,
-                            &account_id,
-                            "failed",
-                            0,
-                            None,
-                            None,
-                            Some(error),
-                        )
-                        .await;
-                        continue;
-                    }
-                }
+                // 使用 DB 缓存的成员数计算空位，不逐个调 API（run_invite_workflow 内部有最终校正）
+                let cached_count = member_count_cache.get(&account_id).copied().unwrap_or(0);
+                max_members.saturating_sub(cached_count)
             };
 
             if req_for_task.only_with_slots && invite_count == 0 {
@@ -6357,6 +6340,13 @@ async fn team_manage_retry_failed_batch_items_handler(
             .get_all_owner_health()
             .map(team_manage_cached_results_map)
             .unwrap_or_default();
+        // 批量获取缓存成员数
+        let retry_member_count_cache: std::collections::HashMap<String, usize> = state_clone
+            .run_history_db
+            .get_owner_registry_member_counts(&retry_req.account_ids)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         for account_id in retry_req.account_ids {
             if retry_req.skip_banned
@@ -6386,23 +6376,9 @@ async fn team_manage_retry_failed_batch_items_handler(
             let invite_count = if strategy == "fixed_count" {
                 retry_req.fixed_count.unwrap_or(1).clamp(1, 25)
             } else {
-                match team_manage_live_member_count(&state_clone, &account_id).await {
-                    Ok(member_count) => max_members.saturating_sub(member_count),
-                    Err(error) => {
-                        team_manage_update_batch_job_item(
-                            &state_clone,
-                            &retry_job_id_clone,
-                            &account_id,
-                            "failed",
-                            0,
-                            None,
-                            None,
-                            Some(error),
-                        )
-                        .await;
-                        continue;
-                    }
-                }
+                // 使用 DB 缓存的成员数计算空位
+                let cached_count = retry_member_count_cache.get(&account_id).copied().unwrap_or(0);
+                max_members.saturating_sub(cached_count)
             };
 
             if invite_count == 0 {
