@@ -4563,11 +4563,21 @@ async fn team_manage_batch_kick_handler(
                         .await;
 
                     let ok = match result {
-                        Ok(resp) if resp.status().is_success() => true,
+                        Ok(resp) if resp.status().is_success() => {
+                            crate::log_broadcast::broadcast_log(&format!(
+                                "[批量清理] ✓ {} 踢除 {}",
+                                account_id, email
+                            ));
+                            true
+                        }
                         Ok(resp) => {
                             let status = resp.status();
                             let body = resp.text().await.unwrap_or_default();
                             let preview = if body.len() > 200 { &body[..200] } else { &body };
+                            crate::log_broadcast::broadcast_log(&format!(
+                                "[批量清理] ✗ {} 踢除 {} 失败 HTTP {}",
+                                account_id, email, status.as_u16()
+                            ));
                             tracing::warn!(
                                 "[批量清理] 踢除失败 {} {} HTTP {}: {}",
                                 account_id, email, status.as_u16(), preview
@@ -4575,6 +4585,10 @@ async fn team_manage_batch_kick_handler(
                             false
                         }
                         Err(e) => {
+                            crate::log_broadcast::broadcast_log(&format!(
+                                "[批量清理] ✗ {} 踢除 {} 失败: {}",
+                                account_id, email, e
+                            ));
                             tracing::warn!(
                                 "[批量清理] 踢除失败 {} {}: {}",
                                 account_id, email, e
