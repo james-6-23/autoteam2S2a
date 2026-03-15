@@ -1173,12 +1173,64 @@ async fn add_proxy_handler(
     }
     cfg.proxy_pool.push(proxy.clone());
     auto_save(&cfg, &state.config_path);
+    let masked = crate::util::mask_proxy(&proxy);
+    crate::log_broadcast::broadcast_log(&format!("[代理] 添加: {masked}"));
     Ok((
         StatusCode::CREATED,
         Json(MsgResponse {
             message: format!("代理 {proxy} 已添加"),
         }),
     ))
+}
+
+/// 批量添加代理（一次写锁 + 一次保存）
+async fn batch_add_proxy_handler(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let proxies: Vec<String> = req
+        .get("proxies")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if proxies.is_empty() {
+        return Json(serde_json::json!({ "added": 0, "skipped": 0, "message": "无有效代理" }));
+    }
+
+    let mut cfg = state.config.write().await;
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    for proxy in &proxies {
+        let normalized = normalize_proxy(proxy);
+        if cfg.proxy_pool.iter().any(|p| normalize_proxy(p) == normalized) {
+            skipped += 1;
+        } else {
+            cfg.proxy_pool.push(proxy.clone());
+            added += 1;
+        }
+    }
+    // 只保存一次
+    if added > 0 {
+        auto_save(&cfg, &state.config_path);
+    }
+    drop(cfg);
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[代理] 批量导入: {} 个添加, {} 个跳过 (共 {} 个)",
+        added, skipped, proxies.len()
+    ));
+
+    Json(serde_json::json!({
+        "added": added,
+        "skipped": skipped,
+        "message": format!("添加 {} 个，跳过 {} 个重复", added, skipped),
+    }))
 }
 
 async fn delete_proxy_handler(
@@ -1197,6 +1249,8 @@ async fn delete_proxy_handler(
         ));
     }
     auto_save(&cfg, &state.config_path);
+    let masked = crate::util::mask_proxy(&proxy);
+    crate::log_broadcast::broadcast_log(&format!("[代理] 删除: {masked}"));
     Ok(Json(MsgResponse {
         message: format!("代理 {proxy} 已删除"),
     }))
@@ -1213,12 +1267,12 @@ async fn set_proxy_enabled_handler(
     let mut cfg = state.config.write().await;
     cfg.proxy_enabled = Some(enabled);
     auto_save(&cfg, &state.config_path);
-    Json(MsgResponse {
-        message: format!(
-            "代理池已{}",
-            if enabled { "启用" } else { "禁用（直连模式）" }
-        ),
-    })
+    let msg = format!(
+        "代理池已{}",
+        if enabled { "启用" } else { "禁用（直连模式）" }
+    );
+    crate::log_broadcast::broadcast_log(&format!("[代理] {msg}"));
+    Json(MsgResponse { message: msg })
 }
 
 async fn proxy_health_check_handler(
@@ -1228,8 +1282,93 @@ async fn proxy_health_check_handler(
         let cfg = state.config.read().await;
         (cfg.proxy_pool.clone(), cfg.proxy_check_timeout_sec.unwrap_or(5))
     };
+    crate::log_broadcast::broadcast_log(&format!(
+        "[代理] 开始健康检测 {} 个代理",
+        proxies.len()
+    ));
     let results = health_check_detailed(&proxies, timeout_sec).await;
+    let ok_count = results.iter().filter(|r| r.ok).count();
+    crate::log_broadcast::broadcast_log(&format!(
+        "[代理] 健康检测完成: {}/{} 可用",
+        ok_count,
+        results.len()
+    ));
     Json(results)
+}
+
+/// 批量测试代理连通性（并发获取延迟、IP、地理信息）
+async fn proxy_batch_test_handler(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let proxy_urls: Vec<String> = req
+        .get("proxy_urls")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let concurrency = req
+        .get("concurrency")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5) as usize;
+
+    if proxy_urls.is_empty() {
+        return Json(serde_json::json!({ "results": [] }));
+    }
+
+    let timeout_sec = {
+        let cfg = state.config.read().await;
+        cfg.proxy_check_timeout_sec.unwrap_or(5).max(10)
+    };
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[代理] 开始批量测试 {} 个代理 (并发={})",
+        proxy_urls.len(),
+        concurrency
+    ));
+
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency.clamp(1, 20)));
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for url in proxy_urls {
+        let sem = semaphore.clone();
+        join_set.spawn(async move {
+            let _permit = sem.acquire().await;
+            let result = test_single_proxy(&url, timeout_sec).await;
+            (url, result)
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(join_result) = join_set.join_next().await {
+        if let Ok((url, result)) = join_result {
+            results.push(serde_json::json!({
+                "proxy_url": url,
+                "success": result.success,
+                "message": result.message,
+                "latency_ms": result.latency_ms,
+                "ip_address": result.ip_address,
+                "city": result.city,
+                "region": result.region,
+                "country": result.country,
+                "country_code": result.country_code,
+            }));
+        }
+    }
+
+    let ok_count = results.iter().filter(|r| r.get("success").and_then(|v| v.as_bool()).unwrap_or(false)).count();
+    crate::log_broadcast::broadcast_log(&format!(
+        "[代理] 批量测试完成: {}/{} 可用",
+        ok_count,
+        results.len()
+    ));
+
+    Json(serde_json::json!({ "results": results }))
 }
 
 /// 测试单个代理连通性
@@ -2749,8 +2888,10 @@ pub async fn start_server(
             "/api/config/proxy_pool",
             post(add_proxy_handler).delete(delete_proxy_handler),
         )
+        .route("/api/config/proxy_pool/batch", post(batch_add_proxy_handler))
         .route("/api/config/proxy_enabled", put(set_proxy_enabled_handler))
         .route("/api/proxy/health-check", post(proxy_health_check_handler))
+        .route("/api/proxy/batch-test", post(proxy_batch_test_handler))
         .route("/api/proxy/test", post(proxy_test_handler))
         .route("/api/proxy/quality-check", post(proxy_quality_check_handler))
         .route("/api/config/save", post(save_config_handler))

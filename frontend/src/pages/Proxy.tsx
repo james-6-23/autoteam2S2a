@@ -415,26 +415,22 @@ export default function Proxy() {
     }
   };
 
-  // 批量添加代理
+  // 批量添加代理（使用后端批量接口，一次请求完成）
   const handleAdd = async () => {
     const lines = addInput.split("\n").map(l => l.trim()).filter(Boolean);
     if (lines.length === 0) return;
     setAdding(true);
-    let ok = 0;
-    let fail = 0;
-    for (const line of lines) {
-      try {
-        await api.addProxy(line);
-        ok++;
-      } catch {
-        fail++;
-      }
+    try {
+      const result = await api.batchAddProxy(lines);
+      setShowAddModal(false);
+      setAddInput("");
+      toast(result.message, result.skipped > 0 ? "error" : "success");
+      void load();
+    } catch (err) {
+      toast(`批量添加失败: ${err}`, "error");
+    } finally {
+      setAdding(false);
     }
-    setAdding(false);
-    setShowAddModal(false);
-    setAddInput("");
-    toast(fail > 0 ? `添加完成: ${ok} 成功, ${fail} 失败` : `已添加 ${ok} 个代理`, fail > 0 ? "error" : "success");
-    void load();
   };
 
   // 删除代理
@@ -503,32 +499,43 @@ export default function Proxy() {
     }
   };
 
-  // 批量测试连通性（逐个调用 testProxy，获取延迟/地理信息）
+  // 批量测试连通性（后端并发获取延迟/IP/地理信息）
   const handleBatchTest = async () => {
     if (proxies.length === 0) return;
     setBatchTesting(true);
     setBatchTestProgress({ done: 0, total: proxies.length });
-    let okCount = 0;
-    for (let i = 0; i < proxies.length; i++) {
-      const url = proxies[i].url;
-      setProxies(prev => prev.map(p => p.url === url ? { ...p, testing: true } : p));
-      try {
-        const result = await api.testProxy(url);
-        if (result.success) okCount++;
-        setProxies(prev => prev.map(p => p.url === url ? {
-          ...p, testing: false, test: result,
-          health: { ok: result.success, reason: result.message },
-        } : p));
-      } catch (err) {
-        setProxies(prev => prev.map(p => p.url === url ? {
-          ...p, testing: false,
-          health: { ok: false, reason: String(err) },
-        } : p));
-      }
-      setBatchTestProgress({ done: i + 1, total: proxies.length });
+    // 标记所有为 testing
+    setProxies(prev => prev.map(p => ({ ...p, testing: true })));
+    try {
+      const { results } = await api.batchTestProxy(proxies.map(p => p.url), 5);
+      const resultMap = new Map(results.map(r => [r.proxy_url, r]));
+      setProxies(prev => prev.map(p => {
+        const r = resultMap.get(p.url);
+        if (!r) return { ...p, testing: false };
+        return {
+          ...p,
+          testing: false,
+          test: {
+            success: r.success,
+            latency_ms: r.latency_ms,
+            ip_address: r.ip_address,
+            city: r.city,
+            region: r.region,
+            country: r.country,
+            country_code: r.country_code,
+          },
+          health: { ok: r.success, reason: r.message },
+        };
+      }));
+      const okCount = results.filter(r => r.success).length;
+      setBatchTestProgress({ done: results.length, total: proxies.length });
+      toast(`测试完成: ${okCount}/${results.length} 可用`, okCount === results.length ? "success" : "error");
+    } catch (err) {
+      setProxies(prev => prev.map(p => ({ ...p, testing: false })));
+      toast(`批量测试失败: ${err}`, "error");
+    } finally {
+      setBatchTesting(false);
     }
-    setBatchTesting(false);
-    toast(`测试完成: ${okCount}/${proxies.length} 可用`, okCount === proxies.length ? "success" : "error");
   };
 
   // 全选切换

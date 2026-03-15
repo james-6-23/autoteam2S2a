@@ -78,8 +78,22 @@ export const triggerD1Cleanup = () => post<{ message: string }>('/api/d1_cleanup
 export const saveToFile = () => post('/api/config/save');
 export const setProxyEnabled = (enabled: boolean) => put('/api/config/proxy_enabled', { enabled });
 export const addProxy = (proxy: string) => post<{ message: string }>('/api/config/proxy_pool', { proxy });
+export const batchAddProxy = (proxies: string[]) => post<{ added: number; skipped: number; message: string }>('/api/config/proxy_pool/batch', { proxies });
 export const deleteProxy = (proxy: string) => request<{ message: string }>('/api/config/proxy_pool', { method: 'DELETE', body: JSON.stringify({ proxy }), headers: { 'Content-Type': 'application/json' } });
 export const checkProxyHealth = () => post<{ proxy: string; ok: boolean; reason: string }[]>('/api/proxy/health-check');
+export const batchTestProxy = (proxy_urls: string[], concurrency?: number) => post<{
+  results: Array<{
+    proxy_url: string;
+    success: boolean;
+    message: string;
+    latency_ms?: number;
+    ip_address?: string;
+    city?: string;
+    region?: string;
+    country?: string;
+    country_code?: string;
+  }>;
+}>('/api/proxy/batch-test', { proxy_urls, concurrency: concurrency ?? 5 });
 
 export const testProxy = (proxy_url: string) => post<{
   success: boolean;

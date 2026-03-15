@@ -499,6 +499,9 @@ pub async fn run_invite_workflow(
 
             for member in &existing_members {
                 if let Some(password) = pw_map.get(&member.email) {
+                    let proxy = proxy_pool.next();
+                    let proxy_label = proxy.as_deref().map(|p| mask_proxy(p)).unwrap_or_else(|| "直连".to_string());
+
                     let fake_registered = crate::models::RegisteredAccount {
                         account: member.email.clone(),
                         password: password.clone(),
@@ -508,15 +511,15 @@ pub async fn run_invite_workflow(
                         proxy: None,
                     };
 
-                    broadcast_log(&format!("[恢复-RT] 获取 RT: {}", member.email));
+                    broadcast_log(&format!("[恢复-RT] 获取 RT: {} (代理: {})", member.email, proxy_label));
                     match codex_service
-                        .fetch_refresh_token(&fake_registered, proxy_pool.next(), 1)
+                        .fetch_refresh_token(&fake_registered, proxy, 1)
                         .await
                     {
                         Ok(rt) => {
                             cum_rt_ok += 1;
                             progress.rt_ok.fetch_add(1, Ordering::Relaxed);
-                            broadcast_log(&format!("[恢复-RT成功] {}", member.email));
+                            broadcast_log(&format!("[恢复-RT成功] {} (代理: {})", member.email, proxy_label));
                             recovery_accounts.push(crate::models::AccountWithRt {
                                 account: member.email.clone(),
                                 password: password.clone(),
@@ -530,8 +533,8 @@ pub async fn run_invite_workflow(
                             cum_rt_failed += 1;
                             progress.rt_failed.fetch_add(1, Ordering::Relaxed);
                             broadcast_log(&format!(
-                                "[恢复-RT失败] {}: {e:#}",
-                                member.email
+                                "[恢复-RT失败] {} (代理: {}): {e:#}",
+                                member.email, proxy_label
                             ));
                         }
                     }
@@ -789,6 +792,7 @@ pub async fn run_invite_workflow(
                         }
                     }
 
+                    let proxy_label = proxy.as_deref().map(|p| mask_proxy(p)).unwrap_or_else(|| "直连".to_string());
                     let acc = match registered {
                         Some(acc) => acc,
                         None => {
@@ -802,8 +806,8 @@ pub async fn run_invite_workflow(
                                 },
                             );
                             broadcast_log(&format!(
-                                "[注册失败] {}: {}",
-                                seed.account, last_reg_err
+                                "[注册失败] {} (代理: {}): {}",
+                                seed.account, proxy_label, last_reg_err
                             ));
                             return WorkerOutcome::RegFailed;
                         }
@@ -818,8 +822,8 @@ pub async fn run_invite_workflow(
                         },
                     );
                     broadcast_log(&format!(
-                        "[注册成功] {} plan={}",
-                        acc.account, acc.plan_type
+                        "[注册成功] {} plan={} (代理: {})",
+                        acc.account, acc.plan_type, proxy_label
                     ));
 
                     // ── RT（最多 3 次尝试，退避 1s → 3s）──
