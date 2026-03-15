@@ -4389,11 +4389,28 @@ async fn team_manage_kick_member_handler(
         })?
         .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "找不到对应的 Owner 或 access_token"))?;
 
-    let client = rquest::Client::builder()
+    // 读取代理配置
+    let proxy_url = {
+        let cfg = state.config.read().await;
+        if cfg.proxy_enabled.unwrap_or(true) && !cfg.proxy_pool.is_empty() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static IDX: AtomicUsize = AtomicUsize::new(0);
+            let i = IDX.fetch_add(1, Ordering::Relaxed);
+            Some(cfg.proxy_pool[i % cfg.proxy_pool.len()].clone())
+        } else {
+            None
+        }
+    };
+
+    let mut builder = rquest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_else(|_| rquest::Client::new());
+        .connect_timeout(std::time::Duration::from_secs(10));
+    if let Some(ref pu) = proxy_url {
+        if let Ok(p) = rquest::Proxy::all(pu) {
+            builder = builder.proxy(p);
+        }
+    }
+    let client = builder.build().unwrap_or_else(|_| rquest::Client::new());
 
     let url = format!(
         "https://chatgpt.com/backend-api/accounts/{}/users/{}",
@@ -4503,7 +4520,35 @@ async fn team_manage_batch_kick_handler(
         }
     }
 
-    let client = shared_http_client_15s();
+    // 预建代理客户端池（轮询复用）
+    let proxy_clients: Vec<rquest::Client> = {
+        let cfg = state.config.read().await;
+        let proxy_enabled = cfg.proxy_enabled.unwrap_or(true);
+        let pool = &cfg.proxy_pool;
+        if proxy_enabled && !pool.is_empty() {
+            crate::log_broadcast::broadcast_log(&format!(
+                "[批量清理] 使用 {} 个代理",
+                pool.len()
+            ));
+            pool.iter()
+                .filter_map(|pu| {
+                    let proxy = rquest::Proxy::all(pu).ok()?;
+                    rquest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(15))
+                        .connect_timeout(std::time::Duration::from_secs(10))
+                        .proxy(proxy)
+                        .build()
+                        .ok()
+                })
+                .collect()
+        } else {
+            crate::log_broadcast::broadcast_log("[批量清理] 未配置代理，使用直连");
+            vec![shared_http_client_15s().clone()]
+        }
+    };
+    let proxy_clients = std::sync::Arc::new(proxy_clients);
+    let proxy_idx = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     let success = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let failed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -4520,7 +4565,8 @@ async fn team_manage_batch_kick_handler(
             continue;
         };
 
-        let client = client.clone();
+        let proxy_clients = proxy_clients.clone();
+        let proxy_idx = proxy_idx.clone();
         let success = success.clone();
         let failed = failed.clone();
         let done = done.clone();
@@ -4532,7 +4578,8 @@ async fn team_manage_batch_kick_handler(
             let mut member_handles = Vec::new();
 
             for (user_id, email) in members {
-                let client = client.clone();
+                let proxy_clients = proxy_clients.clone();
+                let proxy_idx = proxy_idx.clone();
                 let access_token = access_token.clone();
                 let account_id = account_id.clone();
                 let success = success.clone();
@@ -4547,6 +4594,10 @@ async fn team_manage_batch_kick_handler(
                         account_id, user_id
                     );
                     let device_id = uuid::Uuid::new_v4().to_string();
+
+                    // 轮询选取代理客户端
+                    let idx = proxy_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let client = &proxy_clients[idx % proxy_clients.len()];
 
                     let result = client
                         .delete(&url)
