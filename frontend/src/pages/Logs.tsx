@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { ArrowDown } from 'lucide-react';
+import { Button, Card, SectionTitle } from '../components/ui';
 
 export default function Logs() {
   const [lines, setLines] = useState<string[]>([]);
@@ -52,10 +53,8 @@ export default function Logs() {
     return () => { esRef.current?.close(); if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [flush]);
 
-  // Sync ref with state
   useEffect(() => { autoScrollRef.current = autoScroll; }, [autoScroll]);
 
-  // Auto scroll — read ref to avoid stale closure
   useEffect(() => {
     if (autoScrollRef.current && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -91,17 +90,17 @@ export default function Logs() {
   const clearLogs = () => { setLines([]); setCount(0); pendingRef.current = []; };
 
   return (
-    <div className="card p-5">
+    <Card className="p-5">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
-          <div className="section-title mb-0">实时日志</div>
+          <SectionTitle className="mb-0">实时日志</SectionTitle>
           <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-teal-400 animate-pulse' : 'bg-red-400'}`} />
           <span className="text-xs c-dim">{connected ? '已连接' : '已断开'}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs font-mono c-dim">{count} 条</span>
-          <button onClick={toggleAutoScroll} className="btn btn-ghost text-xs py-1">自动滚动: {autoScroll ? '开' : '关'}</button>
-          <button onClick={clearLogs} className="btn btn-ghost text-xs py-1">清空</button>
+          <Button onClick={toggleAutoScroll} variant="ghost" className="text-xs py-1">自动滚动: {autoScroll ? '开' : '关'}</Button>
+          <Button onClick={clearLogs} variant="ghost" className="text-xs py-1">清空</Button>
         </div>
       </div>
       <div className="relative">
@@ -131,6 +130,6 @@ export default function Logs() {
           </button>
         )}
       </div>
-    </div>
+    </Card>
   );
 }

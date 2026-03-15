@@ -1,22 +1,25 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useTheme } from '../hooks/useTheme';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { fetchHealth } from '../lib/api';
-import { ClipboardList, Globe, LayoutDashboard, Users, Settings, Rocket, Clock, History, ScrollText, MailPlus, UserCog } from 'lucide-react';
+import { ClipboardList, Globe, LayoutDashboard, Users, Settings, Rocket, Clock, History, ScrollText, MailPlus, UserCog, MoreHorizontal, X } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { to: '/', label: '概览', icon: <LayoutDashboard size={15} /> },
-  { to: '/teams', label: '号池', icon: <Users size={15} /> },
+  { to: '/', label: '概览', icon: <LayoutDashboard size={15} />, primary: true },
+  { to: '/teams', label: '号池', icon: <Users size={15} />, primary: true },
   { to: '/proxy', label: '代理', icon: <Globe size={15} /> },
-  { to: '/config', label: '配置', icon: <Settings size={15} /> },
-  { to: '/team-manage', label: 'Team', icon: <UserCog size={15} /> },
+  { to: '/config', label: '配置', icon: <Settings size={15} />, primary: true },
+  { to: '/team-manage', label: 'Team', icon: <UserCog size={15} />, primary: true },
   { to: '/owner-audit', label: '审计', icon: <ClipboardList size={15} /> },
-  { to: '/tasks', label: '任务', icon: <Rocket size={15} /> },
+  { to: '/tasks', label: '任务', icon: <Rocket size={15} />, primary: true },
   { to: '/schedules', label: '定时', icon: <Clock size={15} /> },
   { to: '/runs', label: '记录', icon: <History size={15} /> },
   { to: '/logs', label: '日志', icon: <ScrollText size={15} /> },
   { to: '/invite', label: '邀请', icon: <MailPlus size={15} /> },
 ];
+
+const PRIMARY_ITEMS = NAV_ITEMS.filter(i => i.primary);
+const SECONDARY_ITEMS = NAV_ITEMS.filter(i => !i.primary);
 
 export default function Layout() {
   const { theme, toggleTheme } = useTheme();
@@ -24,6 +27,25 @@ export default function Layout() {
   const [uptime, setUptime] = useState('--');
   const [healthy, setHealthy] = useState(false);
   const [clock, setClock] = useState('--:--:--');
+  const [moreOpen, setMoreOpen] = useState(false);
+  const navScrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  // 检测导航栏滚动状态
+  useEffect(() => {
+    const el = navScrollRef.current;
+    if (!el) return;
+    const check = () => {
+      setCanScrollLeft(el.scrollLeft > 2);
+      setCanScrollRight(el.scrollLeft < el.scrollWidth - el.clientWidth - 2);
+    };
+    check();
+    el.addEventListener('scroll', check, { passive: true });
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', check); ro.disconnect(); };
+  }, []);
 
   // 北京时间时钟
   useEffect(() => {
@@ -60,8 +82,23 @@ export default function Layout() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
+  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+    `relative flex items-center gap-1 px-3 py-[6px] rounded-xl text-[.8rem] font-semibold whitespace-nowrap transition-all duration-300 ${
+      isActive
+        ? 'text-white'
+        : 'c-dim hover:text-[var(--text-heading)] hover:bg-[var(--ghost)]'
+    }`;
+
+  const navLinkStyle = ({ isActive }: { isActive: boolean }) =>
+    isActive
+      ? {
+          background: 'linear-gradient(135deg, rgba(20,184,166,0.85), rgba(139,92,246,0.85))',
+          boxShadow: '0 3px 12px -2px rgba(20,184,166,0.35), inset 0 1px 1px rgba(255,255,255,0.15)',
+        }
+      : {};
+
   return (
-    <div className="min-h-screen flex flex-col pt-[60px]">
+    <div className="min-h-screen flex flex-col pt-[60px] pb-[68px] md:pb-0">
       {/* Header */}
       <header className="fixed top-0 left-0 right-0 z-50">
         <div className="relative flex items-center justify-between w-full px-4 sm:px-5 py-2 gap-3">
@@ -78,7 +115,7 @@ export default function Layout() {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[.95rem] font-bold tracking-tight c-heading font-display whitespace-nowrap">
-                Team-<span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 via-teal-300 to-primary">codex</span>自动上号系统
+                Team-<span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 via-teal-300 to-primary">codex</span><span className="hidden sm:inline">自动上号系统</span>
               </span>
               <span
                 className="text-[.6rem] font-mono px-2 py-0.5 rounded-md font-semibold"
@@ -89,44 +126,45 @@ export default function Layout() {
             </div>
           </div>
 
-          {/* 中：胶囊导航 — 绝对定位保证视口居中 */}
-          <div className="absolute left-1/2 -translate-x-1/2">
-            <nav
-              className="header-nav flex items-center gap-0.5 rounded-2xl p-1"
-              style={{
-                background: 'var(--bg-inner)',
-                border: '1px solid var(--border)',
-                backdropFilter: 'blur(16px) saturate(140%)',
-                WebkitBackdropFilter: 'blur(16px) saturate(140%)',
-                boxShadow: '0 4px 18px -8px rgba(0,0,0,0.18)',
-              }}
-            >
-              {NAV_ITEMS.map(item => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.to === '/'}
-                  className={({ isActive }) =>
-                    `relative flex items-center gap-1 px-3 py-[6px] rounded-xl text-[.8rem] font-semibold whitespace-nowrap transition-all duration-300 ${
-                      isActive
-                        ? 'text-white'
-                        : 'c-dim hover:text-[var(--text-heading)] hover:bg-[var(--ghost)]'
-                    }`
-                  }
-                  style={({ isActive }) =>
-                    isActive
-                      ? {
-                          background: 'linear-gradient(135deg, rgba(20,184,166,0.85), rgba(139,92,246,0.85))',
-                          boxShadow: '0 3px 12px -2px rgba(20,184,166,0.35), inset 0 1px 1px rgba(255,255,255,0.15)',
-                        }
-                      : {}
-                  }
-                >
-                  <span className="flex items-center">{item.icon}</span>
-                  <span>{item.label}</span>
-                </NavLink>
-              ))}
-            </nav>
+          {/* 中：胶囊导航 — 居中，溢出时可滚动 */}
+          <div className="absolute left-1/2 -translate-x-1/2 max-w-[calc(100vw-340px)]">
+            <div className="relative">
+              {/* 左渐隐遮罩 */}
+              {canScrollLeft && (
+                <div className="absolute left-0 top-0 bottom-0 w-8 z-10 pointer-events-none rounded-l-2xl"
+                  style={{ background: 'linear-gradient(to right, var(--bg-inner), transparent)' }} />
+              )}
+              <div
+                ref={navScrollRef}
+                className="header-nav flex items-center gap-0.5 rounded-2xl p-1 overflow-x-auto scrollbar-none"
+                style={{
+                  background: 'var(--bg-inner)',
+                  border: '1px solid var(--border)',
+                  backdropFilter: 'blur(16px) saturate(140%)',
+                  WebkitBackdropFilter: 'blur(16px) saturate(140%)',
+                  boxShadow: '0 4px 18px -8px rgba(0,0,0,0.18)',
+                  scrollbarWidth: 'none',
+                }}
+              >
+                {NAV_ITEMS.map(item => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.to === '/'}
+                    className={navLinkClass}
+                    style={navLinkStyle}
+                  >
+                    <span className="flex items-center">{item.icon}</span>
+                    <span>{item.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+              {/* 右渐隐遮罩 */}
+              {canScrollRight && (
+                <div className="absolute right-0 top-0 bottom-0 w-8 z-10 pointer-events-none rounded-r-2xl"
+                  style={{ background: 'linear-gradient(to left, var(--bg-inner), transparent)' }} />
+              )}
+            </div>
           </div>
 
           {/* 右：状态 + 主题切换 */}
@@ -156,6 +194,79 @@ export default function Layout() {
 
         </div>
       </header>
+
+      {/* Mobile Bottom Tab Bar */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50"
+        style={{
+          background: 'var(--header-bg)',
+          backdropFilter: 'saturate(180%) blur(24px)',
+          WebkitBackdropFilter: 'saturate(180%) blur(24px)',
+          borderTop: '1px solid var(--nav-border)',
+          boxShadow: '0 -1px 24px -1px rgba(0,0,0,0.06)',
+        }}
+      >
+        <div className="flex items-center justify-around px-1 py-1.5">
+          {PRIMARY_ITEMS.map(item => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              className={({ isActive }) =>
+                `flex flex-col items-center gap-0.5 px-2 py-1 rounded-xl min-w-[52px] transition-all duration-200 ${
+                  isActive ? 'text-teal-400' : 'c-dim'
+                }`
+              }
+            >
+              <span className="flex items-center">{item.icon}</span>
+              <span className="text-[.6rem] font-semibold">{item.label}</span>
+            </NavLink>
+          ))}
+          {/* 更多按钮 */}
+          <button
+            onClick={() => setMoreOpen(!moreOpen)}
+            className={`flex flex-col items-center gap-0.5 px-2 py-1 rounded-xl min-w-[52px] transition-all duration-200 ${moreOpen ? 'text-teal-400' : 'c-dim'}`}
+          >
+            {moreOpen ? <X size={15} /> : <MoreHorizontal size={15} />}
+            <span className="text-[.6rem] font-semibold">更多</span>
+          </button>
+        </div>
+
+        {/* 更多展开面板 */}
+        {moreOpen && (
+          <div
+            className="absolute bottom-full left-0 right-0 p-3"
+            style={{
+              background: 'var(--modal-bg)',
+              borderTop: '1px solid var(--border)',
+              backdropFilter: 'blur(24px) saturate(150%)',
+              WebkitBackdropFilter: 'blur(24px) saturate(150%)',
+              boxShadow: '0 -8px 32px -8px rgba(0,0,0,0.3)',
+              animation: 'slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+            }}
+          >
+            <div className="grid grid-cols-3 gap-2">
+              {SECONDARY_ITEMS.map(item => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  onClick={() => setMoreOpen(false)}
+                  className={({ isActive }) =>
+                    `flex flex-col items-center gap-1.5 py-3 rounded-xl transition-all duration-200 ${
+                      isActive
+                        ? 'text-teal-400 bg-teal-400/8'
+                        : 'c-dim hover:text-[var(--text-heading)] hover:bg-[var(--ghost)]'
+                    }`
+                  }
+                  style={{ border: '1px solid var(--border)' }}
+                >
+                  <span className="flex items-center">{item.icon}</span>
+                  <span className="text-[.72rem] font-semibold">{item.label}</span>
+                </NavLink>
+              ))}
+            </div>
+          </div>
+        )}
+      </nav>
 
       <div className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 flex flex-col pb-10 pt-4 sm:pt-5">
         {/* 内容路由 */}

@@ -1,0 +1,442 @@
+/* ═══════════════════════════════════════════
+   TeamManage 页面专属样式
+   ═══════════════════════════════════════════ */
+.team-manage-dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.team-manage-dashboard__card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 88px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
+    var(--bg-inner);
+  box-shadow: 0 8px 24px -14px rgba(0, 0, 0, 0.35);
+}
+
+.team-manage-dashboard__card--good {
+  border-color: rgba(45, 212, 191, 0.2);
+}
+
+.team-manage-dashboard__card--danger {
+  border-color: rgba(248, 113, 113, 0.2);
+}
+
+.team-manage-dashboard__card--warn {
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.team-manage-dashboard__card--accent {
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+.team-manage-dashboard__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-heading);
+}
+
+.team-manage-dashboard__body {
+  min-width: 0;
+}
+
+.team-manage-dashboard__label {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+
+.team-manage-dashboard__value {
+  margin-top: 4px;
+  font-size: 1.4rem;
+  font-weight: 750;
+  color: var(--text-heading);
+  letter-spacing: -0.03em;
+}
+
+/* 表格容器 */
+.team-manage-table {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.008);
+}
+
+/* 共享网格列定义 */
+.team-manage-table-grid {
+  display: grid;
+  grid-template-columns: 36px minmax(200px, 1.5fr) 88px 1fr 130px 52px 72px;
+  align-items: center;
+  column-gap: 12px;
+}
+
+/* 表头 */
+.team-manage-table__header {
+  padding: 10px 16px;
+  font-size: 0.68rem;
+  font-weight: 650;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.025);
+  user-select: none;
+}
+
+.team-manage-table__header span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Owner 行 */
+.team-manage-owner-row {
+  padding: 10px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background 0.18s ease;
+}
+
+.team-manage-owner-row:last-child {
+  border-bottom: none;
+}
+
+.team-manage-owner-row:hover {
+  background: var(--bg-row-hover);
+}
+
+.team-manage-owner-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.team-manage-owner-row:nth-child(even):hover {
+  background: var(--bg-row-hover);
+}
+
+/* 复选框 */
+.team-manage-owner-row__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.team-manage-owner-row__check:hover {
+  border-color: var(--border-hover);
+  background: var(--ghost);
+}
+
+.team-manage-owner-row__check--selected {
+  border-color: rgba(20, 184, 166, 0.6);
+  background: rgba(20, 184, 166, 0.12);
+}
+
+.team-manage-owner-row__check-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: transparent;
+  transition: background 0.2s ease;
+}
+
+.team-manage-owner-row__check--selected .team-manage-owner-row__check-dot {
+  background: linear-gradient(135deg, #14b8a6, #3b82f6);
+}
+
+/* 告警行：左侧色条 + 渐变背景 */
+.team-manage-owner-row--alert {
+  border-left: 3px solid rgba(248, 113, 113, 0.5);
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.04), transparent 40%);
+}
+
+.team-manage-owner-row--alert:nth-child(even) {
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.04), rgba(255, 255, 255, 0.012) 40%);
+}
+
+.team-manage-owner-row--owner-banned {
+  border-left: 3px solid rgba(239, 68, 68, 0.7);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.06), transparent 40%);
+  opacity: 0.85;
+}
+
+.team-manage-owner-row--owner-banned:hover {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.1), transparent 40%);
+  opacity: 1;
+}
+
+.team-manage-bulkbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.team-manage-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.team-manage-filterbar__search {
+  min-width: 220px;
+  flex: 1 1 240px;
+}
+
+.team-manage-filterbar__select {
+  min-width: 140px;
+  height: 40px;
+}
+
+.team-manage-bulkbar__meta {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.team-manage-bulkbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.team-manage-jobs {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.team-manage-jobs__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.team-manage-jobs__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: var(--bg-inner);
+}
+
+.team-manage-jobs__item--active {
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 10px 22px -16px rgba(59, 130, 246, 0.45);
+}
+
+.team-manage-job-detail {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.team-manage-job-detail__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.team-manage-jobs__detail-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: var(--bg-inner);
+}
+
+.team-manage-link-button {
+  color: #7dd3fc;
+  transition: color 0.18s ease;
+}
+
+.team-manage-link-button:hover {
+  color: #bae6fd;
+}
+
+.team-manage-invite-task__summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.team-manage-audit__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.team-manage-audit__search {
+  min-width: 260px;
+  flex: 1 1 280px;
+}
+
+.team-manage-audit__select {
+  min-width: 168px;
+  flex: 0 0 168px;
+}
+
+/* 分页 */
+.team-manage-pagination {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.team-manage-pagination__meta {
+  padding-inline: 2px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.team-manage-pagination__rail {
+  display: grid;
+  grid-template-columns: minmax(104px, 120px) minmax(0, 1fr) minmax(104px, 120px);
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+}
+
+.team-manage-pagination__edge {
+  width: 100%;
+  min-height: 40px;
+}
+
+.team-manage-pagination__pages {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.team-manage-pagination__page,
+.team-manage-pagination__placeholder,
+.team-manage-pagination__ellipsis {
+  min-height: 40px;
+  border-radius: 12px;
+}
+
+.team-manage-pagination__page {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.team-manage-pagination__page--active {
+  color: #fff;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.88), rgba(59, 130, 246, 0.84));
+  box-shadow: 0 10px 22px -14px rgba(59, 130, 246, 0.55);
+}
+
+.team-manage-pagination__placeholder {
+  display: block;
+  visibility: hidden;
+}
+
+.team-manage-pagination__ellipsis {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px dashed rgba(255, 255, 255, 0.06);
+}
+
+/* 响应式 */
+@media (max-width: 640px) {
+  .team-manage-dashboard {
+    grid-template-columns: 1fr;
+  }
+  .team-manage-table-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .team-manage-table__header {
+    display: none;
+  }
+  .team-manage-owner-row {
+    padding: 12px 14px;
+  }
+  .team-manage-bulkbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .team-manage-filterbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .team-manage-bulkbar__actions {
+    width: 100%;
+  }
+  .team-manage-jobs__item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .team-manage-jobs__detail-item {
+    flex-direction: column;
+  }
+  .team-manage-invite-task__summary {
+    grid-template-columns: 1fr;
+  }
+  .team-manage-owner-row .min-w-0 {
+    width: 100%;
+  }
+  .team-manage-pagination__rail {
+    grid-template-columns: 1fr;
+  }
+  .team-manage-pagination__pages {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .team-manage-pagination__placeholder,
+  .team-manage-pagination__ellipsis {
+    min-height: 36px;
+  }
+}

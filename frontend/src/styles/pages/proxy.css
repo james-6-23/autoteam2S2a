@@ -1,0 +1,165 @@
+/* ═══════════════════════════════════════════
+   Proxy 代理管理页面专属样式
+   ═══════════════════════════════════════════ */
+
+/* 统计卡片网格 */
+.proxy-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.proxy-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-inner);
+}
+
+.proxy-stat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+/* 表格 */
+.proxy-table {
+  border-top: none;
+}
+
+.proxy-table-grid {
+  display: grid;
+  grid-template-columns: 40px minmax(180px, 1.5fr) 72px 56px minmax(100px, 1fr) 72px 56px 80px 72px;
+  align-items: center;
+  column-gap: 10px;
+  padding: 0 16px;
+}
+
+.proxy-table-header {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  font-size: 0.68rem;
+  font-weight: 650;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  user-select: none;
+}
+
+.proxy-table-body {
+  /* container */
+}
+
+.proxy-table-row {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  cursor: default;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background 0.15s ease;
+}
+
+.proxy-table-row:last-child {
+  border-bottom: none;
+}
+
+.proxy-table-row:hover {
+  background: var(--bg-row-hover);
+}
+
+.proxy-table-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.proxy-table-row:nth-child(even):hover {
+  background: var(--bg-row-hover);
+}
+
+.proxy-table-row--error {
+  border-left: 3px solid rgba(248, 113, 113, 0.5);
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.03), transparent 30%);
+}
+
+/* 复选框 */
+.proxy-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.proxy-check:hover {
+  border-color: var(--border-hover);
+  background: var(--ghost);
+}
+
+.proxy-check--selected {
+  border-color: rgba(20, 184, 166, 0.6);
+  background: rgba(20, 184, 166, 0.12);
+  color: #14b8a6;
+}
+
+.proxy-check--partial {
+  border-color: rgba(20, 184, 166, 0.4);
+  background: rgba(20, 184, 166, 0.08);
+  color: #14b8a6;
+}
+
+/* 操作按钮 */
+.proxy-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.proxy-action-btn:hover {
+  background: var(--ghost-hover);
+  color: var(--text-heading);
+}
+
+.proxy-action-btn--danger:hover {
+  background: rgba(248, 113, 113, 0.1);
+  color: #f87171;
+}
+
+.proxy-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 响应式 */
+@media (max-width: 640px) {
+  .proxy-table-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .proxy-table-header {
+    display: none;
+  }
+  .proxy-stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

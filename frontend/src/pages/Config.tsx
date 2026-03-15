@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '../components/Toast';
 import * as api from '../lib/api';
 import { Select } from '../components/Select';
+import { Button, Card, FieldLabel, SectionTitle } from '../components/ui';
 
 interface ConfigData {
   defaults: { target_count?: number; register_workers?: number; rt_workers?: number; rt_retries?: number; team?: Record<string, number>; free?: Record<string, number> };
@@ -17,20 +18,16 @@ export default function Config() {
   const { toast } = useToast();
   const [config, setConfig] = useState<ConfigData | null>(null);
 
-  // Defaults
   const [mode, setMode] = useState('team');
   const [target, setTarget] = useState(4); const [regW, setRegW] = useState(4); const [rtW, setRtW] = useState(4); const [rtR, setRtR] = useState(4);
 
-  // Register
   const [mailBase, setMailBase] = useState(''); const [mailPath, setMailPath] = useState(''); const [mailToken, setMailToken] = useState('');
   const [mailTimeout, setMailTimeout] = useState(20); const [otpRetries, setOtpRetries] = useState(3); const [reqTimeout, setReqTimeout] = useState(30);
   const [mailConc, setMailConc] = useState(50); const [logMode, setLogMode] = useState('verbose'); const [perfMode, setPerfMode] = useState('baseline');
   const [gptMailKey, setGptMailKey] = useState('');
 
-  // Domains
   const [newDomain, setNewDomain] = useState(''); const [newGptDomain, setNewGptDomain] = useState('');
 
-  // D1
   const [d1Enabled, setD1Enabled] = useState(false); const [d1AccId, setD1AccId] = useState(''); const [d1ApiKey, setD1ApiKey] = useState('');
   const [d1Keep, setD1Keep] = useState(0.1); const [d1Batch, setD1Batch] = useState(5000);
   const [d1Dbs, setD1Dbs] = useState<{ name: string; id: string }[]>([]);
@@ -86,42 +83,38 @@ export default function Config() {
     }
   };
 
-
   return (
     <div className="space-y-4">
-      {/* Defaults */}
-      <div className="card p-5">
-        <div className="section-title">运行参数</div>
+      <Card className="p-5">
+        <SectionTitle>运行参数</SectionTitle>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <div><label className="field-label">模式</label><Select value={mode} onChange={setMode} options={[{ label: 'Team', value: 'team' }, { label: 'Free', value: 'free' }]} /></div>
-          <div><label className="field-label">目标数</label><input type="number" className="field-input" value={target} onChange={e => setTarget(Number(e.target.value))} /></div>
-          <div><label className="field-label">注册并发</label><input type="number" className="field-input" value={regW} onChange={e => setRegW(Number(e.target.value))} /></div>
-          <div><label className="field-label">RT 并发</label><input type="number" className="field-input" value={rtW} onChange={e => setRtW(Number(e.target.value))} /></div>
-          <div><label className="field-label">RT 重试</label><input type="number" className="field-input" value={rtR} onChange={e => setRtR(Number(e.target.value))} /></div>
+          <div><FieldLabel>模式</FieldLabel><Select value={mode} onChange={setMode} options={[{ label: 'Team', value: 'team' }, { label: 'Free', value: 'free' }]} /></div>
+          <div><FieldLabel>目标数</FieldLabel><input type="number" className="field-input" value={target} onChange={e => setTarget(Number(e.target.value))} /></div>
+          <div><FieldLabel>注册并发</FieldLabel><input type="number" className="field-input" value={regW} onChange={e => setRegW(Number(e.target.value))} /></div>
+          <div><FieldLabel>RT 并发</FieldLabel><input type="number" className="field-input" value={rtW} onChange={e => setRtW(Number(e.target.value))} /></div>
+          <div><FieldLabel>RT 重试</FieldLabel><input type="number" className="field-input" value={rtR} onChange={e => setRtR(Number(e.target.value))} /></div>
         </div>
-        <button onClick={saveDefaults} className="btn btn-amber mt-3">保存</button>
-      </div>
+        <Button onClick={saveDefaults} variant="amber" className="mt-3">保存</Button>
+      </Card>
 
-      {/* Register */}
-      <div className="card p-5">
-        <div className="section-title">注册配置</div>
+      <Card className="p-5">
+        <SectionTitle>注册配置</SectionTitle>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <div><label className="field-label">邮箱 API 地址</label><input className="field-input" value={mailBase} onChange={e => setMailBase(e.target.value)} /></div>
-          <div><label className="field-label">邮箱 API 路径</label><input className="field-input" value={mailPath} onChange={e => setMailPath(e.target.value)} /></div>
-          <div><label className="field-label">邮箱 API Token</label><input className="field-input" value={mailToken} onChange={e => setMailToken(e.target.value)} /></div>
-          <div><label className="field-label">邮箱超时(s)</label><input type="number" className="field-input" value={mailTimeout} onChange={e => setMailTimeout(Number(e.target.value))} /></div>
-          <div><label className="field-label">OTP 重试</label><input type="number" className="field-input" value={otpRetries} onChange={e => setOtpRetries(Number(e.target.value))} /></div>
-          <div><label className="field-label">请求超时(s)</label><input type="number" className="field-input" value={reqTimeout} onChange={e => setReqTimeout(Number(e.target.value))} /></div>
-          <div><label className="field-label">邮箱并发</label><input type="number" className="field-input" value={mailConc} onChange={e => setMailConc(Number(e.target.value))} /></div>
-          <div><label className="field-label">日志模式</label><Select value={logMode} onChange={setLogMode} options={[{ label: '详细', value: 'verbose' }, { label: '汇总', value: 'summary' }]} /></div>
-          <div><label className="field-label">性能模式</label><Select value={perfMode} onChange={setPerfMode} options={[{ label: 'baseline', value: 'baseline' }, { label: 'adaptive', value: 'adaptive' }]} /></div>
+          <div><FieldLabel>邮箱 API 地址</FieldLabel><input className="field-input" value={mailBase} onChange={e => setMailBase(e.target.value)} /></div>
+          <div><FieldLabel>邮箱 API 路径</FieldLabel><input className="field-input" value={mailPath} onChange={e => setMailPath(e.target.value)} /></div>
+          <div><FieldLabel>邮箱 API Token</FieldLabel><input className="field-input" value={mailToken} onChange={e => setMailToken(e.target.value)} /></div>
+          <div><FieldLabel>邮箱超时(s)</FieldLabel><input type="number" className="field-input" value={mailTimeout} onChange={e => setMailTimeout(Number(e.target.value))} /></div>
+          <div><FieldLabel>OTP 重试</FieldLabel><input type="number" className="field-input" value={otpRetries} onChange={e => setOtpRetries(Number(e.target.value))} /></div>
+          <div><FieldLabel>请求超时(s)</FieldLabel><input type="number" className="field-input" value={reqTimeout} onChange={e => setReqTimeout(Number(e.target.value))} /></div>
+          <div><FieldLabel>邮箱并发</FieldLabel><input type="number" className="field-input" value={mailConc} onChange={e => setMailConc(Number(e.target.value))} /></div>
+          <div><FieldLabel>日志模式</FieldLabel><Select value={logMode} onChange={setLogMode} options={[{ label: '详细', value: 'verbose' }, { label: '汇总', value: 'summary' }]} /></div>
+          <div><FieldLabel>性能模式</FieldLabel><Select value={perfMode} onChange={setPerfMode} options={[{ label: 'baseline', value: 'baseline' }, { label: 'adaptive', value: 'adaptive' }]} /></div>
         </div>
-        <button onClick={saveRegister} className="btn btn-amber mt-3">保存</button>
-      </div>
+        <Button onClick={saveRegister} variant="amber" className="mt-3">保存</Button>
+      </Card>
 
-      {/* Domains */}
-      <div className="card p-5">
-        <div className="section-title">邮箱域名 <span className="c-dim2 font-mono text-[.65rem]">{config?.email_domains.length ?? 0}</span></div>
+      <Card className="p-5">
+        <SectionTitle>邮箱域名 <span className="c-dim2 font-mono text-[.65rem]">{config?.email_domains.length ?? 0}</span></SectionTitle>
         <div className="flex flex-wrap gap-1.5 mb-3">
           {(config?.email_domains || []).map(d => (
             <span key={d} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style={{ background: 'var(--domain-bg)', border: '1px solid var(--domain-border)', color: 'var(--text-dim2)' }}>
@@ -129,49 +122,47 @@ export default function Config() {
             </span>
           ))}
         </div>
-        <div className="flex gap-2"><input className="field-input flex-1" placeholder="example.com" value={newDomain} onChange={e => setNewDomain(e.target.value)} /><button onClick={addDomain} className="btn btn-teal text-xs">添加</button></div>
-      </div>
+        <div className="flex gap-2"><input className="field-input flex-1" placeholder="example.com" value={newDomain} onChange={e => setNewDomain(e.target.value)} /><Button onClick={addDomain} variant="teal" className="text-xs">添加</Button></div>
+      </Card>
 
-      {/* GPTMail */}
-      <div className="card p-5">
-        <div className="section-title">GPTMail</div>
-        <div className="flex gap-2 mb-3"><input className="field-input flex-1" placeholder="API Key" value={gptMailKey} onChange={e => setGptMailKey(e.target.value)} /><button onClick={saveGptMailFn} className="btn btn-amber text-xs">保存</button></div>
+      <Card className="p-5">
+        <SectionTitle>GPTMail</SectionTitle>
+        <div className="flex gap-2 mb-3"><input className="field-input flex-1" placeholder="API Key" value={gptMailKey} onChange={e => setGptMailKey(e.target.value)} /><Button onClick={saveGptMailFn} variant="amber" className="text-xs">保存</Button></div>
         <div className="flex flex-wrap gap-1.5 mb-3">
           {(config?.chatgpt_mail_domains || []).map(d => (
             <span key={d} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style={{ background: 'var(--domain-bg)', border: '1px solid var(--domain-border)', color: 'var(--text-dim2)' }}>{d}</span>
           ))}
         </div>
-        <div className="flex gap-2"><input className="field-input flex-1" placeholder="域名" value={newGptDomain} onChange={e => setNewGptDomain(e.target.value)} /><button onClick={addGptDomain} className="btn btn-teal text-xs">添加</button></div>
-      </div>
+        <div className="flex gap-2"><input className="field-input flex-1" placeholder="域名" value={newGptDomain} onChange={e => setNewGptDomain(e.target.value)} /><Button onClick={addGptDomain} variant="teal" className="text-xs">添加</Button></div>
+      </Card>
 
-      {/* D1 */}
-      <div className="card p-5">
-        <div className="section-title">D1 清理</div>
+      <Card className="p-5">
+        <SectionTitle>D1 清理</SectionTitle>
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <div><label className="switch"><input className="switch-input" type="checkbox" checked={d1Enabled} onChange={e => setD1Enabled(e.target.checked)} /><span className="switch-slider" /><span>启用</span></label></div>
-          <div><label className="field-label">Account ID</label><input className="field-input" value={d1AccId} onChange={e => setD1AccId(e.target.value)} /></div>
-          <div><label className="field-label">API Key</label><input className="field-input" value={d1ApiKey} onChange={e => setD1ApiKey(e.target.value)} /></div>
-          <div><label className="field-label">保留比例</label><input type="number" step="0.01" className="field-input" value={d1Keep} onChange={e => setD1Keep(Number(e.target.value))} /></div>
-          <div><label className="field-label">批大小</label><input type="number" className="field-input" value={d1Batch} onChange={e => setD1Batch(Number(e.target.value))} /></div>
-          <div><label className="field-label">清理时机</label><Select value={d1Timing} onChange={v => setD1Timing(v as 'before_task' | 'after_task')} options={[{ label: '任务执行后', value: 'after_task' }, { label: '任务执行前', value: 'before_task' }]} /></div>
+          <div><FieldLabel>Account ID</FieldLabel><input className="field-input" value={d1AccId} onChange={e => setD1AccId(e.target.value)} /></div>
+          <div><FieldLabel>API Key</FieldLabel><input className="field-input" value={d1ApiKey} onChange={e => setD1ApiKey(e.target.value)} /></div>
+          <div><FieldLabel>保留比例</FieldLabel><input type="number" step="0.01" className="field-input" value={d1Keep} onChange={e => setD1Keep(Number(e.target.value))} /></div>
+          <div><FieldLabel>批大小</FieldLabel><input type="number" className="field-input" value={d1Batch} onChange={e => setD1Batch(Number(e.target.value))} /></div>
+          <div><FieldLabel>清理时机</FieldLabel><Select value={d1Timing} onChange={v => setD1Timing(v as 'before_task' | 'after_task')} options={[{ label: '任务执行后', value: 'after_task' }, { label: '任务执行前', value: 'before_task' }]} /></div>
         </div>
         <div className="mt-3 space-y-2">
           {d1Dbs.map((db, i) => (
             <div key={i} className="flex items-center gap-2">
               <input className="field-input flex-1" placeholder="名称" value={db.name} onChange={e => { const n = [...d1Dbs]; n[i] = { ...n[i], name: e.target.value }; setD1Dbs(n); }} />
               <input className="field-input flex-1" placeholder="ID" value={db.id} onChange={e => { const n = [...d1Dbs]; n[i] = { ...n[i], id: e.target.value }; setD1Dbs(n); }} />
-              <button onClick={() => setD1Dbs(d1Dbs.filter((_, j) => j !== i))} className="btn btn-danger text-xs py-1 px-2">&times;</button>
+              <Button onClick={() => setD1Dbs(d1Dbs.filter((_, j) => j !== i))} variant="danger" className="text-xs py-1 px-2">&times;</Button>
             </div>
           ))}
-          <button onClick={() => setD1Dbs([...d1Dbs, { name: '', id: '' }])} className="btn btn-ghost text-xs">+ 数据库</button>
+          <Button onClick={() => setD1Dbs([...d1Dbs, { name: '', id: '' }])} variant="ghost" className="text-xs">+ 数据库</Button>
         </div>
         <div className="flex gap-2 mt-3">
-          <button onClick={saveD1} className="btn btn-amber">保存 D1</button>
-          <button onClick={triggerD1Clean} disabled={d1Cleaning} className="btn btn-teal">{d1Cleaning ? '清理中...' : '清理'}</button>
+          <Button onClick={saveD1} variant="amber">保存 D1</Button>
+          <Button onClick={triggerD1Clean} disabled={d1Cleaning} variant="teal">{d1Cleaning ? '清理中...' : '清理'}</Button>
         </div>
-      </div>
+      </Card>
 
-      <button onClick={handleSaveToFile} className="btn btn-ghost w-full justify-center">保存到文件</button>
+      <Button onClick={handleSaveToFile} variant="ghost" className="w-full justify-center">保存到文件</Button>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useToast } from '../components/Toast';
 import * as api from '../lib/api';
 import { Select } from '../components/Select';
+import { Badge, Button, Card, FieldLabel, Modal, RowItem, SectionTitle } from '../components/ui';
 interface SchedItem { name: string; enabled: boolean; running?: boolean; cooldown?: boolean; pending?: boolean; start_time: string; end_time: string; target_count: number; batch_interval_mins: number; priority: number; distribution: { team: string; percent: number }[]; register_workers?: number; rt_workers?: number; rt_retries?: number; use_chatgpt_mail?: boolean; free_mode?: boolean; register_log_mode?: string; register_perf_mode?: string; push_s2a?: boolean; run_info?: { batch_num: number; next_batch_at?: string }; pending_info?: { blocked_by?: string; pending_since?: string } }
 interface TeamItem { name: string; free_group_ids?: number[] }
 
@@ -55,19 +56,19 @@ export default function Schedules() {
     try { const d = await api.post<{ rt_ok: number; total_s2a_ok: number; elapsed_secs: number }>(`/api/schedules/${encodeURIComponent(n)}/run-once`); toast(`完成 | RT: ${d.rt_ok} | S2A: ${d.total_s2a_ok} | 耗时: ${d.elapsed_secs.toFixed(1)}s`, 'success'); load(); } catch {}
   };
 
-  const setBadge = (s: SchedItem) => {
-    if (s.running) return ['badge-run', '运行中'];
-    if (s.cooldown) return ['badge-warn', '准备中'];
-    if (s.pending) return ['badge-warn', '等待中'];
-    return s.enabled ? ['badge-ok', '已启用'] : ['badge-off', '已禁用'];
+  const setBadge = (s: SchedItem): ['run' | 'warn' | 'ok' | 'off', string] => {
+    if (s.running) return ['run', '运行中'];
+    if (s.cooldown) return ['warn', '准备中'];
+    if (s.pending) return ['warn', '等待中'];
+    return s.enabled ? ['ok', '已启用'] : ['off', '已禁用'];
   };
 
   return (
     <div className="space-y-4">
-      <div className="card p-5">
+      <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
-          <div className="section-title mb-0">定时计划</div>
-          <button onClick={openAdd} className="btn btn-teal text-xs py-1.5">+ 新建</button>
+          <SectionTitle className="mb-0">定时计划</SectionTitle>
+          <Button onClick={openAdd} variant="teal" className="text-xs py-1.5">+ 新建</Button>
         </div>
         <div className="space-y-2">
           {schedules.length === 0 ? <p className="text-sm c-dim text-center py-8">暂无定时计划</p> :
@@ -75,20 +76,20 @@ export default function Schedules() {
               const [bc, bt] = setBadge(s);
               const isActive = s.running || s.cooldown || s.pending;
               return (
-                <div key={s.name} className="row-item" style={{ padding: '10px 14px' }}>
+                <RowItem key={s.name} style={{ padding: '10px 14px' }}>
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-2.5">
                       <span className="text-sm font-medium c-heading">{s.name}</span>
-                      <span className={`badge ${bc}`}>{bt}</span>
+                      <Badge variant={bc}>{bt}</Badge>
                       <code className="text-xs font-mono c-dim px-2 py-0.5 rounded" style={{ background: 'var(--ghost)' }}>{s.start_time} - {s.end_time}</code>
                     </div>
                     <div className="flex items-center gap-1">
-                      {!isActive && <button onClick={() => runOnce(s.name)} className="btn btn-ghost text-xs py-1 px-2">运行一次</button>}
-                      {isActive ? <button onClick={() => stop(s.name)} className="btn btn-danger text-xs py-1 px-2">{s.pending ? '取消等待' : '停止'}</button>
-                        : <button onClick={() => trigger(s.name)} className="btn btn-ghost text-xs py-1 px-2">启动</button>}
-                      <button onClick={() => openEdit(s.name)} className="btn btn-ghost text-xs py-1 px-2">编辑</button>
-                      <button onClick={() => toggle(s.name)} className="btn btn-ghost text-xs py-1 px-2">{s.enabled ? '禁用' : '启用'}</button>
-                      <button onClick={() => del(s.name)} className="btn btn-danger text-xs py-1 px-2">删除</button>
+                      {!isActive && <Button onClick={() => runOnce(s.name)} variant="ghost" className="text-xs py-1 px-2">运行一次</Button>}
+                      {isActive ? <Button onClick={() => stop(s.name)} variant="danger" className="text-xs py-1 px-2">{s.pending ? '取消等待' : '停止'}</Button>
+                        : <Button onClick={() => trigger(s.name)} variant="ghost" className="text-xs py-1 px-2">启动</Button>}
+                      <Button onClick={() => openEdit(s.name)} variant="ghost" className="text-xs py-1 px-2">编辑</Button>
+                      <Button onClick={() => toggle(s.name)} variant="ghost" className="text-xs py-1 px-2">{s.enabled ? '禁用' : '启用'}</Button>
+                      <Button onClick={() => del(s.name)} variant="danger" className="text-xs py-1 px-2">删除</Button>
                     </div>
                   </div>
                   <div className="flex items-center gap-4 text-xs c-dim flex-wrap">
@@ -105,57 +106,53 @@ export default function Schedules() {
                       <span className="c-dim font-mono">{s.run_info.next_batch_at ? `下批 ${s.run_info.next_batch_at}` : '执行中...'}</span>
                     </div>
                   )}
-                </div>
+                </RowItem>
               );
             })
           }
         </div>
-      </div>
+      </Card>
 
-      {/* Add/Edit Form */}
       {showAdd && (
-        <div className="team-modal" onClick={e => { if (e.target === e.currentTarget) { setShowAdd(false); setEditName(null); } }}>
-          <div className="team-modal-card p-5" onClick={e => e.stopPropagation()}>
-            <div className="section-title">{editName ? `编辑: ${editName}` : '新建定时计划'}</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div><label className="field-label">名称 *</label><input className="field-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
-              <div><label className="field-label">开始时间 *</label><input type="time" className="field-input" value={form.start} onChange={e => setForm({ ...form, start: e.target.value })} /></div>
-              <div><label className="field-label">结束时间 *</label><input type="time" className="field-input" value={form.end} onChange={e => setForm({ ...form, end: e.target.value })} /></div>
-              <div><label className="field-label">每批目标 *</label><input type="number" className="field-input" value={form.target} onChange={e => setForm({ ...form, target: Number(e.target.value) })} /></div>
-              <div><label className="field-label">间隔(分)</label><input type="number" className="field-input" value={form.interval} onChange={e => setForm({ ...form, interval: Number(e.target.value) })} /></div>
-              <div><label className="field-label">优先级</label><input type="number" className="field-input" value={form.priority} onChange={e => setForm({ ...form, priority: Number(e.target.value) })} /></div>
-              <div><label className="field-label">注册并发</label><input type="number" className="field-input" placeholder="默认" value={form.regW} onChange={e => setForm({ ...form, regW: e.target.value })} /></div>
-              <div><label className="field-label">RT 并发</label><input type="number" className="field-input" placeholder="默认" value={form.rtW} onChange={e => setForm({ ...form, rtW: e.target.value })} /></div>
-              <div><label className="field-label">邮箱</label>
-                <Select value={form.mail} onChange={v => setForm({ ...form, mail: v })} options={[{ label: 'kyx-cloud', value: 'false' }, { label: 'chatgpt', value: 'true' }]} />
-              </div>
-              <div><label className="field-label">模式</label>
-                <Select value={form.mode} onChange={v => setForm({ ...form, mode: v })} options={[{ label: 'Team', value: 'team' }, { label: 'Free', value: 'free' }]} />
-              </div>
-              <div><label className="switch mt-4"><input className="switch-input" type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} /><span className="switch-slider" /><span>启用</span></label></div>
-              <div><label className="switch mt-4"><input className="switch-input" type="checkbox" checked={form.pushS2a} onChange={e => setForm({ ...form, pushS2a: e.target.checked })} /><span className="switch-slider" /><span>推送S2A</span></label></div>
+        <Modal open={showAdd} onClose={() => { setShowAdd(false); setEditName(null); }} className="p-5">
+          <SectionTitle>{editName ? `编辑: ${editName}` : '新建定时计划'}</SectionTitle>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div><FieldLabel>名称 *</FieldLabel><input className="field-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
+            <div><FieldLabel>开始时间 *</FieldLabel><input type="time" className="field-input" value={form.start} onChange={e => setForm({ ...form, start: e.target.value })} /></div>
+            <div><FieldLabel>结束时间 *</FieldLabel><input type="time" className="field-input" value={form.end} onChange={e => setForm({ ...form, end: e.target.value })} /></div>
+            <div><FieldLabel>每批目标 *</FieldLabel><input type="number" className="field-input" value={form.target} onChange={e => setForm({ ...form, target: Number(e.target.value) })} /></div>
+            <div><FieldLabel>间隔(分)</FieldLabel><input type="number" className="field-input" value={form.interval} onChange={e => setForm({ ...form, interval: Number(e.target.value) })} /></div>
+            <div><FieldLabel>优先级</FieldLabel><input type="number" className="field-input" value={form.priority} onChange={e => setForm({ ...form, priority: Number(e.target.value) })} /></div>
+            <div><FieldLabel>注册并发</FieldLabel><input type="number" className="field-input" placeholder="默认" value={form.regW} onChange={e => setForm({ ...form, regW: e.target.value })} /></div>
+            <div><FieldLabel>RT 并发</FieldLabel><input type="number" className="field-input" placeholder="默认" value={form.rtW} onChange={e => setForm({ ...form, rtW: e.target.value })} /></div>
+            <div><FieldLabel>邮箱</FieldLabel>
+              <Select value={form.mail} onChange={v => setForm({ ...form, mail: v })} options={[{ label: 'kyx-cloud', value: 'false' }, { label: 'chatgpt', value: 'true' }]} />
             </div>
-            {/* Distribution */}
-            <div className="mt-3">
-              <div className="flex items-center justify-between mb-2"><label className="field-label mb-0">分发比例</label><button onClick={() => setForm({ ...form, dist: [...form.dist, { team: teams[0]?.name || '', percent: 0 }] })} className="btn btn-ghost text-xs py-0.5 px-2">+ 行</button></div>
-              <div className="space-y-2">
-                {form.dist.map((d, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <div className="flex-1">
-                      <Select value={d.team} onChange={v => { const n = [...form.dist]; n[i] = { ...n[i], team: v }; setForm({ ...form, dist: n }); }} options={teams.map(t => ({ label: t.name, value: t.name }))} />
-                    </div>
-                    <input type="number" min={1} max={100} className="field-input w-20" placeholder="%" value={d.percent} onChange={e => { const n = [...form.dist]; n[i] = { ...n[i], percent: Number(e.target.value) }; setForm({ ...form, dist: n }); }} />
-                    <button onClick={() => setForm({ ...form, dist: form.dist.filter((_, j) => j !== i) })} className="btn btn-danger text-xs py-1 px-2">&times;</button>
+            <div><FieldLabel>模式</FieldLabel>
+              <Select value={form.mode} onChange={v => setForm({ ...form, mode: v })} options={[{ label: 'Team', value: 'team' }, { label: 'Free', value: 'free' }]} />
+            </div>
+            <div><label className="switch mt-4"><input className="switch-input" type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} /><span className="switch-slider" /><span>启用</span></label></div>
+            <div><label className="switch mt-4"><input className="switch-input" type="checkbox" checked={form.pushS2a} onChange={e => setForm({ ...form, pushS2a: e.target.checked })} /><span className="switch-slider" /><span>推送S2A</span></label></div>
+          </div>
+          <div className="mt-3">
+            <div className="flex items-center justify-between mb-2"><FieldLabel className="mb-0">分发比例</FieldLabel><Button onClick={() => setForm({ ...form, dist: [...form.dist, { team: teams[0]?.name || '', percent: 0 }] })} variant="ghost" className="text-xs py-0.5 px-2">+ 行</Button></div>
+            <div className="space-y-2">
+              {form.dist.map((d, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <Select value={d.team} onChange={v => { const n = [...form.dist]; n[i] = { ...n[i], team: v }; setForm({ ...form, dist: n }); }} options={teams.map(t => ({ label: t.name, value: t.name }))} />
                   </div>
-                ))}
-              </div>
-            </div>
-            <div className="flex gap-2 mt-4">
-              <button onClick={submitForm} className="btn btn-amber">{editName ? '保存' : '创建'}</button>
-              <button onClick={() => { setShowAdd(false); setEditName(null); }} className="btn btn-ghost">取消</button>
+                  <input type="number" min={1} max={100} className="field-input w-20" placeholder="%" value={d.percent} onChange={e => { const n = [...form.dist]; n[i] = { ...n[i], percent: Number(e.target.value) }; setForm({ ...form, dist: n }); }} />
+                  <Button onClick={() => setForm({ ...form, dist: form.dist.filter((_, j) => j !== i) })} variant="danger" className="text-xs py-1 px-2">&times;</Button>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
+          <div className="flex gap-2 mt-4">
+            <Button onClick={submitForm} variant="amber">{editName ? '保存' : '创建'}</Button>
+            <Button onClick={() => { setShowAdd(false); setEditName(null); }} variant="ghost">取消</Button>
+          </div>
+        </Modal>
       )}
     </div>
   );

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useToast } from "../components/Toast";
 import { TeamManagePagination } from "../components/team-manage/TeamManagePagination";
+import { Badge, Button, Card, SectionTitle } from '../components/ui';
 import { HSelect } from "../components/ui/HSelect";
 import { fetchTeamManageOwnerAudits } from "../lib/api";
 import type { TeamManageOwnerAuditRecord } from "../lib/team-manage-types";
@@ -120,9 +121,9 @@ export default function OwnerAudit() {
   }, [loadOwnerAudits]);
 
   return (
-    <div className="card p-5">
+    <Card className="p-5">
       <div className="mb-4">
-        <div className="section-title mb-0">Owner 审计日志</div>
+        <SectionTitle className="mb-0">Owner 审计日志</SectionTitle>
       </div>
 
       <div className="team-manage-jobs">
@@ -167,20 +168,22 @@ export default function OwnerAudit() {
             placeholder="按 batch_job_id 查询"
             className="input team-manage-audit__search"
           />
-          <button
+          <Button
             type="button"
             onClick={submitOwnerAuditFilter}
-            className="btn btn-ghost py-1.5 text-xs"
+            variant="ghost"
+            className="py-1.5 text-xs"
           >
             查询
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             onClick={resetOwnerAuditFilter}
-            className="btn btn-ghost py-1.5 text-xs"
+            variant="ghost"
+            className="py-1.5 text-xs"
           >
             重置
-          </button>
+          </Button>
         </div>
         {ownerAuditsLoading ? (
           <div className="py-6 text-sm c-dim">审计加载中...</div>
@@ -196,7 +199,7 @@ export default function OwnerAudit() {
                       <span className="text-xs font-medium c-heading">{record.owner_email}</span>
                     )}
                     <span className="font-mono text-[.68rem] c-dim">{record.account_id}</span>
-                    <span className="badge badge-off">{actionToLabel(record.action)}</span>
+                    <Badge variant="off">{actionToLabel(record.action)}</Badge>
                   </div>
                   <div className="mt-1 text-[.72rem] c-dim">
                     {stateToLabel(record.from_state || "unknown")} → {stateToLabel(record.to_state)}
@@ -229,6 +232,6 @@ export default function OwnerAudit() {
           onChange={page => { setAuditPage(page); }}
         />
       </div>
-    </div>
+    </Card>
   );
 }
