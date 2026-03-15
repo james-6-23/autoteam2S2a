@@ -7,6 +7,8 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  RotateCw,
+  Save,
   Shield,
   ShieldCheck,
   Signal,
@@ -132,15 +134,23 @@ function ProxyTableHeader() {
 function ProxyRow({
   entry,
   selected,
+  hasRefreshUrl,
+  refreshing,
   onToggleSelect,
   onTest,
   onDelete,
+  onEditRefresh,
+  onRefreshIp,
 }: {
   entry: ProxyEntry;
   selected: boolean;
+  hasRefreshUrl: boolean;
+  refreshing: boolean;
   onToggleSelect: () => void;
   onTest: () => void;
   onDelete: () => void;
+  onEditRefresh: () => void;
+  onRefreshIp: () => void;
 }) {
   const parsed = useMemo(() => parseProxy(entry.url), [entry.url]);
 
@@ -256,6 +266,28 @@ function ProxyRow({
 
       {/* 操作 */}
       <div className="flex items-center justify-end gap-1">
+        {/* 住宅代理刷新标识 + 操作 */}
+        {hasRefreshUrl ? (
+          <button
+            type="button"
+            onClick={event => { event.stopPropagation(); onRefreshIp(); }}
+            disabled={refreshing}
+            className="proxy-action-btn"
+            title="刷新 IP（住宅动态代理）"
+            style={{ color: "#a78bfa" }}
+          >
+            {refreshing ? <Loader2 size={13} className="animate-spin" /> : <RotateCw size={13} />}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={event => { event.stopPropagation(); onEditRefresh(); }}
+          className="proxy-action-btn"
+          title={hasRefreshUrl ? "编辑刷新 URL" : "配置刷新 URL（住宅代理）"}
+          style={hasRefreshUrl ? { color: "#a78bfa" } : undefined}
+        >
+          <RotateCw size={11} style={{ opacity: hasRefreshUrl ? 1 : 0.4 }} />
+        </button>
         <button
           type="button"
           onClick={event => { event.stopPropagation(); onTest(); }}
@@ -318,6 +350,13 @@ export default function Proxy() {
   const [batchTesting, setBatchTesting] = useState(false);
   const [batchTestProgress, setBatchTestProgress] = useState({ done: 0, total: 0 });
 
+  // 住宅代理 IP 刷新（per-proxy 映射）
+  const [refreshUrls, setRefreshUrls] = useState<Record<string, string>>({});
+  const [editingRefreshProxy, setEditingRefreshProxy] = useState<string | null>(null);
+  const [editingRefreshUrl, setEditingRefreshUrl] = useState("");
+  const [savingRefreshUrl, setSavingRefreshUrl] = useState(false);
+  const [refreshingIp, setRefreshingIp] = useState<string | null>(null);
+
   // localStorage 持久化：保存/恢复检测结果
   const CACHE_KEY = "proxy-test-results";
 
@@ -341,8 +380,9 @@ export default function Proxy() {
   // 加载代理列表（合并 localStorage 缓存）
   const load = useCallback(async () => {
     try {
-      const data = await api.fetchConfig() as { proxy_pool?: string[]; proxy_enabled?: boolean };
+      const data = await api.fetchConfig() as { proxy_pool?: string[]; proxy_enabled?: boolean; proxy_refresh_urls?: Record<string, string> };
       setProxyEnabled(data.proxy_enabled !== false);
+      setRefreshUrls(data.proxy_refresh_urls ?? {});
       const cached = loadCache();
       setProxies(prev => {
         const prevMap = new Map(prev.map(p => [p.url, p]));
@@ -538,6 +578,42 @@ export default function Proxy() {
     }
   };
 
+  // 保存某个代理的刷新 URL
+  const handleSaveRefreshUrl = async (proxyUrl: string, refreshUrl: string) => {
+    setSavingRefreshUrl(true);
+    try {
+      await api.setProxyRefreshUrl(proxyUrl, refreshUrl.trim());
+      setRefreshUrls(prev => {
+        const next = { ...prev };
+        if (refreshUrl.trim()) {
+          next[proxyUrl] = refreshUrl.trim();
+        } else {
+          delete next[proxyUrl];
+        }
+        return next;
+      });
+      setEditingRefreshProxy(null);
+      toast(refreshUrl.trim() ? "刷新 URL 已保存，该代理每次使用后自动刷新 IP" : "刷新 URL 已清除", "success");
+    } catch (err) {
+      toast(`保存失败: ${err}`, "error");
+    } finally {
+      setSavingRefreshUrl(false);
+    }
+  };
+
+  // 手动触发某个代理的 IP 刷新
+  const handleRefreshIp = async (proxyUrl?: string) => {
+    setRefreshingIp(proxyUrl ?? "__all__");
+    try {
+      const result = await api.refreshProxyIp(proxyUrl);
+      toast(result.success ? `IP 刷新成功: ${result.message}` : `IP 刷新失败: ${result.message}`, result.success ? "success" : "error");
+    } catch (err) {
+      toast(`IP 刷新失败: ${err}`, "error");
+    } finally {
+      setRefreshingIp(null);
+    }
+  };
+
   // 全选切换
   const allSelected = proxies.length > 0 && proxies.every(p => selectedIds.has(p.url));
   const toggleSelectAll = () => {
@@ -636,6 +712,48 @@ export default function Proxy() {
         )}
       </div>
 
+      {/* 住宅代理 IP 刷新：编辑弹窗 */}
+      {editingRefreshProxy && (
+        <div className="card p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <RotateCw size={14} style={{ color: "#a78bfa" }} />
+            <span className="text-sm font-semibold c-heading">配置刷新 URL</span>
+            <span className="text-[.65rem] c-dim font-mono truncate" style={{ maxWidth: 300 }}>{editingRefreshProxy}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={editingRefreshUrl}
+              onChange={e => setEditingRefreshUrl(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") void handleSaveRefreshUrl(editingRefreshProxy, editingRefreshUrl); }}
+              placeholder="https://refreshus.rola.vip/refresh?user=xxx&country=us"
+              className="field-input flex-1 text-xs font-mono"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={() => void handleSaveRefreshUrl(editingRefreshProxy, editingRefreshUrl)}
+              disabled={savingRefreshUrl}
+              className="btn flex items-center gap-1.5 py-1.5 px-3 text-xs shrink-0"
+              style={{ background: "linear-gradient(135deg, rgba(167,139,250,0.85), rgba(59,130,246,0.85))", color: "#fff" }}
+            >
+              {savingRefreshUrl ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+              保存
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditingRefreshProxy(null)}
+              className="btn btn-ghost py-1.5 px-3 text-xs"
+            >
+              取消
+            </button>
+          </div>
+          <p className="mt-2 text-[.65rem] c-dim">
+            配置后该代理每次被使用会自动调用此 URL 刷新出口 IP；留空则清除。
+          </p>
+        </div>
+      )}
+
       {/* 批量操作栏 */}
       {selectedIds.size > 0 && (
         <div className="card px-4 py-3 flex items-center justify-between">
@@ -666,6 +784,8 @@ export default function Proxy() {
                   key={entry.url}
                   entry={entry}
                   selected={selectedIds.has(entry.url)}
+                  hasRefreshUrl={Boolean(refreshUrls[entry.url])}
+                  refreshing={refreshingIp === entry.url}
                   onToggleSelect={() => {
                     setSelectedIds(prev => {
                       const next = new Set(prev);
@@ -676,6 +796,11 @@ export default function Proxy() {
                   }}
                   onTest={() => void handleTest(entry.url)}
                   onDelete={() => void handleDelete(entry.url)}
+                  onEditRefresh={() => {
+                    setEditingRefreshProxy(entry.url);
+                    setEditingRefreshUrl(refreshUrls[entry.url] ?? "");
+                  }}
+                  onRefreshIp={() => void handleRefreshIp(entry.url)}
                 />
               ))}
             </div>

@@ -318,6 +318,7 @@ struct FullConfigResponse {
     register: RegisterResp,
     proxy_pool: Vec<String>,
     proxy_enabled: bool,
+    proxy_refresh_urls: std::collections::HashMap<String, String>,
     email_domains: Vec<String>,
     chatgpt_mail_domains: Vec<String>,
     d1_cleanup: D1CleanupResp,
@@ -542,6 +543,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
         },
         proxy_pool: cfg.proxy_pool.clone(),
         proxy_enabled: cfg.proxy_enabled.unwrap_or(true),
+        proxy_refresh_urls: cfg.proxy_refresh_urls.clone(),
         email_domains: cfg.email_domains.clone(),
         chatgpt_mail_domains: cfg.chatgpt_mail_domains.clone(),
         d1_cleanup: D1CleanupResp {
@@ -1275,6 +1277,131 @@ async fn set_proxy_enabled_handler(
     Json(MsgResponse { message: msg })
 }
 
+/// 设置/清除某个代理的 IP 刷新 URL
+async fn set_proxy_refresh_url_handler(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let proxy_url = req
+        .get("proxy_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let refresh_url = req
+        .get("refresh_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if proxy_url.is_empty() {
+        return Json(MsgResponse {
+            message: "缺少 proxy_url 参数".to_string(),
+        });
+    }
+    let mut cfg = state.config.write().await;
+    if refresh_url.is_empty() {
+        cfg.proxy_refresh_urls.remove(&proxy_url);
+    } else {
+        cfg.proxy_refresh_urls.insert(proxy_url.clone(), refresh_url);
+    }
+    auto_save(&cfg, &state.config_path);
+    let msg = if cfg.proxy_refresh_urls.contains_key(&proxy_url) {
+        format!("代理 {} 的刷新 URL 已保存", proxy_url)
+    } else {
+        format!("代理 {} 的刷新 URL 已清除", proxy_url)
+    };
+    crate::log_broadcast::broadcast_log(&format!("[代理] {msg}"));
+    Json(MsgResponse { message: msg })
+}
+
+/// 手动触发住宅代理 IP 刷新（指定代理或刷新所有已配置的）
+async fn refresh_proxy_ip_handler(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let proxy_url = req
+        .get("proxy_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let refresh_urls: Vec<(String, String)> = {
+        let cfg = state.config.read().await;
+        if proxy_url.is_empty() {
+            // 刷新所有配置了刷新 URL 的代理
+            cfg.proxy_refresh_urls.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        } else {
+            match cfg.proxy_refresh_urls.get(&proxy_url) {
+                Some(url) => vec![(proxy_url.clone(), url.clone())],
+                None => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("代理 {proxy_url} 未配置刷新 URL"),
+                        }),
+                    ));
+                }
+            }
+        }
+    };
+
+    if refresh_urls.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "没有代理配置了刷新 URL".to_string(),
+            }),
+        ));
+    }
+
+    let client = rquest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let mut results = Vec::new();
+    for (proxy, refresh_url) in &refresh_urls {
+        crate::log_broadcast::broadcast_log(&format!("[代理] 刷新 IP: {proxy} → {refresh_url}"));
+        match client.get(refresh_url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let success = status.is_success();
+                let msg = if success { body.clone() } else { format!("HTTP {}: {body}", status.as_u16()) };
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[代理] {} IP 刷新{}: {}",
+                    proxy,
+                    if success { "成功" } else { "失败" },
+                    msg
+                ));
+                results.push(serde_json::json!({ "proxy": proxy, "success": success, "message": msg }));
+            }
+            Err(e) => {
+                let msg = format!("请求失败: {e}");
+                crate::log_broadcast::broadcast_log(&format!("[代理] {proxy} IP 刷新失败: {msg}"));
+                results.push(serde_json::json!({ "proxy": proxy, "success": false, "message": msg }));
+            }
+        }
+    }
+
+    let all_ok = results.iter().all(|r| r["success"].as_bool().unwrap_or(false));
+    let summary = if results.len() == 1 {
+        results[0]["message"].as_str().unwrap_or("").to_string()
+    } else {
+        let ok_count = results.iter().filter(|r| r["success"].as_bool().unwrap_or(false)).count();
+        format!("{}/{} 刷新成功", ok_count, results.len())
+    };
+
+    Ok(Json(serde_json::json!({
+        "success": all_ok,
+        "message": summary,
+        "results": results,
+    })))
+}
+
 async fn proxy_health_check_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
@@ -1900,7 +2027,7 @@ async fn build_proxy_pool(
 ) -> anyhow::Result<Arc<ProxyPool>> {
     if !cfg.proxy_enabled.unwrap_or(true) {
         println!("[server] 代理池已禁用，使用直连模式");
-        return Ok(Arc::new(ProxyPool::new(vec![])));
+        return Ok(Arc::new(ProxyPool::with_refresh_urls(vec![], cfg.proxy_refresh_urls.clone())));
     }
     let proxy_list = resolve_proxies(proxy_file, &cfg.proxy_pool)?;
     let check_timeout = cfg.proxy_check_timeout_sec.unwrap_or(5);
@@ -1909,7 +2036,7 @@ async fn build_proxy_pool(
         "[server] 代理池初始化完成: {} 个可用代理",
         healthy_proxies.len()
     );
-    Ok(Arc::new(ProxyPool::new(healthy_proxies)))
+    Ok(Arc::new(ProxyPool::with_refresh_urls(healthy_proxies, cfg.proxy_refresh_urls.clone())))
 }
 
 // ─── Schedule / Runs request types ───────────────────────────────────────────
@@ -2890,6 +3017,8 @@ pub async fn start_server(
         )
         .route("/api/config/proxy_pool/batch", post(batch_add_proxy_handler))
         .route("/api/config/proxy_enabled", put(set_proxy_enabled_handler))
+        .route("/api/config/proxy_refresh_url", put(set_proxy_refresh_url_handler))
+        .route("/api/proxy/refresh-ip", post(refresh_proxy_ip_handler))
         .route("/api/proxy/health-check", post(proxy_health_check_handler))
         .route("/api/proxy/batch-test", post(proxy_batch_test_handler))
         .route("/api/proxy/test", post(proxy_test_handler))

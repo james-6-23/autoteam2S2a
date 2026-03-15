@@ -262,6 +262,7 @@ impl WorkflowRunner {
                         .map(|(idx, seed)| {
                             let register_service = Arc::clone(&register_service);
                             let proxy = proxy_pool.next();
+                            let proxy_pool = Arc::clone(&proxy_pool);
                             let worker_id = idx % reg_concurrency + 1;
                             let reg_tx = reg_tx.clone();
                             let task_no = base_idx + idx + 1;
@@ -307,7 +308,10 @@ impl WorkflowRunner {
                                     task_total: target,
                                     skip_payment: free_mode,
                                 };
-                                match register_service.register(input).await {
+                                let reg_result = register_service.register(input).await;
+                                // 代理已使用完毕，触发 IP 刷新
+                                proxy_pool.notify_used(proxy.as_deref());
+                                match reg_result {
                                     Ok(acc) => match reg_tx.send(acc).await {
                                         Ok(_) => {
                                             if let Some(ref p) = prog {
@@ -766,6 +770,7 @@ impl WorkflowRunner {
             let permit = semaphore.clone().acquire_owned().await.unwrap();
             let codex_service = Arc::clone(&codex_service);
             let proxy = proxy_pool.next();
+            let pp = Arc::clone(&proxy_pool);
             let retry_max = rt_retry_max;
             let cancel = cancel_flag.clone();
             let prog = progress.clone();
@@ -789,6 +794,8 @@ impl WorkflowRunner {
                             return Err(acc);
                         }
                     };
+                    // 代理已使用完毕，触发 IP 刷新
+                    pp.notify_used(proxy.as_deref());
                     match fetch_result {
                         Ok(rt) => {
                             if let Some(ref p) = prog { p.rt_ok.fetch_add(1, Ordering::Relaxed); }

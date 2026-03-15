@@ -77,6 +77,8 @@ export const saveD1Cleanup = (body: unknown) => put('/api/config/d1-cleanup', bo
 export const triggerD1Cleanup = () => post<{ message: string }>('/api/d1_cleanup/trigger');
 export const saveToFile = () => post('/api/config/save');
 export const setProxyEnabled = (enabled: boolean) => put('/api/config/proxy_enabled', { enabled });
+export const setProxyRefreshUrl = (proxy_url: string, refresh_url: string) => put<{ message: string }>('/api/config/proxy_refresh_url', { proxy_url, refresh_url });
+export const refreshProxyIp = (proxy_url?: string) => post<{ success: boolean; message: string; results?: Array<{ proxy: string; success: boolean; message: string }> }>('/api/proxy/refresh-ip', proxy_url ? { proxy_url } : {});
 export const addProxy = (proxy: string) => post<{ message: string }>('/api/config/proxy_pool', { proxy });
 export const batchAddProxy = (proxies: string[]) => post<{ added: number; skipped: number; message: string }>('/api/config/proxy_pool/batch', { proxies });
 export const deleteProxy = (proxy: string) => request<{ message: string }>('/api/config/proxy_pool', { method: 'DELETE', body: JSON.stringify({ proxy }), headers: { 'Content-Type': 'application/json' } });

@@ -500,6 +500,7 @@ pub async fn run_invite_workflow(
             for member in &existing_members {
                 if let Some(password) = pw_map.get(&member.email) {
                     let proxy = proxy_pool.next();
+                    let proxy_str = proxy.clone();
                     let proxy_label = proxy.as_deref().map(|p| mask_proxy(p)).unwrap_or_else(|| "直连".to_string());
 
                     let fake_registered = crate::models::RegisteredAccount {
@@ -512,10 +513,12 @@ pub async fn run_invite_workflow(
                     };
 
                     broadcast_log(&format!("[恢复-RT] 获取 RT: {} (代理: {})", member.email, proxy_label));
-                    match codex_service
+                    let rt_result = codex_service
                         .fetch_refresh_token(&fake_registered, proxy, 1)
-                        .await
-                    {
+                        .await;
+                    // 代理已使用，触发 IP 刷新
+                    proxy_pool.notify_used(proxy_str.as_deref());
+                    match rt_result {
                         Ok(rt) => {
                             cum_rt_ok += 1;
                             progress.rt_ok.fetch_add(1, Ordering::Relaxed);
@@ -783,10 +786,12 @@ pub async fn run_invite_workflow(
 
                         match register_service.register(input).await {
                             Ok(acc) => {
+                                proxy_pool.notify_used(proxy.as_deref());
                                 registered = Some(acc);
                                 break;
                             }
                             Err(e) => {
+                                proxy_pool.notify_used(proxy.as_deref());
                                 last_reg_err = format!("{e:#}");
                             }
                         }
@@ -848,10 +853,12 @@ pub async fn run_invite_workflow(
                             .await
                         {
                             Ok(rt) => {
+                                proxy_pool.notify_used(proxy.as_deref());
                                 rt_result = Some(rt);
                                 break;
                             }
                             Err(e) => {
+                                proxy_pool.notify_used(proxy.as_deref());
                                 last_rt_err = format!("{e:#}");
                             }
                         }

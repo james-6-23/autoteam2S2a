@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path};
+use std::{collections::HashMap, env, fs, path::Path};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,9 @@ pub struct AppConfig {
     pub group_ids: Option<Vec<i64>>,
     /// 代理健康检测超时秒数（默认 5）
     pub proxy_check_timeout_sec: Option<u64>,
+    /// 住宅代理 IP 刷新 URL 映射：代理地址 → 刷新 URL
+    #[serde(default)]
+    pub proxy_refresh_urls: HashMap<String, String>,
     #[serde(default)]
     pub schedule: Vec<ScheduleConfig>,
     #[serde(default)]
