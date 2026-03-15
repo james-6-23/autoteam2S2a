@@ -16,6 +16,7 @@ interface TaskItem { task_id: string; team: string; target: number; status: stri
 interface SchedItem { name: string; enabled: boolean; running?: boolean; cooldown?: boolean; pending?: boolean; start_time: string; end_time: string; target_count: number; batch_interval_mins: number; distribution: { team: string; percent: number }[] }
 interface RunItem { id: number; schedule_name?: string; trigger_type: string; status: string; target_count: number; started_at: string; elapsed_secs?: number; registered_ok: number; registered_failed: number; rt_ok: number; rt_failed: number; total_s2a_ok: number; total_s2a_failed: number }
 interface RunStats { total_runs: number; completed: number; failed: number; total_reg_ok: number; total_reg_failed: number; total_rt_ok: number; total_rt_failed: number; total_s2a_ok: number; total_s2a_failed: number; total_target: number; total_elapsed_secs: number; avg_secs_per_account: number }
+interface TeamStats { available: number; active: number; rate_limited: number }
 
 function fmtBj(iso: string) {
   try { const d = new Date(iso); const utc = d.getTime() + d.getTimezoneOffset() * 60000; const bj = new Date(utc + 8 * 3600000); return `${String(bj.getMonth() + 1).padStart(2, '0')}-${String(bj.getDate()).padStart(2, '0')} ${String(bj.getHours()).padStart(2, '0')}:${String(bj.getMinutes()).padStart(2, '0')}`; } catch { return iso || '-'; }
@@ -29,6 +30,27 @@ export default function Dashboard() {
   const [recentRuns, setRecentRuns] = useState<RunItem[]>([]);
   const [runStats, setRunStats] = useState<RunStats | null>(null);
   const [ownerSummary, setOwnerSummary] = useState<TeamManageDashboardSummary | null>(null);
+  const [teamStats, setTeamStats] = useState<Record<string, TeamStats>>({});
+
+  const loadTeamStats = useCallback(async (teams: ConfigData['teams']) => {
+    const results = await Promise.allSettled(
+      teams.map(async ({ name }) => ({
+        name,
+        stats: await api.get<TeamStats>(`/api/config/s2a/${encodeURIComponent(name)}/stats`),
+      }))
+    );
+
+    setTeamStats(prev => {
+      const next = { ...prev };
+      results.forEach((result, index) => {
+        const name = teams[index]?.name;
+        if (!name) return;
+        if (result.status === 'fulfilled') next[name] = result.value.stats;
+        else next[name] = { available: -1, active: -1, rate_limited: -1 };
+      });
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     const results = await Promise.allSettled([
@@ -39,21 +61,27 @@ export default function Dashboard() {
       api.get<RunStats>('/api/runs/stats'),
       api.fetchTeamManageDashboard(),
     ]);
-    if (results[0].status === 'fulfilled') setConfig(results[0].value);
+    if (results[0].status === 'fulfilled') {
+      const nextConfig = results[0].value;
+      setConfig(nextConfig);
+      if (nextConfig.teams?.length) loadTeamStats(nextConfig.teams);
+      else setTeamStats({});
+    }
     if (results[1].status === 'fulfilled') setTasks((results[1].value).tasks || []);
     if (results[2].status === 'fulfilled') setSchedules((results[2].value).schedules || []);
     if (results[3].status === 'fulfilled') setRecentRuns((results[3].value).runs || []);
     if (results[4].status === 'fulfilled') setRunStats(results[4].value);
     if (results[5].status === 'fulfilled') setOwnerSummary(results[5].value);
-  }, []);
+  }, [loadTeamStats]);
 
-  useEffect(() => { load(); const id = setInterval(load, 10000); return () => clearInterval(id); }, [load]);
+  useEffect(() => { load(); const id = setInterval(load, 300000); return () => clearInterval(id); }, [load]);
 
   const runningTasks = tasks.filter(t => t.status === 'running' || t.status === 'pending');
   const activeScheds = schedules.filter(s => s.running || s.cooldown || s.pending);
   const enabledScheds = schedules.filter(s => s.enabled);
 
   const pct = (ok: number, fail: number) => { const t = ok + fail; return t > 0 ? Math.round(ok / t * 100) : 0; };
+  const statDisplay = (value?: number) => value === undefined ? '--' : value < 0 ? '-' : value;
 
   return (
     <div className="space-y-5">
@@ -167,7 +195,38 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Row 3: Active Tasks + Schedules */}
+      {/* Row 3: Teams overview */}
+      {config && config.teams.length > 0 && (
+        <Card className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <SectionTitle className="mb-0">号池一览</SectionTitle>
+            <button onClick={() => navigate('/teams')} className="text-xs c-dim hover:text-teal-400 transition-colors">管理 →</button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {config.teams.map(t => {
+              const stats = teamStats[t.name];
+              return (
+                <div key={t.name} className="card-inner p-3 flex items-center gap-3 cursor-pointer hover:border-[var(--border-hover)]" onClick={() => navigate('/teams')}>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, rgba(45, 212, 191, 0.12), rgba(139, 92, 246, 0.12))' }}>
+                    <Globe size={16} className="text-teal-400" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold c-heading truncate">{t.name}</div>
+                    <div className="text-[.68rem] c-dim font-mono truncate">{t.api_base}</div>
+                    <div className="flex items-center gap-3 mt-2 text-[.68rem] c-dim whitespace-nowrap overflow-hidden">
+                      <span>可用 <span className="font-mono text-teal-400">{statDisplay(stats?.available)}</span></span>
+                      <span>活跃 <span className="font-mono c-heading">{statDisplay(stats?.active)}</span></span>
+                      <span>限流 <span className="font-mono text-red-400">{statDisplay(stats?.rate_limited)}</span></span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Row 4: Active Tasks + Schedules */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* 当前任务 */}
         <Card className="p-5">
@@ -246,7 +305,7 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Row 4: Recent Runs */}
+      {/* Row 5: Recent Runs */}
       <Card className="p-5">
         <div className="flex items-center justify-between mb-4">
           <SectionTitle className="mb-0">最近运行</SectionTitle>
@@ -287,33 +346,6 @@ export default function Dashboard() {
           )}
         </div>
       </Card>
-
-      {/* Row 5: Teams overview */}
-      {config && config.teams.length > 0 && (
-        <Card className="p-5">
-          <div className="flex items-center justify-between mb-4">
-            <SectionTitle className="mb-0">号池一览</SectionTitle>
-            <button onClick={() => navigate('/teams')} className="text-xs c-dim hover:text-teal-400 transition-colors">管理 →</button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {config.teams.map(t => (
-              <div key={t.name} className="card-inner p-3 flex items-center gap-3 cursor-pointer hover:border-[var(--border-hover)]" onClick={() => navigate('/teams')}>
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg, rgba(45, 212, 191, 0.12), rgba(139, 92, 246, 0.12))' }}>
-                  <Globe size={16} className="text-teal-400" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-semibold c-heading truncate">{t.name}</div>
-                  <div className="text-[.68rem] c-dim font-mono truncate">{t.api_base}</div>
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="text-[.68rem] c-dim">并发</div>
-                  <div className="text-sm font-bold c-heading">{t.concurrency}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
     </div>
   );
 }

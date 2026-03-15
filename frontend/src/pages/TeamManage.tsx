@@ -29,13 +29,13 @@ function QuotaBar({ label, window }: { label: string; window: NonNullable<CodexQ
   const pct = Math.round(window.remaining_percent);
   const color = quotaColor(pct);
   return (
-    <div className="flex items-center gap-2 text-[.65rem]">
+    <div className="flex min-w-0 items-center gap-1.5 text-[.65rem]">
       <span className="c-dim w-5 shrink-0">{label}</span>
       <div className="h-1.5 min-w-[40px] flex-1 overflow-hidden rounded-full" style={{ background: "var(--ghost)" }}>
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
       </div>
-      <span className="w-7 shrink-0 text-right font-mono" style={{ color }}>{pct}%</span>
-      <span className="c-dim w-12 shrink-0 text-right">{fmtReset(window.reset_after_seconds)}</span>
+      <span className="w-8 shrink-0 text-right font-mono" style={{ color }}>{pct}%</span>
+      <span className="c-dim w-[3.75rem] shrink-0 text-right whitespace-nowrap">{fmtReset(window.reset_after_seconds)}</span>
     </div>
   );
 }
@@ -69,7 +69,7 @@ function MemberQuotaInline({ quota, loading, onLoad }: { quota?: CodexQuota; loa
   }
   if (quota.status === "rate_limited") {
     return (
-      <div className="flex min-w-[120px] flex-col gap-0.5">
+      <div className="flex w-full min-w-0 max-w-[180px] flex-col gap-0.5">
         <span className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[.6rem] font-medium" style={{ background: "rgba(245,158,11,.12)", color: "#f59e0b" }}>
           限流中
         </span>
@@ -87,7 +87,7 @@ function MemberQuotaInline({ quota, loading, onLoad }: { quota?: CodexQuota; loa
     return <span className="text-[.6rem]" style={{ color }} title={err}>{label}</span>;
   }
   return (
-    <div className="flex min-w-[120px] flex-col gap-0.5">
+    <div className="flex w-full min-w-0 max-w-[180px] flex-col gap-0.5">
       {quota.five_hour && <QuotaBar label="5h" window={quota.five_hour} />}
       {quota.seven_day && <QuotaBar label="7d" window={quota.seven_day} />}
     </div>
@@ -1258,8 +1258,7 @@ export default function TeamManage() {
       {selected && createPortal(
         <div className="team-modal" onClick={event => { if (event.target === event.currentTarget) setSelected(null); }}>
           <div
-            className="team-modal-card p-5"
-            style={{ maxWidth: 920, width: "96vw", maxHeight: "85vh", display: "flex", flexDirection: "column" }}
+            className="team-modal-card team-manage-members-modal p-5"
             onClick={event => event.stopPropagation()}
           >
             <div className="mb-3">
@@ -1407,12 +1406,11 @@ export default function TeamManage() {
                     <>
                       {/* 成员列表表头 */}
                       <div
-                        className="flex items-center gap-3 px-4 py-2 text-[.62rem] font-semibold c-dim"
-                        style={{ borderBottom: "1px solid var(--border)", background: "rgba(255,255,255,0.015)" }}
+                        className="team-manage-members-list__header px-4 py-2 text-[.62rem] font-semibold c-dim"
                       >
-                        <div className="min-w-0 flex-1">成员信息</div>
-                        <div className="shrink-0" style={{ width: 130 }}>额度状态</div>
-                        <div className="shrink-0 text-center" style={{ width: 52 }}>操作</div>
+                        <div className="min-w-0">成员信息</div>
+                        <div className="team-manage-members-list__quota-col">额度状态</div>
+                        <div className="team-manage-members-list__action-col">操作</div>
                       </div>
                       <div>
                       {pagedMembers.map(member => {
@@ -1421,10 +1419,9 @@ export default function TeamManage() {
                         return (
                           <div
                             key={member.user_id}
-                            className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[rgba(255,255,255,0.025)]"
-                            style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}
+                            className="team-manage-members-list__row px-4 py-3 transition-colors hover:bg-[rgba(255,255,255,0.025)]"
                           >
-                            <div className="min-w-0 flex-1">
+                            <div className="team-manage-members-list__info-col min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="truncate text-sm font-medium c-heading">{member.name || member.email || "未知"}</span>
                                 <span
@@ -1440,7 +1437,7 @@ export default function TeamManage() {
                               </div>
                             </div>
 
-                            <div className="shrink-0" style={{ width: 130 }}>
+                            <div className="team-manage-members-list__quota-col">
                               <MemberQuotaInline
                                 quota={quota}
                                 loading={quotaLoading}
@@ -1448,13 +1445,13 @@ export default function TeamManage() {
                               />
                             </div>
 
-                            <div className="shrink-0 text-center" style={{ width: 52 }}>
+                            <div className="team-manage-members-list__action-col">
                               {member.role !== "owner" && member.role !== "account-owner" && (
                                 <button
                                   type="button"
                                   onClick={() => void kickMember(member.user_id)}
                                   disabled={kickLoading === member.user_id || kickAllLoading}
-                                  className="btn btn-danger px-2 py-1 text-[.65rem]"
+                                  className="btn btn-danger inline-flex min-w-[60px] items-center justify-center whitespace-nowrap px-2.5 py-1 text-[.65rem]"
                                 >
                                   {kickLoading === member.user_id ? "..." : "踢除"}
                                 </button>

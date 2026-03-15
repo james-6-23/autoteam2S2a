@@ -573,6 +573,13 @@ html.light .log-line-error { color: #dc2626; }
   animation: modal-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   position: relative;
 }
+.team-manage-members-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, calc(100vw - 48px));
+  max-width: min(1080px, calc(100vw - 48px));
+  max-height: min(88vh, calc(100vh - 48px));
+}
 .team-modal-card::after {
   content: '';
   position: absolute;
@@ -769,5 +776,10 @@ html.light .team-modal-card {
   .team-modal-card {
     border-radius: 16px;
     max-height: 90vh;
+  }
+  .team-manage-members-modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100vh - 24px);
   }
 }
