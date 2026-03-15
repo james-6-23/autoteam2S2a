@@ -1173,9 +1173,9 @@ async fn add_proxy_handler(
             &format!("代理已存在: {proxy}"),
         ));
     }
-    cfg.proxy_pool.push(proxy.clone());
+    cfg.proxy_pool.push(normalized.clone());
     auto_save(&cfg, &state.config_path);
-    let masked = crate::util::mask_proxy(&proxy);
+    let masked = crate::util::mask_proxy(&normalized);
     crate::log_broadcast::broadcast_log(&format!("[代理] 添加: {masked}"));
     Ok((
         StatusCode::CREATED,
@@ -1213,7 +1213,7 @@ async fn batch_add_proxy_handler(
         if cfg.proxy_pool.iter().any(|p| normalize_proxy(p) == normalized) {
             skipped += 1;
         } else {
-            cfg.proxy_pool.push(proxy.clone());
+            cfg.proxy_pool.push(normalized);
             added += 1;
         }
     }

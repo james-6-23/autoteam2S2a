@@ -180,13 +180,27 @@ pub fn load_from_file(path: &Path) -> Result<Vec<String>> {
     Ok(proxies)
 }
 
-/// 自动补协议前缀（参考 Go 版本）
+/// 自动补协议前缀 + 兼容 host:port:user:pass 格式
+///
+/// 支持的输入格式:
+///   - `http://user:pass@host:port`  → 原样返回
+///   - `socks5://user:pass@host:port` → 原样返回
+///   - `host:port:user:pass`          → `http://user:pass@host:port`
+///   - `host:port`                    → `http://host:port`
 pub fn normalize_proxy(proxy: &str) -> String {
     if proxy.contains("://") {
-        proxy.to_string()
-    } else {
-        format!("http://{proxy}")
+        return proxy.to_string();
     }
+    // 尝试匹配 host:port:user:pass 格式（4 段冒号分隔）
+    let parts: Vec<&str> = proxy.splitn(4, ':').collect();
+    if parts.len() == 4 {
+        let (host, port, user, pass) = (parts[0], parts[1], parts[2], parts[3]);
+        // 确认第二段是纯数字端口号
+        if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() {
+            return format!("http://{user}:{pass}@{host}:{port}");
+        }
+    }
+    format!("http://{proxy}")
 }
 
 // ============================================================
