@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Copy, Loader2, Search, ShieldAlert, Trash2, UserPlus, X, Zap } from "lucide-react";
+import { Copy, Loader2, RefreshCw, Search, ShieldAlert, Trash2, UserPlus, X, Zap } from "lucide-react";
 
 import { useToast } from "../components/Toast";
 import { HSelect } from "../components/ui/HSelect";
@@ -120,6 +120,8 @@ export default function TeamManage() {
   const [kickBannedLoading, setKickBannedLoading] = useState(false);
 
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
+  // 记录每个 owner 的待处理邀请数（邀请任务已提交但异步未完成）
+  const [pendingInviteCounts, setPendingInviteCounts] = useState<Record<string, number>>({});
   const [ownerQuotas, setOwnerQuotas] = useState<Record<string, CodexQuota>>({});
   const [ownerQuotaLoading, setOwnerQuotaLoading] = useState<Record<string, boolean>>({});
   const [memberQuotas, setMemberQuotas] = useState<Record<string, CodexQuota>>({});
@@ -338,6 +340,13 @@ export default function TeamManage() {
       const list = (data.members || []).filter(member => member.role !== "account-owner");
       setMembers(list);
       setMemberCounts(prev => ({ ...prev, [accountId]: list.length }));
+      // 清除该 owner 的待处理邀请标记（成员列表已刷新，以实际数据为准）
+      setPendingInviteCounts(prev => {
+        if (!prev[accountId]) return prev;
+        const next = { ...prev };
+        delete next[accountId];
+        return next;
+      });
       void loadOwnerQuota(accountId);
       setTimeout(() => {
         for (const member of list) {
@@ -406,6 +415,7 @@ export default function TeamManage() {
         return next;
       });
       void loadDashboard();
+      void loadOwners(ownerPage);
     } catch (error) {
       toast(`踢除失败: ${error}`, "error");
     } finally {
@@ -446,6 +456,7 @@ export default function TeamManage() {
     setMemberCounts(prev => ({ ...prev, [selected]: Math.max(0, members.length - success) }));
     toast(`踢除完成: 成功 ${success}，失败 ${failed}`, failed > 0 ? "error" : "success");
     void loadDashboard();
+    void loadOwners(ownerPage);
   };
 
   const kickBanned = async () => {
@@ -484,6 +495,7 @@ export default function TeamManage() {
     setMemberCounts(prev => ({ ...prev, [selected]: Math.max(0, members.length - success) }));
     toast(`踢除封禁成员完成: 成功 ${success}，失败 ${failed}`, failed > 0 ? "error" : "success");
     void loadDashboard();
+    void loadOwners(ownerPage);
   };
 
   const refreshMembers = async (accountId: string) => {
@@ -492,11 +504,19 @@ export default function TeamManage() {
       const list = data.members || [];
       toast("已刷新成员列表", "success");
       setMemberCounts(prev => ({ ...prev, [accountId]: list.length }));
+      // 清除 pending 标记
+      setPendingInviteCounts(prev => {
+        if (!prev[accountId]) return prev;
+        const next = { ...prev };
+        delete next[accountId];
+        return next;
+      });
       if (selected === accountId) {
         setMembers(list);
         setMemberPage(1);
       }
       void loadDashboard();
+      void loadOwners(ownerPage);
     } catch (error) {
       toast(`刷新失败: ${error}`, "error");
     }
@@ -514,7 +534,11 @@ export default function TeamManage() {
       const res = await api.inviteTeamManageOwner(selected, { s2a_team: s2aTeam, invite_count: availableSlots });
       toast(`${res.message} (任务ID: ${res.task_id})`, "success");
       setShowInviteModal(false);
+      // 标记该 owner 有待处理邀请
+      setPendingInviteCounts(prev => ({ ...prev, [selected]: availableSlots }));
+      // 同步刷新 dashboard + owner 列表
       void loadDashboard();
+      void loadOwners(ownerPage);
     } catch (error) {
       toast(`邀请失败: ${error}`, "error");
     } finally {
@@ -1043,6 +1067,8 @@ export default function TeamManage() {
     && memberQuotas[member.email]?.status === "banned",
   ).length;
   const availableSlots = Math.max(0, TEAM_MANAGE_MAX_MEMBERS - members.length);
+  const pendingCount = selected ? (pendingInviteCounts[selected] ?? 0) : 0;
+  const effectiveAvailableSlots = Math.max(0, availableSlots - pendingCount);
   const selectedOwnerQuota = selected ? ownerQuotas[selected] : undefined;
   const isSelectedOwnerBanned = Boolean(
     selected && (
@@ -1332,16 +1358,44 @@ export default function TeamManage() {
               </div>
               {!membersLoading && !isSelectedOwnerBanned && (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  {availableSlots > 0 && (
+                  {effectiveAvailableSlots > 0 && pendingCount === 0 && (
                     <button
                       type="button"
-                      onClick={() => setShowInviteModal(true)}
-                      disabled={inviteLoading}
+                      onClick={() => {
+                        // 只有 1 个号池时跳过选择弹窗，直接邀请
+                        if (s2aTeams.length === 1) {
+                          void inviteAndPush(s2aTeams[0].name);
+                        } else {
+                          // 预选第一个号池
+                          if (!selectedS2aTeam && s2aTeams.length > 0) setSelectedS2aTeam(s2aTeams[0].name);
+                          setShowInviteModal(true);
+                        }
+                      }}
+                      disabled={inviteLoading || s2aTeams.length === 0}
                       className="btn flex items-center gap-1 px-2 py-1 text-[.65rem]"
                       style={{ background: "linear-gradient(135deg, rgba(20,184,166,0.8), rgba(59,130,246,0.8))", color: "#fff" }}
                     >
                       {inviteLoading ? <Loader2 size={11} className="animate-spin" /> : <UserPlus size={11} />}
-                      邀请并入库 ({availableSlots})
+                      邀请并入库 ({effectiveAvailableSlots})
+                    </button>
+                  )}
+                  {pendingCount > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[.65rem] font-medium"
+                      style={{ background: "rgba(59,130,246,.12)", color: "#60a5fa", border: "1px solid rgba(59,130,246,.25)" }}
+                    >
+                      <Loader2 size={11} className="animate-spin" /> 邀请任务进行中 ({pendingCount} 个)
+                    </span>
+                  )}
+                  {/* 刷新成员按钮：邀请任务进行中或已有成员时显示 */}
+                  {(pendingCount > 0 || members.length > 0) && selected && (
+                    <button
+                      type="button"
+                      onClick={() => { if (selected) void refreshMembers(selected); }}
+                      className="btn btn-ghost flex items-center gap-1 px-2 py-1 text-[.65rem]"
+                      title="从 ChatGPT 重新拉取成员列表"
+                    >
+                      <RefreshCw size={11} /> 刷新成员
                     </button>
                   )}
                   {members.length > 0 && (
@@ -1387,7 +1441,7 @@ export default function TeamManage() {
                     <>
                       <span className="c-dim">共 <span className="font-mono c-heading">{members.length}</span> 个成员</span>
                       <span className="c-dim">可踢除 <span className="font-mono text-red-400">{kickableCount}</span></span>
-                      <span className="c-dim">可邀请 <span className="font-mono" style={{ color: availableSlots > 0 ? "#2dd4bf" : "#f87171" }}>{availableSlots}</span></span>
+                      <span className="c-dim">可邀请 <span className="font-mono" style={{ color: effectiveAvailableSlots > 0 ? "#2dd4bf" : "#f87171" }}>{effectiveAvailableSlots}</span>{pendingCount > 0 && <span className="ml-1 font-mono" style={{ color: "#60a5fa" }}>(+{pendingCount} 待处理)</span>}</span>
                     </>
                   )}
                   <span className="h-3 w-px" style={{ background: "var(--border)" }} />
@@ -1504,15 +1558,14 @@ export default function TeamManage() {
                   onChange={page => setMemberPage(page)}
                 />
 
-                {showInviteModal && (
+                {showInviteModal && createPortal(
                   <div
-                    className="absolute inset-0 flex items-center justify-center rounded-2xl"
-                    style={{ background: "rgba(0,0,0,.6)", zIndex: 50 }}
+                    className="team-modal"
                     onClick={() => !inviteLoading && setShowInviteModal(false)}
                   >
                     <div
-                      className="rounded-xl p-4"
-                      style={{ background: "var(--card)", border: "1px solid var(--border)", minWidth: 320, maxWidth: 420 }}
+                      className="team-modal-card p-5"
+                      style={{ maxWidth: 420, width: "92vw" }}
                       onClick={event => event.stopPropagation()}
                     >
                       <div className="mb-3 flex items-center justify-between">
@@ -1521,7 +1574,7 @@ export default function TeamManage() {
                           <X size={14} />
                         </button>
                       </div>
-                      <p className="mb-3 text-xs c-dim">将为该 Owner 邀请 <span className="font-mono text-teal-400">{availableSlots}</span> 个成员并入库到选定号池</p>
+                      <p className="mb-3 text-xs c-dim">将为该 Owner 邀请 <span className="font-mono text-teal-400">{effectiveAvailableSlots}</span> 个成员并入库到选定号池</p>
                       <div className="mb-3 max-h-48 space-y-1.5 overflow-y-auto">
                         {s2aTeams.length === 0 ? (
                           <div className="py-4 text-center text-xs c-dim">暂无号池配置</div>
@@ -1550,12 +1603,12 @@ export default function TeamManage() {
                         {inviteLoading ? (
                           <span className="flex items-center justify-center gap-1.5"><Loader2 size={14} className="animate-spin" /> 邀请中...</span>
                         ) : (
-                          `确认邀请 ${availableSlots} 个到 ${selectedS2aTeam || "..."}`
+                          `确认邀请 ${effectiveAvailableSlots} 个到 ${selectedS2aTeam || "..."}`
                         )}
                       </button>
                     </div>
                   </div>
-                )}
+                , document.body)}
               </>
             )}
           </div>
