@@ -667,6 +667,14 @@ struct IpApiResponse {
 }
 
 #[derive(serde::Deserialize)]
+struct IpInfoResponse {
+    ip: Option<String>,
+    city: Option<String>,
+    region: Option<String>,
+    country: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct HttpBinIpResponse {
     origin: Option<String>,
 }
@@ -759,9 +767,35 @@ const QUALITY_TARGETS: &[QualityTarget] = &[
     },
 ];
 
-/// 探测代理出口信息（ip-api.com 优先，httpbin.org 降级）
+/// 探测代理出口信息（ipinfo.io 优先 → ip-api.com 降级 → httpbin.org 兜底）
 async fn probe_proxy_exit_info(client: &rquest::Client) -> Result<(ProxyExitInfo, i64), String> {
-    // 尝试 ip-api.com
+    // 1. ipinfo.io（HTTPS，住宅代理更准确）
+    let start = std::time::Instant::now();
+    match client.get("https://ipinfo.io/json").send().await {
+        Ok(resp) if resp.status().as_u16() == 200 => {
+            let latency_ms = start.elapsed().as_millis() as i64;
+            if let Ok(info) = resp.json::<IpInfoResponse>().await {
+                if let Some(ip) = info.ip {
+                    if !ip.is_empty() {
+                        return Ok((
+                            ProxyExitInfo {
+                                ip,
+                                city: info.city.unwrap_or_default(),
+                                region: info.region.unwrap_or_default(),
+                                // ipinfo.io 的 country 字段是国家代码（如 "US"）
+                                country: info.country.clone().unwrap_or_default(),
+                                country_code: info.country.unwrap_or_default(),
+                            },
+                            latency_ms,
+                        ));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // 2. ip-api.com（HTTP，部分代理可能不准）
     let start = std::time::Instant::now();
     match client.get("http://ip-api.com/json/?lang=zh-CN").send().await {
         Ok(resp) if resp.status().as_u16() == 200 => {
@@ -785,7 +819,7 @@ async fn probe_proxy_exit_info(client: &rquest::Client) -> Result<(ProxyExitInfo
         _ => {}
     }
 
-    // 降级到 httpbin.org
+    // 3. httpbin.org 兜底（仅 IP，无地理信息）
     let start = std::time::Instant::now();
     match client.get("https://httpbin.org/ip").send().await {
         Ok(resp) if resp.status().as_u16() == 200 => {
