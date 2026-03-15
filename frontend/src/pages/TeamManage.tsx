@@ -711,21 +711,67 @@ export default function TeamManage() {
     setBatchCleanupLoading(true);
     setBatchCleanupProgress({ done: 0, total: toKick.length });
 
-    try {
-      const res = await api.batchKickMembers({ items: toKick });
-      setBatchCleanupProgress({ done: res.total, total: res.total });
-      toast(
-        `清理完成: 成功 ${res.success}，失败 ${res.failed}${res.skipped_owners > 0 ? `，跳过 ${res.skipped_owners} 个 owner(无token)` : ""}`,
-        res.failed > 0 ? "error" : "success",
-      );
-    } catch (e) {
-      toast(`批量清理请求失败: ${e}`, "error");
+    // 分块发送，每批 100 个，实时更新进度和数据
+    const CHUNK_SIZE = 100;
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    let totalDone = 0;
+
+    for (let i = 0; i < toKick.length; i += CHUNK_SIZE) {
+      const chunk = toKick.slice(i, i + CHUNK_SIZE);
+      try {
+        const res = await api.batchKickMembers({ items: chunk });
+        totalSuccess += res.success;
+        totalFailed += res.failed;
+
+        // 从 healthMap 中移除本批已踢除的成员
+        const kickedSet = new Set(chunk.map(it => `${it.account_id}:${it.user_id}`));
+        setHealthMap(prev => {
+          const next = { ...prev };
+          for (const key of Object.keys(next)) {
+            const health = next[key];
+            const before = health.members.length;
+            const filtered = health.members.filter(
+              m => !m.user_id || !kickedSet.has(`${health.account_id}:${m.user_id}`),
+            );
+            if (filtered.length !== before) {
+              next[key] = { ...health, members: filtered };
+            }
+          }
+          return next;
+        });
+
+        // 同步更新 memberCounts
+        const countDelta: Record<string, number> = {};
+        for (const item of chunk) {
+          countDelta[item.account_id] = (countDelta[item.account_id] ?? 0) + 1;
+        }
+        setMemberCounts(prev => {
+          const next = { ...prev };
+          for (const [aid, delta] of Object.entries(countDelta)) {
+            if (next[aid] !== undefined) {
+              next[aid] = Math.max(0, next[aid] - delta);
+            }
+          }
+          return next;
+        });
+      } catch (e) {
+        totalFailed += chunk.length;
+        toast(`第 ${Math.floor(i / CHUNK_SIZE) + 1} 批请求失败: ${e}`, "error");
+      }
+
+      totalDone += chunk.length;
+      setBatchCleanupProgress({ done: totalDone, total: toKick.length });
     }
 
     setBatchCleanupLoading(false);
     setShowBatchCleanupModal(false);
+    toast(
+      `清理完成: 成功 ${totalSuccess}，失败 ${totalFailed}`,
+      totalFailed > 0 ? "error" : "success",
+    );
 
-    // 刷新 dashboard 和成员数据
+    // 刷新 dashboard
     void loadDashboard();
     void loadOwners();
   };
