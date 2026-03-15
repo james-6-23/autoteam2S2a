@@ -254,6 +254,13 @@ export const batchDisableTeamManageOwners = (body: TeamManageBatchOwnerStateRequ
   post<TeamManageBatchOwnerStateResponse>('/api/team-manage/owners/batch-disable', body);
 export const batchRestoreTeamManageOwners = (body: TeamManageBatchOwnerStateRequest) =>
   post<TeamManageBatchOwnerStateResponse>('/api/team-manage/owners/batch-restore', body);
+export const getTeamManageProxySettings = () =>
+  get<{ kick_use_proxy: boolean; check_use_proxy: boolean }>('/api/team-manage/proxy-settings');
+export const setTeamManageProxySettings = (body: { kick_use_proxy?: boolean; check_use_proxy?: boolean }) =>
+  request<{ kick_use_proxy: boolean; check_use_proxy: boolean }>('/api/team-manage/proxy-settings', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
 export const batchArchiveTeamManageOwners = (body: TeamManageBatchOwnerStateRequest) =>
   post<TeamManageBatchOwnerStateResponse>('/api/team-manage/owners/batch-archive', body);
 export const fetchTeamManageBatchJobs = () =>

@@ -43,6 +43,10 @@ pub struct AppConfig {
     pub invite: InviteConfig,
     #[serde(default)]
     pub redis: RedisConfig,
+    /// 踢除成员时是否使用代理池（默认 false）
+    pub team_manage_kick_use_proxy: Option<bool>,
+    /// 健康检查时是否使用代理池（默认 false）
+    pub team_manage_check_use_proxy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

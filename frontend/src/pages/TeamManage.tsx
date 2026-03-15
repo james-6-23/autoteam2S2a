@@ -154,7 +154,11 @@ export default function TeamManage() {
     cleanBanned: true,
     cleanPoolNotFound: false,
     cleanWeeklyZero: false,
+    cleanError: false,
   });
+
+  const [kickUseProxy, setKickUseProxy] = useState(false);
+  const [checkUseProxy, setCheckUseProxy] = useState(false);
 
   const [batchCheckLoading, setBatchCheckLoading] = useState(false);
   const [batchCheckProgress, setBatchCheckProgress] = useState({ done: 0, total: 0 });
@@ -300,6 +304,17 @@ export default function TeamManage() {
       } catch {
         setS2aTeams([]);
       }
+    })();
+  }, []);
+
+  // 加载代理设置
+  useEffect(() => {
+    void (async () => {
+      try {
+        const data = await api.getTeamManageProxySettings();
+        setKickUseProxy(data.kick_use_proxy);
+        setCheckUseProxy(data.check_use_proxy);
+      } catch { /* ignore */ }
     })();
   }, []);
 
@@ -680,6 +695,7 @@ export default function TeamManage() {
         if (cleanupOptions.cleanBanned && m.status === "banned") count++;
         else if (cleanupOptions.cleanPoolNotFound && m.status === "pool_not_found") count++;
         else if (cleanupOptions.cleanWeeklyZero && m.seven_day_pct === 0) count++;
+        else if (cleanupOptions.cleanError && (m.status === "error" || m.status === "unknown")) count++;
       }
     }
     return count;
@@ -694,7 +710,8 @@ export default function TeamManage() {
         const match =
           (cleanupOptions.cleanBanned && m.status === "banned") ||
           (cleanupOptions.cleanPoolNotFound && m.status === "pool_not_found") ||
-          (cleanupOptions.cleanWeeklyZero && m.seven_day_pct === 0);
+          (cleanupOptions.cleanWeeklyZero && m.seven_day_pct === 0) ||
+          (cleanupOptions.cleanError && (m.status === "error" || m.status === "unknown"));
         if (match) {
           toKick.push({ account_id: health.account_id, user_id: m.user_id, email: m.email });
         }
@@ -1091,6 +1108,21 @@ export default function TeamManage() {
               <button type="button" onClick={() => void loadOwners(1)} disabled={loading} className="btn btn-ghost py-1.5 text-xs">
                 {loading ? "加载中..." : "刷新"}
               </button>
+              <span className="h-5 w-px shrink-0" style={{ background: "var(--border)" }} />
+              <div className="flex items-center gap-1 text-[.62rem] c-dim">
+                <span>检查代理</span>
+                <HSwitch checked={checkUseProxy} onChange={v => {
+                  setCheckUseProxy(v);
+                  void api.setTeamManageProxySettings({ check_use_proxy: v });
+                }} />
+              </div>
+              <div className="flex items-center gap-1 text-[.62rem] c-dim">
+                <span>踢除代理</span>
+                <HSwitch checked={kickUseProxy} onChange={v => {
+                  setKickUseProxy(v);
+                  void api.setTeamManageProxySettings({ kick_use_proxy: v });
+                }} />
+              </div>
             </div>
           </div>
           <div className="team-manage-filterbar">
@@ -1773,6 +1805,13 @@ export default function TeamManage() {
                   <div className="text-[.65rem] c-dim">踢除 7d=0% 的成员</div>
                 </div>
                 <HSwitch checked={cleanupOptions.cleanWeeklyZero} onChange={v => setCleanupOptions(prev => ({ ...prev, cleanWeeklyZero: v }))} />
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-medium">清理错误状态</div>
+                  <div className="text-[.65rem] c-dim">踢除检查异常或未知状态的成员</div>
+                </div>
+                <HSwitch checked={cleanupOptions.cleanError} onChange={v => setCleanupOptions(prev => ({ ...prev, cleanError: v }))} />
               </div>
             </div>
 

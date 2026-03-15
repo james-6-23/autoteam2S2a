@@ -3130,6 +3130,10 @@ pub async fn start_server(
         )
         .route("/api/team-manage/health", get(team_manage_health_handler))
         .route(
+            "/api/team-manage/proxy-settings",
+            get(team_manage_get_proxy_settings).put(team_manage_set_proxy_settings),
+        )
+        .route(
             "/api/team-manage/batch-check",
             post(team_manage_batch_check_handler),
         )
@@ -4155,7 +4159,14 @@ async fn fetch_chatgpt_members(
     account_id: &str,
     access_token: &str,
 ) -> Result<Vec<TeamManageMember>, String> {
-    let client = shared_http_client_15s();
+    fetch_chatgpt_members_with_client(account_id, access_token, shared_http_client_15s()).await
+}
+
+async fn fetch_chatgpt_members_with_client(
+    account_id: &str,
+    access_token: &str,
+    client: &rquest::Client,
+) -> Result<Vec<TeamManageMember>, String> {
 
     let url = format!(
         "https://chatgpt.com/backend-api/accounts/{}/users?offset=0&limit=100&query=",
@@ -4392,7 +4403,7 @@ async fn team_manage_kick_member_handler(
     // 读取代理配置
     let proxy_url = {
         let cfg = state.config.read().await;
-        if cfg.proxy_enabled.unwrap_or(true) && !cfg.proxy_pool.is_empty() {
+        if cfg.team_manage_kick_use_proxy.unwrap_or(false) && !cfg.proxy_pool.is_empty() {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static IDX: AtomicUsize = AtomicUsize::new(0);
             let i = IDX.fetch_add(1, Ordering::Relaxed);
@@ -4523,9 +4534,9 @@ async fn team_manage_batch_kick_handler(
     // 预建代理客户端池（轮询复用）
     let proxy_clients: Vec<rquest::Client> = {
         let cfg = state.config.read().await;
-        let proxy_enabled = cfg.proxy_enabled.unwrap_or(true);
+        let kick_proxy = cfg.team_manage_kick_use_proxy.unwrap_or(false);
         let pool = &cfg.proxy_pool;
-        if proxy_enabled && !pool.is_empty() {
+        if kick_proxy && !pool.is_empty() {
             crate::log_broadcast::broadcast_log(&format!(
                 "[批量清理] 使用 {} 个代理",
                 pool.len()
@@ -4962,7 +4973,10 @@ const CODEX_MODELS: &[&str] = &[
 ];
 
 async fn fetch_codex_quota(access_token: &str) -> CodexQuota {
-    let client = shared_http_client_10s();
+    fetch_codex_quota_with_client(access_token, shared_http_client_10s()).await
+}
+
+async fn fetch_codex_quota_with_client(access_token: &str, client: &rquest::Client) -> CodexQuota {
 
     let device_id = uuid::Uuid::new_v4().to_string();
 
@@ -6457,6 +6471,36 @@ async fn team_manage_retry_failed_batch_items_handler(
     }))
 }
 
+// ─── Team Manage 代理设置 ────────────────────────────────────────────────────
+
+async fn team_manage_get_proxy_settings(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let cfg = state.config.read().await;
+    Json(serde_json::json!({
+        "kick_use_proxy": cfg.team_manage_kick_use_proxy.unwrap_or(false),
+        "check_use_proxy": cfg.team_manage_check_use_proxy.unwrap_or(false),
+    }))
+}
+
+async fn team_manage_set_proxy_settings(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let mut cfg = state.config.write().await;
+    if let Some(v) = body.get("kick_use_proxy").and_then(|v| v.as_bool()) {
+        cfg.team_manage_kick_use_proxy = Some(v);
+    }
+    if let Some(v) = body.get("check_use_proxy").and_then(|v| v.as_bool()) {
+        cfg.team_manage_check_use_proxy = Some(v);
+    }
+    auto_save(&cfg, &state.config_path);
+    Json(serde_json::json!({
+        "kick_use_proxy": cfg.team_manage_kick_use_proxy.unwrap_or(false),
+        "check_use_proxy": cfg.team_manage_check_use_proxy.unwrap_or(false),
+    }))
+}
+
 // ─── Health cache: 读取持久化的检查结果 ─────────────────────────────────────
 
 async fn team_manage_health_handler(
@@ -6953,8 +6997,35 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
         .ok()
         .flatten()?;
 
+    // 构建代理客户端（如果启用了检查代理）
+    let check_client: Option<rquest::Client> = {
+        let cfg = state.config.read().await;
+        if cfg.team_manage_check_use_proxy.unwrap_or(false) && !cfg.proxy_pool.is_empty() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static CHECK_IDX: AtomicUsize = AtomicUsize::new(0);
+            let i = CHECK_IDX.fetch_add(1, Ordering::Relaxed);
+            let pu = &cfg.proxy_pool[i % cfg.proxy_pool.len()];
+            rquest::Proxy::all(pu)
+                .ok()
+                .and_then(|proxy| {
+                    rquest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(15))
+                        .connect_timeout(std::time::Duration::from_secs(10))
+                        .proxy(proxy)
+                        .build()
+                        .ok()
+                })
+        } else {
+            None
+        }
+    };
+
     // 1. 查 owner 额度
-    let owner_quota = fetch_codex_quota(&access_token).await;
+    let owner_quota = if let Some(ref c) = check_client {
+        fetch_codex_quota_with_client(&access_token, c).await
+    } else {
+        fetch_codex_quota(&access_token).await
+    };
     let owner_status = owner_quota.status.clone();
     crate::log_broadcast::broadcast_log(&format!(
         "[健康检查] {} owner_status={}",
@@ -6962,9 +7033,12 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
     ));
 
     // 2. 拉成员列表
-    let members_raw = fetch_chatgpt_members(account_id, &access_token)
-        .await
-        .unwrap_or_default();
+    let members_raw = if let Some(ref c) = check_client {
+        fetch_chatgpt_members_with_client(account_id, &access_token, c).await
+    } else {
+        fetch_chatgpt_members(account_id, &access_token).await
+    }
+    .unwrap_or_default();
     let members_filtered: Vec<_> = members_raw
         .into_iter()
         .filter(|m| m.role != "account-owner")
