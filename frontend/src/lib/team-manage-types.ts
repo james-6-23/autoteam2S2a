@@ -275,7 +275,7 @@ export interface InviteTaskDetail {
 }
 
 export const TEAM_MANAGE_PAGE_SIZE = 10;
-export const TEAM_MANAGE_MAX_MEMBERS = 4;
+export const TEAM_MANAGE_MAX_MEMBERS = 6;
 
 export function quotaColor(remaining: number) {
   if (remaining >= 60) return "#2dd4bf";

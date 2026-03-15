@@ -322,6 +322,127 @@ async fn fetch_team_members(
     Ok(members)
 }
 
+// ─── 查询 Pending Invites ────────────────────────────────────────────────────
+
+/// pending invite 中的单条记录（仅提取 email）
+#[derive(Debug, Clone)]
+struct PendingInvite {
+    pub email: String,
+}
+
+/// 查询 team 当前的 pending invites（已发送但未接受的邀请）
+async fn fetch_pending_invites(
+    owner: &TeamOwner,
+    invite_cfg: &InviteRuntimeConfig,
+) -> Result<Vec<PendingInvite>> {
+    let client = rquest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let url = format!(
+        "https://chatgpt.com/backend-api/accounts/{}/invites",
+        owner.account_id
+    );
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", owner.access_token))
+        .header("User-Agent", &invite_cfg.user_agent)
+        .header("Origin", "https://chatgpt.com")
+        .header("Referer", "https://chatgpt.com/")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        bail!("HTTP {}", resp.status().as_u16());
+    }
+
+    let body: serde_json::Value = resp.json().await?;
+    let invites = body["account_invites"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("pending invites 响应格式异常"))?;
+
+    let mut pending = Vec::new();
+    for item in invites {
+        let email = item["email_address"]
+            .as_str()
+            .or_else(|| item["email"].as_str())
+            .unwrap_or("")
+            .to_string();
+        if !email.is_empty() {
+            pending.push(PendingInvite { email });
+        }
+    }
+    Ok(pending)
+}
+
+// ─── 清理 Pending Invites ────────────────────────────────────────────────────
+
+/// 逐个删除 pending invites，释放席位
+async fn delete_pending_invites(
+    owner: &TeamOwner,
+    pending: &[PendingInvite],
+    invite_cfg: &InviteRuntimeConfig,
+) {
+    let client = rquest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let url = format!(
+        "https://chatgpt.com/backend-api/accounts/{}/invites",
+        owner.account_id
+    );
+
+    for invite in pending {
+        #[derive(serde::Serialize)]
+        struct DeletePayload {
+            email_address: String,
+        }
+
+        let payload = DeletePayload {
+            email_address: invite.email.clone(),
+        };
+
+        match client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", owner.access_token))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", &invite_cfg.user_agent)
+            .header("Origin", "https://chatgpt.com")
+            .header("Referer", "https://chatgpt.com/")
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                broadcast_log(&format!("[清理] 已删除 pending invite: {}", invite.email));
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                broadcast_log(&format!(
+                    "[清理] 删除 pending invite {} 失败: HTTP {} - {}",
+                    invite.email,
+                    status.as_u16(),
+                    if body.len() > 200 { &body[..200] } else { &body }
+                ));
+            }
+            Err(e) => {
+                broadcast_log(&format!(
+                    "[清理] 删除 pending invite {} 请求失败: {e}",
+                    invite.email
+                ));
+            }
+        }
+        // 删除间短暂等待
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
 // ─── 注销 Owner 账号 ────────────────────────────────────────────────────────
 
 /// 调用 ChatGPT deactivate API 注销母号（暂停使用，保留备用）
@@ -469,7 +590,26 @@ pub async fn run_invite_workflow(
             }
         };
 
-        let max_seats = seat_cap; // 可邀请席位 = team 最大成员数
+        // ─── 查询并清理 pending invites，释放被占用的席位 ──────────────────
+        match fetch_pending_invites(&owner, &invite_cfg).await {
+            Ok(pending) if !pending.is_empty() => {
+                broadcast_log(&format!(
+                    "[清理] 发现 {} 个 pending invites，开始清理释放席位",
+                    pending.len()
+                ));
+                delete_pending_invites(&owner, &pending, &invite_cfg).await;
+                broadcast_log(&format!("[清理] pending invites 清理完成"));
+            }
+            Ok(_) => {
+                broadcast_log("[检查] 无 pending invites");
+            }
+            Err(e) => {
+                broadcast_log(&format!("[检查] 查询 pending invites 失败: {e:#}, 继续正常流程"));
+            }
+        }
+
+        // 重新计算可用席位（仅计 existing members，pending 已清理）
+        let max_seats = seat_cap;
         let available_seats = max_seats.saturating_sub(existing_members.len());
 
         // ─── 满员恢复路径：跳过邀请+注册，直接 RT → S2A ─────────────────
@@ -756,6 +896,7 @@ pub async fn run_invite_workflow(
                 let progress = progress.clone();
                 let db = db.clone();
                 let seed = round_seeds[seed_idx].clone();
+                let owner_account_id = owner.account_id.clone();
 
                 async move {
                     let proxy = proxy_pool.next();
@@ -887,7 +1028,7 @@ pub async fn run_invite_workflow(
                                     account: acc.account,
                                     password: acc.password,
                                     token: acc.token,
-                                    account_id: acc.account_id,
+                                    account_id: owner_account_id.clone(), // 使用 owner 的 team account_id
                                     plan_type: acc.plan_type,
                                     refresh_token: rt,
                                 },

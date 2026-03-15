@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, Search, ShieldAlert, Trash2, UserPlus, X, Zap } from "lucide-react";
+import { Copy, Loader2, Search, ShieldAlert, Trash2, UserPlus, X, Zap } from "lucide-react";
 
 import { useToast } from "../components/Toast";
 import { HSelect } from "../components/ui/HSelect";
@@ -1136,9 +1136,35 @@ export default function TeamManage() {
                   </div>
                   <div className="mt-0.5 text-xs font-mono c-dim">{selected}</div>
                 </div>
-                <button type="button" onClick={() => setSelected(null)} className="btn btn-ghost shrink-0 p-1" title="关闭">
-                  <X size={14} />
-                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  {selectedOwner?.access_token && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const curl = [
+                          `curl --location --request POST 'https://chatgpt.com/backend-api/accounts/${selected}/invites'`,
+                          `--header 'authorization: Bearer ${selectedOwner.access_token}'`,
+                          `--header 'Content-Type: application/json'`,
+                          `--data-raw '{`,
+                          `    "email_addresses": [],`,
+                          `    "role": "standard-user",`,
+                          `    "resend_emails": true`,
+                          `}'`,
+                        ].join(" \\\n");
+                        navigator.clipboard.writeText(curl).then(() => {
+                          toast.success("已复制邀请 cURL 命令");
+                        });
+                      }}
+                      className="btn btn-ghost flex items-center gap-1 px-2 py-1 text-[.65rem]"
+                      title="复制邀请 cURL 命令"
+                    >
+                      <Copy size={12} /> cURL
+                    </button>
+                  )}
+                  <button type="button" onClick={() => setSelected(null)} className="btn btn-ghost shrink-0 p-1" title="关闭">
+                    <X size={14} />
+                  </button>
+                </div>
               </div>
               {!membersLoading && !isSelectedOwnerBanned && (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">

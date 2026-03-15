@@ -603,7 +603,7 @@ impl AppConfig {
                 .oai_client_version
                 .clone()
                 .unwrap_or_else(|| "2025-03-01".to_string()),
-            default_invite_count: self.invite.default_invite_count.unwrap_or(4).clamp(1, 25),
+            default_invite_count: self.invite.default_invite_count.unwrap_or(6).clamp(1, 25),
             request_timeout_sec: self.invite.request_timeout_sec.unwrap_or(15).max(5),
             user_agent: self
                 .register
