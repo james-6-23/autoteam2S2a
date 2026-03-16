@@ -94,6 +94,7 @@ export const batchTestProxy = (proxy_urls: string[], concurrency?: number) => po
     region?: string;
     country?: string;
     country_code?: string;
+    isp?: string;
   }>;
 }>('/api/proxy/batch-test', { proxy_urls, concurrency: concurrency ?? 5 });
 
@@ -106,6 +107,7 @@ export const testProxy = (proxy_url: string) => post<{
   region?: string;
   country?: string;
   country_code?: string;
+  isp?: string;
 }>('/api/proxy/test', { proxy_url });
 
 export const checkProxyQuality = (proxy_url: string) => post<{

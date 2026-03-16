@@ -1492,6 +1492,7 @@ async fn proxy_batch_test_handler(
                 "region": result.region,
                 "country": result.country,
                 "country_code": result.country_code,
+                "isp": result.isp,
             }));
         }
     }

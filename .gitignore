@@ -14,3 +14,5 @@ gpt-free-tool-rs-v1.0.0-stable
 d1_cleanup.py
 proxy_failures.json
 .claude/settings.local.json
+.ob1/settings.json
+proxy-testing-analysis.md

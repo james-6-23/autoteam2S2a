@@ -664,6 +664,8 @@ struct IpApiResponse {
     country: Option<String>,
     #[serde(rename = "countryCode")]
     country_code: Option<String>,
+    isp: Option<String>,
+    org: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -672,6 +674,7 @@ struct IpInfoResponse {
     city: Option<String>,
     region: Option<String>,
     country: Option<String>,
+    org: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -686,6 +689,7 @@ pub struct ProxyExitInfo {
     pub region: String,
     pub country: String,
     pub country_code: String,
+    pub isp: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -704,6 +708,8 @@ pub struct ProxyTestResult {
     pub country: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub country_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isp: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -785,6 +791,7 @@ async fn probe_proxy_exit_info(client: &rquest::Client) -> Result<(ProxyExitInfo
                                 // ipinfo.io 的 country 字段是国家代码（如 "US"）
                                 country: info.country.clone().unwrap_or_default(),
                                 country_code: info.country.unwrap_or_default(),
+                                isp: info.org.unwrap_or_default(),
                             },
                             latency_ms,
                         ));
@@ -803,6 +810,7 @@ async fn probe_proxy_exit_info(client: &rquest::Client) -> Result<(ProxyExitInfo
             if let Ok(info) = resp.json::<IpApiResponse>().await {
                 if info.status.to_lowercase() == "success" {
                     let region = info.region_name.or(info.region).unwrap_or_default();
+                    let isp = info.isp.or(info.org).unwrap_or_default();
                     return Ok((
                         ProxyExitInfo {
                             ip: info.query.unwrap_or_default(),
@@ -810,6 +818,7 @@ async fn probe_proxy_exit_info(client: &rquest::Client) -> Result<(ProxyExitInfo
                             region,
                             country: info.country.unwrap_or_default(),
                             country_code: info.country_code.unwrap_or_default(),
+                            isp,
                         },
                         latency_ms,
                     ));
@@ -873,6 +882,7 @@ pub async fn test_single_proxy(proxy_url: &str, timeout_sec: u64) -> ProxyTestRe
             region: if info.region.is_empty() { None } else { Some(info.region) },
             country: if info.country.is_empty() { None } else { Some(info.country) },
             country_code: if info.country_code.is_empty() { None } else { Some(info.country_code) },
+            isp: if info.isp.is_empty() { None } else { Some(info.isp) },
         },
         Err(e) => ProxyTestResult {
             success: false,
@@ -883,6 +893,7 @@ pub async fn test_single_proxy(proxy_url: &str, timeout_sec: u64) -> ProxyTestRe
             region: None,
             country: None,
             country_code: None,
+            isp: None,
         },
     }
 }

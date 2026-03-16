@@ -4,7 +4,8 @@
       "mcp__auggie-mcp__codebase-retrieval",
       "mcp__acemcp__search_context",
       "WebFetch(domain:www.chatgpt.org.uk)",
-      "WebSearch"
+      "WebSearch",
+      "mcp__plugin_context7_context7__resolve-library-id"
     ]
   }
 }

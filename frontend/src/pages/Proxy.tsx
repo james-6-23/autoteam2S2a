@@ -37,6 +37,7 @@ interface ProxyEntry {
     region?: string;
     country?: string;
     country_code?: string;
+    isp?: string;
   };
   /** 质量评分 */
   quality?: {
@@ -222,12 +223,19 @@ function ProxyRow({
       </div>
 
       {/* 地理位置 */}
-      <div className="text-[.72rem] c-dim truncate" title={location}>
+      <div className="text-[.72rem] c-dim" title={[entry.test?.ip_address, entry.test?.isp].filter(Boolean).join(' · ') || location}>
         {entry.test?.country_code ? (
-          <span className="flex items-center gap-1">
-            <span>{entry.test.country_code}</span>
-            <span className="c-dim2">{entry.test.city || entry.test.region || ""}</span>
-          </span>
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <span className="flex items-center gap-1">
+              <span className="font-medium" style={{ color: 'var(--text-base)' }}>{entry.test.country_code}</span>
+              <span className="truncate">{entry.test.city || entry.test.region || ""}</span>
+            </span>
+            {entry.test.ip_address && (
+              <span className="font-mono text-[.6rem] truncate" style={{ color: 'var(--text-dim)', opacity: 0.7 }}>
+                {entry.test.ip_address}
+              </span>
+            )}
+          </div>
         ) : entry.quality?.country ? (
           <span>{entry.quality.country}</span>
         ) : (
@@ -578,6 +586,7 @@ export default function Proxy() {
             region: r.region,
             country: r.country,
             country_code: r.country_code,
+            isp: r.isp,
           },
           health: { ok: r.success, reason: r.message },
         };
