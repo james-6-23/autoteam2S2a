@@ -868,6 +868,7 @@ pub async fn test_single_proxy(proxy_url: &str, timeout_sec: u64) -> ProxyTestRe
                 region: None,
                 country: None,
                 country_code: None,
+                isp: None,
             };
         }
     };
