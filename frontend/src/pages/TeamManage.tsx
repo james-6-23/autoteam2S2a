@@ -1019,7 +1019,7 @@ export default function TeamManage() {
     try {
       while (true) {
         const data = await api.fetchTeamManageOwnersPage({
-          page, page_size: 200, has_slots: true,
+          page, page_size: 1000, has_slots: true,
         });
         for (const owner of data.items || []) allIds.push(owner.account_id);
         // 达到限制数量则截断
@@ -1055,24 +1055,30 @@ export default function TeamManage() {
       offset += count;
     }
 
+    // 并行提交所有号池任务
+    const results = await Promise.allSettled(
+      poolAssignments
+        .filter(a => a.ids.length > 0)
+        .map(assignment =>
+          api.batchInviteTeamManageOwners({
+            account_ids: assignment.ids,
+            s2a_team: assignment.team,
+            strategy: "fill_to_limit",
+            scope: "manual",
+            skip_banned: true,
+            only_with_slots: true,
+          }),
+        ),
+    );
+
     let totalAccepted = 0;
     let totalSkipped = 0;
     let failedPools = 0;
-
-    for (const assignment of poolAssignments) {
-      if (assignment.ids.length === 0) continue;
-      try {
-        const result = await api.batchInviteTeamManageOwners({
-          account_ids: assignment.ids,
-          s2a_team: assignment.team,
-          strategy: "fill_to_limit",
-          scope: "manual",
-          skip_banned: true,
-          only_with_slots: true,
-        });
-        totalAccepted += result.accepted;
-        totalSkipped += result.skipped;
-      } catch {
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        totalAccepted += r.value.accepted;
+        totalSkipped += r.value.skipped;
+      } else {
         failedPools += 1;
       }
     }

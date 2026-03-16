@@ -4043,15 +4043,25 @@ async fn team_manage_list_owners_handler(
         state_filter
     );
 
-    let _ = state
-        .run_history_db
-        .sync_owner_registry_from_invite_owners()
-        .map_err(|e| {
-            error_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("同步 owner_registry 失败: {e}"),
-            )
-        })?;
+    // sync_owner_registry 节流：60 秒内不重复执行，避免分页拉取时反复同步
+    let should_sync = {
+        let last_sync = state.last_owner_registry_sync.lock().await;
+        last_sync
+            .map(|t: Instant| t.elapsed() > std::time::Duration::from_secs(60))
+            .unwrap_or(true)
+    };
+    if should_sync {
+        let _ = state
+            .run_history_db
+            .sync_owner_registry_from_invite_owners()
+            .map_err(|e| {
+                error_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("同步 owner_registry 失败: {e}"),
+                )
+            })?;
+        *state.last_owner_registry_sync.lock().await = Some(Instant::now());
+    }
     let registry_page = state
         .run_history_db
         .list_owner_registry_page(&crate::db::OwnerRegistryQuery {
