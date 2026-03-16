@@ -503,9 +503,7 @@ impl WorkflowRunner {
                     vec![]
                 }
                 Err(err) => {
-                    broadcast_log(&format!(
-                        "[S2A] 获取代理列表失败（不阻断入库）: {err}"
-                    ));
+                    broadcast_log(&format!("[S2A] 获取代理列表失败（不阻断入库）: {err}"));
                     vec![]
                 }
             }
@@ -574,7 +572,11 @@ impl WorkflowRunner {
                             p.s2a_ok.fetch_add(1, Ordering::Relaxed);
                         }
                         if proxy_id.is_some() {
-                            broadcast_log(&format!("[S2A成功] {} (proxy_id={})", acc.account, proxy_id.unwrap()));
+                            broadcast_log(&format!(
+                                "[S2A成功] {} (proxy_id={})",
+                                acc.account,
+                                proxy_id.unwrap()
+                            ));
                         } else {
                             broadcast_log(&format!("[S2A成功] {}", acc.account));
                         }

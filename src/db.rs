@@ -2817,7 +2817,9 @@ impl RunHistoryDb {
         }
 
         let mut sql = if has_search {
-            String::from("SELECT COUNT(*) FROM team_manage_owner_audits a LEFT JOIN owner_registry o ON a.account_id = o.account_id")
+            String::from(
+                "SELECT COUNT(*) FROM team_manage_owner_audits a LEFT JOIN owner_registry o ON a.account_id = o.account_id",
+            )
         } else {
             String::from("SELECT COUNT(*) FROM team_manage_owner_audits a")
         };
@@ -2826,7 +2828,10 @@ impl RunHistoryDb {
             sql.push_str(&conditions.join(" AND "));
         }
 
-        let params: Vec<&dyn ToSql> = values.iter().map(|value| value.as_ref() as &dyn ToSql).collect();
+        let params: Vec<&dyn ToSql> = values
+            .iter()
+            .map(|value| value.as_ref() as &dyn ToSql)
+            .collect();
         let total = conn.query_row(&sql, params.as_slice(), |row| row.get::<_, i64>(0))?;
         Ok(total as usize)
     }
@@ -2873,7 +2878,10 @@ impl RunHistoryDb {
         values.push(Box::new(page_size as i64));
         values.push(Box::new(offset as i64));
 
-        let params: Vec<&dyn ToSql> = values.iter().map(|value| value.as_ref() as &dyn ToSql).collect();
+        let params: Vec<&dyn ToSql> = values
+            .iter()
+            .map(|value| value.as_ref() as &dyn ToSql)
+            .collect();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(params.as_slice(), map_team_manage_owner_audit_row)?

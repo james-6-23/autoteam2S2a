@@ -24,7 +24,10 @@ use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2a
 use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::WorkflowReport;
-use crate::proxy_pool::{ProxyPool, health_check, health_check_detailed, normalize_proxy, resolve_proxies, test_single_proxy, check_proxy_quality};
+use crate::proxy_pool::{
+    ProxyPool, check_proxy_quality, health_check, health_check_detailed, normalize_proxy,
+    resolve_proxies, test_single_proxy,
+};
 use crate::redis_cache::RedisCache;
 use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService};
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
@@ -556,10 +559,14 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
             databases: cfg.d1_cleanup.databases.clone().unwrap_or_default(),
             keep_percent: cfg.d1_cleanup.keep_percent.unwrap_or(0.1),
             batch_size: cfg.d1_cleanup.batch_size.unwrap_or(5000),
-            cleanup_timing: cfg.d1_cleanup.cleanup_timing.map(|t| match t {
-                crate::config::D1CleanupTiming::BeforeTask => "before_task".to_string(),
-                crate::config::D1CleanupTiming::AfterTask => "after_task".to_string(),
-            }).unwrap_or_else(|| "after_task".to_string()),
+            cleanup_timing: cfg
+                .d1_cleanup
+                .cleanup_timing
+                .map(|t| match t {
+                    crate::config::D1CleanupTiming::BeforeTask => "before_task".to_string(),
+                    crate::config::D1CleanupTiming::AfterTask => "after_task".to_string(),
+                })
+                .unwrap_or_else(|| "after_task".to_string()),
         },
     })
 }
@@ -1175,7 +1182,11 @@ async fn add_proxy_handler(
     }
     let normalized = normalize_proxy(&proxy);
     let mut cfg = state.config.write().await;
-    if cfg.proxy_pool.iter().any(|p| normalize_proxy(p) == normalized) {
+    if cfg
+        .proxy_pool
+        .iter()
+        .any(|p| normalize_proxy(p) == normalized)
+    {
         return Err(error_json(
             StatusCode::CONFLICT,
             &format!("代理已存在: {proxy}"),
@@ -1218,7 +1229,11 @@ async fn batch_add_proxy_handler(
     let mut skipped = 0usize;
     for proxy in &proxies {
         let normalized = normalize_proxy(proxy);
-        if cfg.proxy_pool.iter().any(|p| normalize_proxy(p) == normalized) {
+        if cfg
+            .proxy_pool
+            .iter()
+            .any(|p| normalize_proxy(p) == normalized)
+        {
             skipped += 1;
         } else {
             cfg.proxy_pool.push(normalized);
@@ -1233,7 +1248,9 @@ async fn batch_add_proxy_handler(
 
     crate::log_broadcast::broadcast_log(&format!(
         "[代理] 批量导入: {} 个添加, {} 个跳过 (共 {} 个)",
-        added, skipped, proxies.len()
+        added,
+        skipped,
+        proxies.len()
     ));
 
     Json(serde_json::json!({
@@ -1270,16 +1287,17 @@ async fn set_proxy_enabled_handler(
     State(state): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let enabled = req
-        .get("enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+    let enabled = req.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
     let mut cfg = state.config.write().await;
     cfg.proxy_enabled = Some(enabled);
     auto_save(&cfg, &state.config_path);
     let msg = format!(
         "代理池已{}",
-        if enabled { "启用" } else { "禁用（直连模式）" }
+        if enabled {
+            "启用"
+        } else {
+            "禁用（直连模式）"
+        }
     );
     crate::log_broadcast::broadcast_log(&format!("[代理] {msg}"));
     Json(MsgResponse { message: msg })
@@ -1311,7 +1329,8 @@ async fn set_proxy_refresh_url_handler(
     if refresh_url.is_empty() {
         cfg.proxy_refresh_urls.remove(&proxy_url);
     } else {
-        cfg.proxy_refresh_urls.insert(proxy_url.clone(), refresh_url);
+        cfg.proxy_refresh_urls
+            .insert(proxy_url.clone(), refresh_url);
     }
     auto_save(&cfg, &state.config_path);
     let msg = if cfg.proxy_refresh_urls.contains_key(&proxy_url) {
@@ -1339,7 +1358,10 @@ async fn refresh_proxy_ip_handler(
         let cfg = state.config.read().await;
         if proxy_url.is_empty() {
             // 刷新所有配置了刷新 URL 的代理
-            cfg.proxy_refresh_urls.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            cfg.proxy_refresh_urls
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
         } else {
             match cfg.proxy_refresh_urls.get(&proxy_url) {
                 Some(url) => vec![(proxy_url.clone(), url.clone())],
@@ -1378,28 +1400,40 @@ async fn refresh_proxy_ip_handler(
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
                 let success = status.is_success();
-                let msg = if success { body.clone() } else { format!("HTTP {}: {body}", status.as_u16()) };
+                let msg = if success {
+                    body.clone()
+                } else {
+                    format!("HTTP {}: {body}", status.as_u16())
+                };
                 crate::log_broadcast::broadcast_log(&format!(
                     "[代理] {} IP 刷新{}: {}",
                     proxy,
                     if success { "成功" } else { "失败" },
                     msg
                 ));
-                results.push(serde_json::json!({ "proxy": proxy, "success": success, "message": msg }));
+                results.push(
+                    serde_json::json!({ "proxy": proxy, "success": success, "message": msg }),
+                );
             }
             Err(e) => {
                 let msg = format!("请求失败: {e}");
                 crate::log_broadcast::broadcast_log(&format!("[代理] {proxy} IP 刷新失败: {msg}"));
-                results.push(serde_json::json!({ "proxy": proxy, "success": false, "message": msg }));
+                results
+                    .push(serde_json::json!({ "proxy": proxy, "success": false, "message": msg }));
             }
         }
     }
 
-    let all_ok = results.iter().all(|r| r["success"].as_bool().unwrap_or(false));
+    let all_ok = results
+        .iter()
+        .all(|r| r["success"].as_bool().unwrap_or(false));
     let summary = if results.len() == 1 {
         results[0]["message"].as_str().unwrap_or("").to_string()
     } else {
-        let ok_count = results.iter().filter(|r| r["success"].as_bool().unwrap_or(false)).count();
+        let ok_count = results
+            .iter()
+            .filter(|r| r["success"].as_bool().unwrap_or(false))
+            .count();
         format!("{}/{} 刷新成功", ok_count, results.len())
     };
 
@@ -1410,17 +1444,15 @@ async fn refresh_proxy_ip_handler(
     })))
 }
 
-async fn proxy_health_check_handler(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn proxy_health_check_handler(State(state): State<AppState>) -> impl IntoResponse {
     let (proxies, timeout_sec) = {
         let cfg = state.config.read().await;
-        (cfg.proxy_pool.clone(), cfg.proxy_check_timeout_sec.unwrap_or(5))
+        (
+            cfg.proxy_pool.clone(),
+            cfg.proxy_check_timeout_sec.unwrap_or(5),
+        )
     };
-    crate::log_broadcast::broadcast_log(&format!(
-        "[代理] 开始健康检测 {} 个代理",
-        proxies.len()
-    ));
+    crate::log_broadcast::broadcast_log(&format!("[代理] 开始健康检测 {} 个代理", proxies.len()));
     let results = health_check_detailed(&proxies, timeout_sec).await;
     let ok_count = results.iter().filter(|r| r.ok).count();
     crate::log_broadcast::broadcast_log(&format!(
@@ -1447,10 +1479,7 @@ async fn proxy_batch_test_handler(
         })
         .unwrap_or_default();
 
-    let concurrency = req
-        .get("concurrency")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(5) as usize;
+    let concurrency = req.get("concurrency").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
 
     if proxy_urls.is_empty() {
         return Json(serde_json::json!({ "results": [] }));
@@ -1497,7 +1526,10 @@ async fn proxy_batch_test_handler(
         }
     }
 
-    let ok_count = results.iter().filter(|r| r.get("success").and_then(|v| v.as_bool()).unwrap_or(false)).count();
+    let ok_count = results
+        .iter()
+        .filter(|r| r.get("success").and_then(|v| v.as_bool()).unwrap_or(false))
+        .count();
     crate::log_broadcast::broadcast_log(&format!(
         "[代理] 批量测试完成: {}/{} 可用",
         ok_count,
@@ -2036,7 +2068,10 @@ async fn build_proxy_pool(
 ) -> anyhow::Result<Arc<ProxyPool>> {
     if !cfg.proxy_enabled.unwrap_or(true) {
         println!("[server] 代理池已禁用，使用直连模式");
-        return Ok(Arc::new(ProxyPool::with_refresh_urls(vec![], cfg.proxy_refresh_urls.clone())));
+        return Ok(Arc::new(ProxyPool::with_refresh_urls(
+            vec![],
+            cfg.proxy_refresh_urls.clone(),
+        )));
     }
     let proxy_list = resolve_proxies(proxy_file, &cfg.proxy_pool)?;
     let check_timeout = cfg.proxy_check_timeout_sec.unwrap_or(5);
@@ -2045,7 +2080,10 @@ async fn build_proxy_pool(
         "[server] 代理池初始化完成: {} 个可用代理",
         healthy_proxies.len()
     );
-    Ok(Arc::new(ProxyPool::with_refresh_urls(healthy_proxies, cfg.proxy_refresh_urls.clone())))
+    Ok(Arc::new(ProxyPool::with_refresh_urls(
+        healthy_proxies,
+        cfg.proxy_refresh_urls.clone(),
+    )))
 }
 
 // ─── Schedule / Runs request types ───────────────────────────────────────────
@@ -3025,14 +3063,23 @@ pub async fn start_server(
             "/api/config/proxy_pool",
             post(add_proxy_handler).delete(delete_proxy_handler),
         )
-        .route("/api/config/proxy_pool/batch", post(batch_add_proxy_handler))
+        .route(
+            "/api/config/proxy_pool/batch",
+            post(batch_add_proxy_handler),
+        )
         .route("/api/config/proxy_enabled", put(set_proxy_enabled_handler))
-        .route("/api/config/proxy_refresh_url", put(set_proxy_refresh_url_handler))
+        .route(
+            "/api/config/proxy_refresh_url",
+            put(set_proxy_refresh_url_handler),
+        )
         .route("/api/proxy/refresh-ip", post(refresh_proxy_ip_handler))
         .route("/api/proxy/health-check", post(proxy_health_check_handler))
         .route("/api/proxy/batch-test", post(proxy_batch_test_handler))
         .route("/api/proxy/test", post(proxy_test_handler))
-        .route("/api/proxy/quality-check", post(proxy_quality_check_handler))
+        .route(
+            "/api/proxy/quality-check",
+            post(proxy_quality_check_handler),
+        )
         .route("/api/config/save", post(save_config_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
@@ -3803,8 +3850,14 @@ async fn team_manage_resolve_batch_account_ids(
                 .list_owner_registry_page(&crate::db::OwnerRegistryQuery {
                     page,
                     page_size: 200,
-                    search: filters.search.clone().filter(|value| !value.trim().is_empty()),
-                    state: filters.state.clone().filter(|value| !value.trim().is_empty()),
+                    search: filters
+                        .search
+                        .clone()
+                        .filter(|value| !value.trim().is_empty()),
+                    state: filters
+                        .state
+                        .clone()
+                        .filter(|value| !value.trim().is_empty()),
                     has_slots: filters.has_slots,
                     has_banned_member: filters.has_banned_member,
                     sort_by: Some("updated_at".to_string()),
@@ -3887,10 +3940,7 @@ async fn team_manage_get_health_result_from_redis(
     }
 }
 
-async fn team_manage_cache_health_result_in_redis(
-    state: &AppState,
-    result: &OwnerHealthResult,
-) {
+async fn team_manage_cache_health_result_in_redis(state: &AppState, result: &OwnerHealthResult) {
     let Some(redis_cache) = state.redis_cache.as_ref() else {
         return;
     };
@@ -3977,7 +4027,11 @@ async fn team_manage_try_acquire_health_lock(state: &AppState, account_id: &str)
         {
             Ok(true) => {}
             Ok(false) => {
-                state.team_manage_health_locks.lock().await.remove(account_id);
+                state
+                    .team_manage_health_locks
+                    .lock()
+                    .await
+                    .remove(account_id);
                 return None;
             }
             Err(error) => {
@@ -4068,7 +4122,11 @@ async fn team_manage_list_owners_handler(
         .list_owner_registry_page(&crate::db::OwnerRegistryQuery {
             page,
             page_size,
-            search: if search.is_empty() { None } else { Some(search.clone()) },
+            search: if search.is_empty() {
+                None
+            } else {
+                Some(search.clone())
+            },
             state: if state_filter.is_empty() {
                 None
             } else {
@@ -4181,7 +4239,6 @@ async fn fetch_chatgpt_members_with_client(
     access_token: &str,
     client: &rquest::Client,
 ) -> Result<Vec<TeamManageMember>, String> {
-
     let url = format!(
         "https://chatgpt.com/backend-api/accounts/{}/users?offset=0&limit=100&query=",
         account_id
@@ -4299,12 +4356,14 @@ async fn team_manage_fetch_members_live(
         member_count,
         &now,
     );
-    let _ = state.run_history_db.update_owner_registry_member_cache_summary(
-        account_id,
-        member_count,
-        max_members.saturating_sub(member_count),
-        &now,
-    );
+    let _ = state
+        .run_history_db
+        .update_owner_registry_member_cache_summary(
+            account_id,
+            member_count,
+            max_members.saturating_sub(member_count),
+            &now,
+        );
     team_manage_cache_members_in_redis(state, account_id, &list, &now).await;
     Ok(list)
 }
@@ -4347,7 +4406,8 @@ async fn team_manage_get_members_handler(
                     let refresh_state = state.clone();
                     let refresh_account_id = account_id.clone();
                     tokio::spawn(async move {
-                        let _ = team_manage_fetch_members_live(&refresh_state, &refresh_account_id).await;
+                        let _ = team_manage_fetch_members_live(&refresh_state, &refresh_account_id)
+                            .await;
                     });
                     return Ok(Json(TeamManageMembersResponse {
                         members: cache.members,
@@ -4379,7 +4439,8 @@ async fn team_manage_get_members_handler(
                     let refresh_state = state.clone();
                     let refresh_account_id = account_id.clone();
                     tokio::spawn(async move {
-                        let _ = team_manage_fetch_members_live(&refresh_state, &refresh_account_id).await;
+                        let _ = team_manage_fetch_members_live(&refresh_state, &refresh_account_id)
+                            .await;
                     });
                     return Ok(Json(TeamManageMembersResponse { members }));
                 }
@@ -4396,7 +4457,8 @@ async fn team_manage_get_members_handler(
     );
     crate::log_broadcast::broadcast_log(&format!(
         "[成员] 获取成员列表: owner={}, 共 {} 个成员",
-        account_id, members.len()
+        account_id,
+        members.len()
     ));
     Ok(Json(TeamManageMembersResponse { members }))
 }
@@ -4515,10 +4577,7 @@ async fn team_manage_batch_kick_handler(
         return Err(error_json(StatusCode::BAD_REQUEST, "items 不能为空"));
     }
 
-    crate::log_broadcast::broadcast_log(&format!(
-        "[批量清理] 开始: 共 {} 个成员待踢除",
-        total
-    ));
+    crate::log_broadcast::broadcast_log(&format!("[批量清理] 开始: 共 {} 个成员待踢除", total));
 
     // 按 owner 分组，复用 access_token
     let mut groups: std::collections::HashMap<String, Vec<(String, String)>> =
@@ -4530,10 +4589,7 @@ async fn team_manage_batch_kick_handler(
             .push((item.user_id.clone(), item.email.clone()));
     }
 
-    crate::log_broadcast::broadcast_log(&format!(
-        "[批量清理] 涉及 {} 个 Owner",
-        groups.len()
-    ));
+    crate::log_broadcast::broadcast_log(&format!("[批量清理] 涉及 {} 个 Owner", groups.len()));
 
     // 预取所有 owner 的 access_token
     let mut owner_tokens: std::collections::HashMap<String, String> =
@@ -4563,10 +4619,7 @@ async fn team_manage_batch_kick_handler(
         let kick_proxy = cfg.team_manage_kick_use_proxy.unwrap_or(false);
         let pool = &cfg.proxy_pool;
         if kick_proxy && !pool.is_empty() {
-            crate::log_broadcast::broadcast_log(&format!(
-                "[批量清理] 使用 {} 个代理",
-                pool.len()
-            ));
+            crate::log_broadcast::broadcast_log(&format!("[批量清理] 使用 {} 个代理", pool.len()));
             pool.iter()
                 .filter_map(|pu| {
                     let proxy = rquest::Proxy::all(pu).ok()?;
@@ -4724,7 +4777,10 @@ async fn team_manage_batch_kick_handler(
 
     tracing::info!(
         "[TeamManage] 批量清理完成: total={}, success={}, failed={}, skipped_owners={}",
-        total, success_count, failed_count, skipped_owners
+        total,
+        success_count,
+        failed_count,
+        skipped_owners
     );
 
     Ok(Json(serde_json::json!({
@@ -4740,10 +4796,7 @@ async fn team_manage_refresh_members_handler(
     Path(account_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     tracing::info!("[TeamManage] 刷新成员列表: account_id={account_id}");
-    crate::log_broadcast::broadcast_log(&format!(
-        "[刷新] 刷新成员列表: owner={}",
-        account_id
-    ));
+    crate::log_broadcast::broadcast_log(&format!("[刷新] 刷新成员列表: owner={}", account_id));
     let members = team_manage_fetch_members_live(&state, &account_id).await?;
 
     tracing::info!(
@@ -4752,7 +4805,8 @@ async fn team_manage_refresh_members_handler(
     );
     crate::log_broadcast::broadcast_log(&format!(
         "[刷新] ✓ owner={} 刷新完成，共 {} 个成员",
-        account_id, members.len()
+        account_id,
+        members.len()
     ));
     Ok(Json(TeamManageMembersResponse { members }))
 }
@@ -4804,7 +4858,7 @@ async fn team_manage_batch_refresh_members_handler(
             let _permit = sem.acquire().await;
             match team_manage_fetch_members_live(&state, &account_id).await {
                 Ok(members) => Ok((account_id, members.len())),
-                Err(error) => Err((account_id, error.1 .0.error)),
+                Err(error) => Err((account_id, error.1.0.error)),
             }
         }));
     }
@@ -4881,12 +4935,7 @@ async fn team_manage_batch_update_owner_state(
     let now = crate::util::beijing_now().to_rfc3339();
     let affected = state
         .run_history_db
-        .batch_update_owner_registry_state(
-            &account_ids,
-            next_state,
-            req.reason.as_deref(),
-            &now,
-        )
+        .batch_update_owner_registry_state(&account_ids, next_state, req.reason.as_deref(), &now)
         .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e}")))?;
     let _ = state.run_history_db.insert_team_manage_owner_audits(
         account_ids
@@ -5011,7 +5060,6 @@ async fn fetch_codex_quota(access_token: &str) -> CodexQuota {
 }
 
 async fn fetch_codex_quota_with_client(access_token: &str, client: &rquest::Client) -> CodexQuota {
-
     let device_id = uuid::Uuid::new_v4().to_string();
 
     for model in CODEX_MODELS {
@@ -5408,10 +5456,7 @@ async fn team_manage_member_quota_handler(
         format!("{email} 为外部域名(@{domain})，非号池管理范围")
     };
 
-    Err(error_json(
-        StatusCode::NOT_FOUND,
-        &reason,
-    ))
+    Err(error_json(StatusCode::NOT_FOUND, &reason))
 }
 
 // ─── Team Manage: 邀请并入库 ─────────────────────────────────────────────────
@@ -5727,7 +5772,10 @@ async fn team_manage_sync_batch_job_cache(state: &AppState, job_id: &str) {
             let _ = redis_cache.delete(&redis_cache.batch_job_key(job_id)).await;
         }
         Err(_) => {
-            tracing::warn!("[TeamManage] 同步 Redis batch job cache 失败: job_id={}", job_id);
+            tracing::warn!(
+                "[TeamManage] 同步 Redis batch job cache 失败: job_id={}",
+                job_id
+            );
         }
     }
 }
@@ -5849,7 +5897,11 @@ async fn team_manage_update_batch_job_item(
     } else {
         "running".to_string()
     };
-    let existing_job = state.run_history_db.get_team_manage_batch_job(job_id).ok().flatten();
+    let existing_job = state
+        .run_history_db
+        .get_team_manage_batch_job(job_id)
+        .ok()
+        .flatten();
     let _ = state.run_history_db.update_team_manage_batch_job(
         job_id.to_string(),
         crate::db::TeamManageBatchJobUpdate {
@@ -6031,7 +6083,10 @@ async fn team_manage_batch_invite_handler(
                     .map(|cached| cached.owner_status == "banned")
                     .unwrap_or(false)
             {
-                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过封禁 owner: {}", account_id));
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[Team管理] 跳过封禁 owner: {}",
+                    account_id
+                ));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -6047,7 +6102,10 @@ async fn team_manage_batch_invite_handler(
             }
             // 跳过 seat_limited 状态的 owner（free trial 席位上限）
             if registry_state_map.get(&account_id).map(|s| s.as_str()) == Some("seat_limited") {
-                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过席位已满 owner: {}", account_id));
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[Team管理] 跳过席位已满 owner: {}",
+                    account_id
+                ));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -6062,7 +6120,10 @@ async fn team_manage_batch_invite_handler(
                 continue;
             }
             if req_for_task.skip_expired || req_for_task.skip_quarantined {
-                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过过期/隔离 owner: {}", account_id));
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[Team管理] 跳过过期/隔离 owner: {}",
+                    account_id
+                ));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -6090,7 +6151,10 @@ async fn team_manage_batch_invite_handler(
             };
 
             if req_for_task.only_with_slots && invite_count == 0 {
-                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过无空位 owner: {}", account_id));
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[Team管理] 跳过无空位 owner: {}",
+                    account_id
+                ));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -6106,7 +6170,10 @@ async fn team_manage_batch_invite_handler(
             }
 
             if invite_count == 0 {
-                crate::log_broadcast::broadcast_log(&format!("[Team管理] 跳过未生成邀请: {}", account_id));
+                crate::log_broadcast::broadcast_log(&format!(
+                    "[Team管理] 跳过未生成邀请: {}",
+                    account_id
+                ));
                 team_manage_update_batch_job_item(
                     &state_clone,
                     &job_id_clone,
@@ -6161,14 +6228,17 @@ async fn team_manage_batch_invite_handler(
                         || err_lower.contains("seat limit")
                     {
                         let now = chrono::Utc::now().to_rfc3339();
-                        let _ = state_clone.run_history_db.batch_update_owner_registry_state(
-                            &[account_id.clone()],
-                            "seat_limited",
-                            Some("free_trial_seat_limit"),
-                            &now,
-                        );
+                        let _ = state_clone
+                            .run_history_db
+                            .batch_update_owner_registry_state(
+                                &[account_id.clone()],
+                                "seat_limited",
+                                Some("free_trial_seat_limit"),
+                                &now,
+                            );
                         crate::log_broadcast::broadcast_log(&format!(
-                            "[Team管理] 已标记 owner {} 为 seat_limited", account_id
+                            "[Team管理] 已标记 owner {} 为 seat_limited",
+                            account_id
                         ));
                     }
                     team_manage_update_batch_job_item(
@@ -6185,7 +6255,10 @@ async fn team_manage_batch_invite_handler(
                 }
             }
         }
-        crate::log_broadcast::broadcast_log(&format!("[Team管理] 批量邀请任务完成: job={}", job_id_clone));
+        crate::log_broadcast::broadcast_log(&format!(
+            "[Team管理] 批量邀请任务完成: job={}",
+            job_id_clone
+        ));
     });
 
     Ok((
@@ -6354,7 +6427,12 @@ async fn team_manage_retry_failed_batch_items_handler(
         ));
     }
     let mut payload: TeamManageBatchInviteRequest = serde_json::from_str(&job.payload_json)
-        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("解析任务 payload 失败: {e}")))?;
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("解析任务 payload 失败: {e}"),
+            )
+        })?;
     payload.account_ids = failed_items
         .iter()
         .map(|item| item.account_id.clone())
@@ -6416,7 +6494,10 @@ async fn team_manage_retry_failed_batch_items_handler(
                 retry_req.fixed_count.unwrap_or(1).clamp(1, 25)
             } else {
                 // 使用 DB 缓存的成员数计算空位
-                let cached_count = retry_member_count_cache.get(&account_id).copied().unwrap_or(0);
+                let cached_count = retry_member_count_cache
+                    .get(&account_id)
+                    .copied()
+                    .unwrap_or(0);
                 max_members.saturating_sub(cached_count)
             };
 
@@ -6488,9 +6569,7 @@ async fn team_manage_retry_failed_batch_items_handler(
 
 // ─── Team Manage 代理设置 ────────────────────────────────────────────────────
 
-async fn team_manage_get_proxy_settings(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn team_manage_get_proxy_settings(State(state): State<AppState>) -> impl IntoResponse {
     let cfg = state.config.read().await;
     Json(serde_json::json!({
         "kick_use_proxy": cfg.team_manage_kick_use_proxy.unwrap_or(false),
@@ -6800,30 +6879,29 @@ async fn team_manage_batch_check_handler(
     let mut scheduled_refresh_ids = Vec::new();
 
     // 批量从 Redis MGET 读取健康缓存
-    let redis_cache_map: HashMap<String, OwnerHealthResult> =
-        if !force_refresh && prefer_cache {
-            if let Some(redis_cache) = state.redis_cache.as_ref() {
-                let keys: Vec<String> = account_ids
+    let redis_cache_map: HashMap<String, OwnerHealthResult> = if !force_refresh && prefer_cache {
+        if let Some(redis_cache) = state.redis_cache.as_ref() {
+            let keys: Vec<String> = account_ids
+                .iter()
+                .map(|id| redis_cache.owner_health_key(id))
+                .collect();
+            match redis_cache.mget_json::<OwnerHealthResult>(&keys).await {
+                Ok(values) => account_ids
                     .iter()
-                    .map(|id| redis_cache.owner_health_key(id))
-                    .collect();
-                match redis_cache.mget_json::<OwnerHealthResult>(&keys).await {
-                    Ok(values) => account_ids
-                        .iter()
-                        .zip(values)
-                        .filter_map(|(id, v)| v.map(|val| (id.clone(), val)))
-                        .collect(),
-                    Err(error) => {
-                        tracing::warn!("[TeamManage] Redis MGET 批量读取失败: {error}");
-                        HashMap::new()
-                    }
+                    .zip(values)
+                    .filter_map(|(id, v)| v.map(|val| (id.clone(), val)))
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!("[TeamManage] Redis MGET 批量读取失败: {error}");
+                    HashMap::new()
                 }
-            } else {
-                HashMap::new()
             }
         } else {
             HashMap::new()
-        };
+        }
+    } else {
+        HashMap::new()
+    };
 
     for account_id in account_ids {
         if !force_refresh && prefer_cache {
@@ -6869,13 +6947,9 @@ async fn team_manage_batch_check_handler(
         let aid = account_id.clone();
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await;
-            let Some(lock_owner) = team_manage_try_acquire_health_lock(&state, &aid).await
-            else {
+            let Some(lock_owner) = team_manage_try_acquire_health_lock(&state, &aid).await else {
                 // 锁冲突 → 返回占位结果，让前端知道此 owner 被跳过
-                crate::log_broadcast::broadcast_log(&format!(
-                    "[健康检查] {} 锁冲突，已跳过",
-                    aid
-                ));
+                crate::log_broadcast::broadcast_log(&format!("[健康检查] {} 锁冲突，已跳过", aid));
                 return OwnerHealthResult {
                     account_id: aid,
                     owner_status: "lock_conflict".to_string(),
@@ -7020,16 +7094,14 @@ async fn check_single_owner(state: &AppState, account_id: &str) -> Option<OwnerH
             static CHECK_IDX: AtomicUsize = AtomicUsize::new(0);
             let i = CHECK_IDX.fetch_add(1, Ordering::Relaxed);
             let pu = &cfg.proxy_pool[i % cfg.proxy_pool.len()];
-            rquest::Proxy::all(pu)
-                .ok()
-                .and_then(|proxy| {
-                    rquest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(15))
-                        .connect_timeout(std::time::Duration::from_secs(10))
-                        .proxy(proxy)
-                        .build()
-                        .ok()
-                })
+            rquest::Proxy::all(pu).ok().and_then(|proxy| {
+                rquest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(15))
+                    .connect_timeout(std::time::Duration::from_secs(10))
+                    .proxy(proxy)
+                    .build()
+                    .ok()
+            })
         } else {
             None
         }

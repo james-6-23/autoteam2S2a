@@ -121,12 +121,7 @@ impl ProxyPool {
             Some(u) if !u.is_empty() => u,
             _ => return,
         };
-        let refresh_url = self
-            .refresh_urls
-            .lock()
-            .unwrap()
-            .get(proxy_url)
-            .cloned();
+        let refresh_url = self.refresh_urls.lock().unwrap().get(proxy_url).cloned();
         if let Some(url) = refresh_url {
             tokio::spawn(async move {
                 let client = match rquest::Client::builder()
@@ -393,7 +388,9 @@ pub async fn health_check_detailed(proxies: &[String], timeout_sec: u64) -> Vec<
 /// 2. auth.openai.com — 认证服务（通过=可用）
 /// 3. chatgpt.com — 前端服务（通过=可用，403 也算代理可达）
 async fn check_proxy_multilayer(proxy: &str, timeout: Duration) -> ProxyCheckResult {
+    // 注意：必须先 no_proxy() 清除系统代理，再 proxy() 添加自定义代理
     let client = match rquest::Client::builder()
+        .no_proxy()
         .proxy(match rquest::Proxy::all(proxy) {
             Ok(p) => p,
             Err(e) => {
@@ -406,7 +403,6 @@ async fn check_proxy_multilayer(proxy: &str, timeout: Duration) -> ProxyCheckRes
         })
         .timeout(timeout)
         .connect_timeout(timeout)
-        .no_proxy()
         .redirect(rquest::redirect::Policy::limited(5))
         .build()
     {
@@ -643,11 +639,13 @@ async fn remove_proxies_from_file(path: &Path, to_remove: &HashSet<String>) -> R
 
 /// 构建带代理的 HTTP 客户端（公共辅助函数）
 fn build_proxy_client(proxy_url: &str, timeout: Duration) -> Result<rquest::Client, String> {
+    // 注意：必须先 no_proxy() 清除系统代理，再 proxy() 添加自定义代理
+    // 顺序反了会导致自定义代理也被清除，请求直连
     rquest::Client::builder()
+        .no_proxy()
         .proxy(rquest::Proxy::all(proxy_url).map_err(|e| format!("代理地址无效: {e}"))?)
         .timeout(timeout)
         .connect_timeout(timeout)
-        .no_proxy()
         .redirect(rquest::redirect::Policy::limited(5))
         .build()
         .map_err(|e| format!("创建客户端失败: {e}"))
@@ -715,7 +713,7 @@ pub struct ProxyTestResult {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProxyQualityCheckItem {
     pub target: String,
-    pub status: String,       // pass / warn / fail / challenge
+    pub status: String, // pass / warn / fail / challenge
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -804,7 +802,11 @@ async fn probe_proxy_exit_info(client: &rquest::Client) -> Result<(ProxyExitInfo
 
     // 2. ip-api.com（HTTP，部分代理可能不准）
     let start = std::time::Instant::now();
-    match client.get("http://ip-api.com/json/?lang=zh-CN").send().await {
+    match client
+        .get("http://ip-api.com/json/?lang=zh-CN")
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().as_u16() == 200 => {
             let latency_ms = start.elapsed().as_millis() as i64;
             if let Ok(info) = resp.json::<IpApiResponse>().await {
@@ -879,11 +881,31 @@ pub async fn test_single_proxy(proxy_url: &str, timeout_sec: u64) -> ProxyTestRe
             message: "代理可用".to_string(),
             latency_ms: Some(latency_ms),
             ip_address: Some(info.ip),
-            city: if info.city.is_empty() { None } else { Some(info.city) },
-            region: if info.region.is_empty() { None } else { Some(info.region) },
-            country: if info.country.is_empty() { None } else { Some(info.country) },
-            country_code: if info.country_code.is_empty() { None } else { Some(info.country_code) },
-            isp: if info.isp.is_empty() { None } else { Some(info.isp) },
+            city: if info.city.is_empty() {
+                None
+            } else {
+                Some(info.city)
+            },
+            region: if info.region.is_empty() {
+                None
+            } else {
+                Some(info.region)
+            },
+            country: if info.country.is_empty() {
+                None
+            } else {
+                Some(info.country)
+            },
+            country_code: if info.country_code.is_empty() {
+                None
+            } else {
+                Some(info.country_code)
+            },
+            isp: if info.isp.is_empty() {
+                None
+            } else {
+                Some(info.isp)
+            },
         },
         Err(e) => ProxyTestResult {
             success: false,
@@ -963,7 +985,8 @@ async fn run_quality_target(
 
 /// 计算质量评分和等级
 fn finalize_quality_result(result: &mut ProxyQualityCheckResult) {
-    let score = 100 - result.warn_count * 10 - result.failed_count * 22 - result.challenge_count * 30;
+    let score =
+        100 - result.warn_count * 10 - result.failed_count * 22 - result.challenge_count * 30;
     result.score = score.max(0);
     result.grade = match result.score {
         s if s >= 90 => "A",
@@ -1026,8 +1049,16 @@ pub async fn check_proxy_quality(proxy_url: &str, timeout_sec: u64) -> ProxyQual
             });
             result.passed_count += 1;
             result.exit_ip = Some(info.ip);
-            result.country = if info.country.is_empty() { None } else { Some(info.country) };
-            result.country_code = if info.country_code.is_empty() { None } else { Some(info.country_code) };
+            result.country = if info.country.is_empty() {
+                None
+            } else {
+                Some(info.country)
+            };
+            result.country_code = if info.country_code.is_empty() {
+                None
+            } else {
+                Some(info.country_code)
+            };
             result.base_latency_ms = Some(latency_ms);
         }
         Err(e) => {

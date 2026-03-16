@@ -217,7 +217,10 @@ async fn run(
     let proxy_list = resolve_proxies(proxy_file.as_deref(), &cfg.proxy_pool)?;
     let check_timeout = cfg.proxy_check_timeout_sec.unwrap_or(5);
     let healthy_proxies = health_check(&proxy_list, check_timeout, proxy_file.as_deref()).await?;
-    let proxy_pool = Arc::new(ProxyPool::with_refresh_urls(healthy_proxies, cfg.proxy_refresh_urls.clone()));
+    let proxy_pool = Arc::new(ProxyPool::with_refresh_urls(
+        healthy_proxies,
+        cfg.proxy_refresh_urls.clone(),
+    ));
     println!(
         "运行模式: {} | 代理模式: {} ({} 个可用) | 目标账号: {}",
         if dry_run { "dry-run" } else { "live" },

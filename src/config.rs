@@ -490,7 +490,11 @@ impl AppConfig {
                 key_prefix
             },
             default_ttl_secs: self.redis.default_ttl_secs.unwrap_or(1800).max(60),
-            batch_progress_ttl_secs: self.redis.batch_progress_ttl_secs.unwrap_or(86_400).max(300),
+            batch_progress_ttl_secs: self
+                .redis
+                .batch_progress_ttl_secs
+                .unwrap_or(86_400)
+                .max(300),
             lock_ttl_secs: self.redis.lock_ttl_secs.unwrap_or(120).max(15),
         })
     }

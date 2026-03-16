@@ -1,5 +1,5 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -35,7 +35,9 @@ pub fn parse_owners_json(value: &serde_json::Value) -> Result<Vec<TeamOwner>> {
         arr.clone()
     } else if let Some(arr) = value.pointer("/accounts").and_then(|v| v.as_array()) {
         arr.clone()
-    } else if value.is_object() && (value.get("access_token").is_some() || value.get("accessToken").is_some()) {
+    } else if value.is_object()
+        && (value.get("access_token").is_some() || value.get("accessToken").is_some())
+    {
         // 单个账号对象，自动包装为数组
         vec![value.clone()]
     } else {
@@ -146,10 +148,7 @@ pub async fn invite_emails(
     let total = emails.len();
 
     for (i, email) in emails.iter().enumerate() {
-        broadcast_log(&format!(
-            "[邀请] 发送 ({}/{}) {}",
-            i + 1, total, email
-        ));
+        broadcast_log(&format!("[邀请] 发送 ({}/{}) {}", i + 1, total, email));
         let result = invite_single_email(&client, owner, email, invite_cfg).await;
         // 实时输出单个结果
         if result.success {
@@ -234,10 +233,7 @@ async fn invite_single_email(
                     };
                 }
 
-                let body = resp
-                    .text()
-                    .await
-                    .unwrap_or_default();
+                let body = resp.text().await.unwrap_or_default();
                 let body_preview = if body.len() > 300 {
                     format!("{}...", &body[..300])
                 } else {
@@ -245,9 +241,8 @@ async fn invite_single_email(
                 };
 
                 // 仅对 408/429/5xx 重试
-                let should_retry = status.as_u16() == 408
-                    || status.as_u16() == 429
-                    || status.is_server_error();
+                let should_retry =
+                    status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error();
 
                 if !should_retry || attempt + 1 >= MAX_INVITE_RETRIES {
                     return InviteResult {
@@ -389,7 +384,8 @@ async fn fetch_pending_invites(
         Some(arr) => arr,
         None => {
             // 打印实际响应的顶层 key 便于调试
-            let keys: Vec<&str> = body.as_object()
+            let keys: Vec<&str> = body
+                .as_object()
                 .map(|obj| obj.keys().map(|k| k.as_str()).collect())
                 .unwrap_or_default();
             broadcast_log(&format!(
@@ -471,7 +467,11 @@ async fn delete_pending_invites(
                         "[清理] 删除 pending invite {} 失败: HTTP {} - {}",
                         invite.email,
                         status.as_u16(),
-                        if body.len() > 200 { &body[..200] } else { &body }
+                        if body.len() > 200 {
+                            &body[..200]
+                        } else {
+                            &body
+                        }
                     ));
                 }
                 Err(e) => {
@@ -513,7 +513,15 @@ async fn deactivate_owner(owner: &TeamOwner, invite_cfg: &InviteRuntimeConfig) -
         Ok(())
     } else {
         let body = resp.text().await.unwrap_or_default();
-        bail!("HTTP {}: {}", status.as_u16(), if body.len() > 200 { &body[..200] } else { &body })
+        bail!(
+            "HTTP {}: {}",
+            status.as_u16(),
+            if body.len() > 200 {
+                &body[..200]
+            } else {
+                &body
+            }
+        )
     }
 }
 
@@ -559,7 +567,10 @@ pub async fn run_invite_workflow(
     let register_runtime = cfg.register_runtime();
     let codex_runtime = cfg.codex_runtime();
     let proxy_pool = if cfg.proxy_enabled.unwrap_or(true) {
-        Arc::new(ProxyPool::with_refresh_urls(cfg.proxy_pool.clone(), cfg.proxy_refresh_urls.clone()))
+        Arc::new(ProxyPool::with_refresh_urls(
+            cfg.proxy_pool.clone(),
+            cfg.proxy_refresh_urls.clone(),
+        ))
     } else {
         broadcast_log("[邀请] 代理池已禁用，使用直连模式");
         Arc::new(ProxyPool::new(vec![]))
@@ -647,7 +658,9 @@ pub async fn run_invite_workflow(
                 broadcast_log("[检查] 无 pending invites");
             }
             Err(e) => {
-                broadcast_log(&format!("[检查] 查询 pending invites 失败: {e:#}, 继续正常流程"));
+                broadcast_log(&format!(
+                    "[检查] 查询 pending invites 失败: {e:#}, 继续正常流程"
+                ));
             }
         }
 
@@ -687,7 +700,10 @@ pub async fn run_invite_workflow(
                         proxy_pool.refresh_all_and_wait().await;
                     }
                     let proxy = proxy_pool.next();
-                    let proxy_label = proxy.as_deref().map(|p| mask_proxy(p)).unwrap_or_else(|| "直连".to_string());
+                    let proxy_label = proxy
+                        .as_deref()
+                        .map(|p| mask_proxy(p))
+                        .unwrap_or_else(|| "直连".to_string());
 
                     let fake_registered = crate::models::RegisteredAccount {
                         account: member.email.clone(),
@@ -698,7 +714,10 @@ pub async fn run_invite_workflow(
                         proxy: None,
                     };
 
-                    broadcast_log(&format!("[恢复-RT] 获取 RT: {} (代理: {})", member.email, proxy_label));
+                    broadcast_log(&format!(
+                        "[恢复-RT] 获取 RT: {} (代理: {})",
+                        member.email, proxy_label
+                    ));
                     let rt_result = codex_service
                         .fetch_refresh_token(&fake_registered, proxy, 1)
                         .await;
@@ -706,7 +725,10 @@ pub async fn run_invite_workflow(
                         Ok(rt) => {
                             cum_rt_ok += 1;
                             progress.rt_ok.fetch_add(1, Ordering::Relaxed);
-                            broadcast_log(&format!("[恢复-RT成功] {} (代理: {})", member.email, proxy_label));
+                            broadcast_log(&format!(
+                                "[恢复-RT成功] {} (代理: {})",
+                                member.email, proxy_label
+                            ));
                             recovery_accounts.push(crate::models::AccountWithRt {
                                 account: member.email.clone(),
                                 password: password.clone(),
@@ -766,10 +788,7 @@ pub async fn run_invite_workflow(
             );
 
             if cum_s2a_ok >= target {
-                broadcast_log(&format!(
-                    "[目标达成] 恢复入库 {}/{}",
-                    cum_s2a_ok, target
-                ));
+                broadcast_log(&format!("[目标达成] 恢复入库 {}/{}", cum_s2a_ok, target));
             }
             break; // 恢复路径完成，退出循环
         }
@@ -839,7 +858,10 @@ pub async fn run_invite_workflow(
         let round_email_offset = email_records.len().saturating_sub(round_total);
 
         for (i, result) in invite_results.iter().enumerate() {
-            let email_db_id = email_records.get(round_email_offset + i).map(|r| r.id).unwrap_or(0);
+            let email_db_id = email_records
+                .get(round_email_offset + i)
+                .map(|r| r.id)
+                .unwrap_or(0);
             if result.success {
                 invited_ok += 1;
                 progress.invited_ok.fetch_add(1, Ordering::Relaxed);
@@ -940,7 +962,8 @@ pub async fn run_invite_workflow(
                     if let Some(p) = proxy.as_deref() {
                         broadcast_log(&format!(
                             "[邀请注册] {} 使用代理: {}",
-                            seed.account, mask_proxy(p)
+                            seed.account,
+                            mask_proxy(p)
                         ));
                     }
 
@@ -981,7 +1004,10 @@ pub async fn run_invite_workflow(
                         }
                     }
 
-                    let proxy_label = proxy.as_deref().map(|p| mask_proxy(p)).unwrap_or_else(|| "直连".to_string());
+                    let proxy_label = proxy
+                        .as_deref()
+                        .map(|p| mask_proxy(p))
+                        .unwrap_or_else(|| "直连".to_string());
                     let acc = match registered {
                         Some(acc) => acc,
                         None => {
@@ -1180,10 +1206,7 @@ pub async fn run_invite_workflow(
 
         // 检查是否达成目标
         if cum_s2a_ok >= target {
-            broadcast_log(&format!(
-                "[目标达成] 已成功入库 {}/{}",
-                cum_s2a_ok, target
-            ));
+            broadcast_log(&format!("[目标达成] 已成功入库 {}/{}", cum_s2a_ok, target));
             break;
         }
 
@@ -1199,7 +1222,11 @@ pub async fn run_invite_workflow(
     } // end retry loop
 
     // ─── 最终判断 ──────────────────────────────────────────────────────────
-    let has_useful_output = if push_s2a { cum_s2a_ok > 0 } else { cum_rt_ok > 0 };
+    let has_useful_output = if push_s2a {
+        cum_s2a_ok > 0
+    } else {
+        cum_rt_ok > 0
+    };
 
     if !has_useful_output {
         let _ = db.enqueue_reset_owner_used(owner_db_id);
@@ -1207,7 +1234,11 @@ pub async fn run_invite_workflow(
     }
 
     // ─── 完成 ────────────────────────────────────────────────────────────────
-    let task_status = if has_useful_output { "completed" } else { "failed" };
+    let task_status = if has_useful_output {
+        "completed"
+    } else {
+        "failed"
+    };
     let _ = db.enqueue_update_invite_task(
         task_id.clone(),
         InviteTaskUpdate {
@@ -1225,7 +1256,13 @@ pub async fn run_invite_workflow(
         },
     );
 
-    let label = if cum_s2a_ok >= target { "邀请完成" } else if has_useful_output { "部分完成" } else { "邀请失败" };
+    let label = if cum_s2a_ok >= target {
+        "邀请完成"
+    } else if has_useful_output {
+        "部分完成"
+    } else {
+        "邀请失败"
+    };
     broadcast_log(&format!(
         "[{}] owner={} | 邀请: {}/{} | 注册: {}/{} | RT: {}/{} | S2A: {}/{}",
         label,

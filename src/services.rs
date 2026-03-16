@@ -55,7 +55,12 @@ pub trait CodexService: Send + Sync {
 #[async_trait]
 pub trait S2aService: Send + Sync {
     async fn test_connection(&self, team: &S2aConfig) -> Result<()>;
-    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt, proxy_id: Option<i64>) -> Result<Option<i64>>;
+    async fn add_account(
+        &self,
+        team: &S2aConfig,
+        account: &AccountWithRt,
+        proxy_id: Option<i64>,
+    ) -> Result<Option<i64>>;
     async fn fetch_proxy_ids(&self, team: &S2aConfig) -> Result<Vec<i64>>;
     async fn batch_refresh(&self, team: &S2aConfig, account_ids: &[i64]) -> Result<usize>;
 }
@@ -1775,7 +1780,12 @@ impl S2aService for DryRunS2aService {
         Ok(())
     }
 
-    async fn add_account(&self, _team: &S2aConfig, _account: &AccountWithRt, _proxy_id: Option<i64>) -> Result<Option<i64>> {
+    async fn add_account(
+        &self,
+        _team: &S2aConfig,
+        _account: &AccountWithRt,
+        _proxy_id: Option<i64>,
+    ) -> Result<Option<i64>> {
         let wait_ms = random_delay_ms(40, 120);
         sleep(Duration::from_millis(wait_ms)).await;
         Ok(None)
@@ -1957,8 +1967,8 @@ impl S2aHttpService {
 
             if status == StatusCode::OK {
                 self.remember_mode(&base, mode);
-                let json: serde_json::Value = serde_json::from_str(&body)
-                    .context("S2A proxies 响应解析失败")?;
+                let json: serde_json::Value =
+                    serde_json::from_str(&body).context("S2A proxies 响应解析失败")?;
                 // 提取 data.items[].id
                 let ids = json
                     .get("data")
@@ -2045,7 +2055,12 @@ impl S2aService for S2aHttpService {
         bail!("S2A 连接测试失败: {}", failures.join(" | "))
     }
 
-    async fn add_account(&self, team: &S2aConfig, account: &AccountWithRt, proxy_id: Option<i64>) -> Result<Option<i64>> {
+    async fn add_account(
+        &self,
+        team: &S2aConfig,
+        account: &AccountWithRt,
+        proxy_id: Option<i64>,
+    ) -> Result<Option<i64>> {
         let prefix = if account.plan_type.contains("team") {
             "team"
         } else {

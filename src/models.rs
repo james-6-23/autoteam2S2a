@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSeed {
@@ -108,5 +108,4 @@ impl InviteProgress {
             *s = stage.to_string();
         }
     }
-
 }

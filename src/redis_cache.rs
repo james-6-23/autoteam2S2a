@@ -100,11 +100,7 @@ impl RedisCache {
                 Some(s) => match serde_json::from_str::<T>(&s) {
                     Ok(v) => Some(v),
                     Err(e) => {
-                        tracing::warn!(
-                            "Redis MGET 反序列化失败: key={}, error={}",
-                            keys[i],
-                            e
-                        );
+                        tracing::warn!("Redis MGET 反序列化失败: key={}, error={}", keys[i], e);
                         None
                     }
                 },
