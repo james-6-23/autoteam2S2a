@@ -4383,6 +4383,10 @@ async fn team_manage_get_members_handler(
         "[TeamManage] account_id={account_id} 共 {} 个成员",
         members.len()
     );
+    crate::log_broadcast::broadcast_log(&format!(
+        "[成员] 获取成员列表: owner={}, 共 {} 个成员",
+        account_id, members.len()
+    ));
     Ok(Json(TeamManageMembersResponse { members }))
 }
 
@@ -4391,6 +4395,10 @@ async fn team_manage_kick_member_handler(
     Path((account_id, user_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     tracing::info!("[TeamManage] 踢除成员: account_id={account_id}, user_id={user_id}");
+    crate::log_broadcast::broadcast_log(&format!(
+        "[踢除] 踢除成员: owner={}, user={}",
+        account_id, user_id
+    ));
 
     let access_token = state
         .run_history_db
@@ -4463,6 +4471,10 @@ async fn team_manage_kick_member_handler(
     }
 
     tracing::info!("[TeamManage] 踢除成功: account_id={account_id}, user_id={user_id}");
+    crate::log_broadcast::broadcast_log(&format!(
+        "[踢除] ✓ owner={} 踢除成员 {} 成功",
+        account_id, user_id
+    ));
     Ok(Json(
         serde_json::json!({ "success": true, "message": "成员已踢除" }),
     ))
@@ -4717,12 +4729,20 @@ async fn team_manage_refresh_members_handler(
     Path(account_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     tracing::info!("[TeamManage] 刷新成员列表: account_id={account_id}");
+    crate::log_broadcast::broadcast_log(&format!(
+        "[刷新] 刷新成员列表: owner={}",
+        account_id
+    ));
     let members = team_manage_fetch_members_live(&state, &account_id).await?;
 
     tracing::info!(
         "[TeamManage] 刷新完成: account_id={account_id}, 共 {} 个成员",
         members.len()
     );
+    crate::log_broadcast::broadcast_log(&format!(
+        "[刷新] ✓ owner={} 刷新完成，共 {} 个成员",
+        account_id, members.len()
+    ));
     Ok(Json(TeamManageMembersResponse { members }))
 }
 
@@ -5407,6 +5427,10 @@ async fn create_team_manage_invite_task(
         "[TeamManage] 邀请并入库: account_id={account_id}, s2a_team={}",
         req.s2a_team
     );
+    crate::log_broadcast::broadcast_log(&format!(
+        "[邀请] 创建邀请任务: owner={}, 号池={}",
+        account_id, req.s2a_team
+    ));
 
     let (owner_db_id, owner_email, access_token) = state
         .run_history_db
@@ -5503,6 +5527,10 @@ async fn create_team_manage_invite_task(
     tracing::info!(
         "[TeamManage] 邀请任务已创建: task_id={task_id}, invite_count={invite_count}, max_members={max_members}"
     );
+    crate::log_broadcast::broadcast_log(&format!(
+        "[邀请] ✓ 任务已创建: task={}, 邀请 {} 人到 {}, owner={}",
+        task_id, invite_count, req.s2a_team, account_id
+    ));
 
     Ok(TeamManageInviteCreated {
         task_id,
