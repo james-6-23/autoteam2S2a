@@ -306,6 +306,7 @@ async fn fetch_team_members(
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {}", owner.access_token))
+        .header("Chatgpt-Account-Id", &owner.account_id)
         .header("User-Agent", &invite_cfg.user_agent)
         .header("Origin", "https://chatgpt.com")
         .header("Referer", "https://chatgpt.com/")
@@ -1091,8 +1092,8 @@ pub async fn run_invite_workflow(
                                     account: acc.account,
                                     password: acc.password,
                                     token: acc.token,
-                                    account_id: owner_account_id.clone(), // 使用 owner 的 team account_id
-                                    plan_type: acc.plan_type,
+                                    account_id: owner_account_id.clone(), // 严格使用 owner 的 team account_id
+                                    plan_type: "team".to_string(), // 邀请入库强制为 team（不依赖注册返回值）
                                     refresh_token: rt,
                                 },
                             }
