@@ -944,7 +944,7 @@ pub async fn run_invite_workflow(
         broadcast_log("[等待] 等待 5s 让邀请在服务端生效...");
         tokio::time::sleep(Duration::from_secs(5)).await;
 
-        // ─── 校验邀请是否真正生效 ──────────────────────────────────────────
+        // ─── 校验邀请是否真正生效（软校验，仅记录不阻断）───────────────
         match fetch_pending_invites(&owner, &invite_cfg).await {
             Ok(pending) => {
                 let pending_set: std::collections::HashSet<String> = pending
@@ -955,43 +955,24 @@ pub async fn run_invite_workflow(
                     "[检查] 当前 pending invites: {} 条",
                     pending_set.len()
                 ));
-                let before = invited_emails_ok.len();
-                invited_emails_ok.retain(|&(seed_idx, email_db_id)| {
+                // 仅统计并记录，不从列表中移除
+                let mut unverified = 0usize;
+                for &(seed_idx, _email_db_id) in &invited_emails_ok {
                     let email_lower = round_seeds[seed_idx].account.to_lowercase();
-                    if pending_set.contains(&email_lower) {
-                        true
-                    } else {
-                        broadcast_log(&format!(
-                            "[邀请校验] {} 不在 pending invites 中，邀请可能未生效",
-                            round_seeds[seed_idx].account
-                        ));
-                        let _ = db.enqueue_update_invite_email(
-                            email_db_id,
-                            InviteEmailUpdate {
-                                invite_status: Some("unverified".to_string()),
-                                error: Some(
-                                    "邀请API返回成功但未出现在pending invites中".to_string(),
-                                ),
-                                ..Default::default()
-                            },
-                        );
-                        invited_failed += 1;
-                        invited_ok = invited_ok.saturating_sub(1);
-                        false
+                    if !pending_set.contains(&email_lower) {
+                        unverified += 1;
                     }
-                });
-                let removed = before - invited_emails_ok.len();
-                if removed > 0 {
+                }
+                if unverified > 0 {
                     broadcast_log(&format!(
-                        "[邀请校验] {}/{} 个邀请已确认，{} 个未通过校验",
-                        invited_emails_ok.len(),
-                        before,
-                        removed
+                        "[邀请校验] {}/{} 个邀请未在 pending invites 中确认（仍继续注册，由 plan_type 最终过滤）",
+                        unverified,
+                        invited_emails_ok.len()
                     ));
                 } else {
                     broadcast_log(&format!(
                         "[邀请校验] 全部 {} 个邀请已确认",
-                        before
+                        invited_emails_ok.len()
                     ));
                 }
             }
@@ -1000,11 +981,6 @@ pub async fn run_invite_workflow(
                     "[邀请校验] 查询 pending invites 失败: {e:#}，跳过校验继续执行"
                 ));
             }
-        }
-
-        if invited_emails_ok.is_empty() {
-            broadcast_log("[邀请校验] 所有邮箱均未通过校验，跳过本轮注册");
-            continue;
         }
 
         // ─── 阶段 2: 注册 + RT ──────────────────────────────────────────
