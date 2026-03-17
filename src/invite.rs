@@ -1092,8 +1092,8 @@ pub async fn run_invite_workflow(
                                     account: acc.account,
                                     password: acc.password,
                                     token: acc.token,
-                                    account_id: owner_account_id.clone(), // 严格使用 owner 的 team account_id
-                                    plan_type: "team".to_string(), // 邀请入库强制为 team（不依赖注册返回值）
+                                    account_id: owner_account_id.clone(), // 强制使用 owner 的 team account_id
+                                    plan_type: acc.plan_type, // 保留真实值，用于判断是否入 S2A
                                     refresh_token: rt,
                                 },
                             }
@@ -1139,8 +1139,23 @@ pub async fn run_invite_workflow(
                 } => {
                     round_reg_ok += 1;
                     round_rt_ok += 1;
-                    s2a_email_db_ids.push(email_db_id);
-                    accounts_for_s2a.push(account_with_rt);
+                    // free 账户说明邀请未生效，token 无 team 权限，跳过 S2A
+                    if account_with_rt.plan_type.eq_ignore_ascii_case("free") {
+                        broadcast_log(&format!(
+                            "[跳过S2A] {} plan=free，邀请未生效",
+                            account_with_rt.account
+                        ));
+                        let _ = db.enqueue_update_invite_email(
+                            email_db_id,
+                            InviteEmailUpdate {
+                                s2a_status: Some("skipped_free".to_string()),
+                                ..Default::default()
+                            },
+                        );
+                    } else {
+                        s2a_email_db_ids.push(email_db_id);
+                        accounts_for_s2a.push(account_with_rt);
+                    }
                 }
             }
         }
