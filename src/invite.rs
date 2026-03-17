@@ -643,7 +643,22 @@ pub async fn run_invite_workflow(
                 m
             }
             Err(e) => {
-                broadcast_log(&format!("[检查] 查询 team 成员失败: {e:#}, 继续正常流程"));
+                let err_msg = format!("{e:#}");
+                // 403 说明 owner token 失效或权限不足，不能当 0 人处理
+                if err_msg.contains("403") {
+                    broadcast_log(&format!(
+                        "[检查] 查询 team 成员返回 403，owner token 可能失效，标记并跳过: {err_msg}"
+                    ));
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = db.batch_update_owner_registry_state(
+                        &[owner.account_id.clone()],
+                        "token_invalid",
+                        Some("fetch_members_403"),
+                        &now,
+                    );
+                    break;
+                }
+                broadcast_log(&format!("[检查] 查询 team 成员失败: {err_msg}, 继续正常流程"));
                 Vec::new()
             }
         };
@@ -944,7 +959,8 @@ pub async fn run_invite_workflow(
         broadcast_log("[等待] 等待 5s 让邀请在服务端生效...");
         tokio::time::sleep(Duration::from_secs(5)).await;
 
-        // ─── 校验邀请是否真正生效（软校验，仅记录不阻断）───────────────
+        // ─── 校验邀请是否真正生效（全部未确认则硬阻断）───────────────
+        let mut invite_verified = true; // 默认通过（查询失败时不阻断）
         match fetch_pending_invites(&owner, &invite_cfg).await {
             Ok(pending) => {
                 let pending_set: std::collections::HashSet<String> = pending
@@ -955,7 +971,7 @@ pub async fn run_invite_workflow(
                     "[检查] 当前 pending invites: {} 条",
                     pending_set.len()
                 ));
-                // 仅统计并记录，不从列表中移除
+                // 统计未确认的邀请数
                 let mut unverified = 0usize;
                 for &(seed_idx, _email_db_id) in &invited_emails_ok {
                     let email_lower = round_seeds[seed_idx].account.to_lowercase();
@@ -963,9 +979,25 @@ pub async fn run_invite_workflow(
                         unverified += 1;
                     }
                 }
-                if unverified > 0 {
+                if unverified == invited_emails_ok.len() && unverified > 0 {
+                    // 全部未确认：邀请完全无效，硬阻断
                     broadcast_log(&format!(
-                        "[邀请校验] {}/{} 个邀请未在 pending invites 中确认（仍继续注册，由 plan_type 最终过滤）",
+                        "[邀请校验] {}/{} 个邀请全部未在 pending invites 中确认，席位可能已满或 owner 异常，终止本 owner 流程",
+                        unverified,
+                        invited_emails_ok.len()
+                    ));
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = db.batch_update_owner_registry_state(
+                        &[owner.account_id.clone()],
+                        "invite_ineffective",
+                        Some("all_invites_not_in_pending"),
+                        &now,
+                    );
+                    invite_verified = false;
+                } else if unverified > 0 {
+                    // 部分未确认：记录警告，继续流程
+                    broadcast_log(&format!(
+                        "[邀请校验] {}/{} 个邀请未在 pending invites 中确认（部分生效，继续注册）",
                         unverified,
                         invited_emails_ok.len()
                     ));
@@ -981,6 +1013,11 @@ pub async fn run_invite_workflow(
                     "[邀请校验] 查询 pending invites 失败: {e:#}，跳过校验继续执行"
                 ));
             }
+        }
+
+        // 全部邀请无效，跳过注册阶段
+        if !invite_verified {
+            continue;
         }
 
         // ─── 阶段 2: 注册 + RT ──────────────────────────────────────────
