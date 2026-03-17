@@ -610,6 +610,9 @@ pub async fn run_invite_workflow(
     let mut cum_rt_failed = 0usize;
     let mut cum_s2a_ok = 0usize;
     let mut cum_s2a_failed = 0usize;
+    // 跟踪已成功入库的邮箱，恢复路径中排除重复入库
+    let mut s2a_pushed_emails: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     const MAX_ROUNDS: usize = 3;
 
@@ -695,6 +698,15 @@ pub async fn run_invite_workflow(
             let mut recovery_accounts: Vec<crate::models::AccountWithRt> = Vec::new();
 
             for member in &existing_members {
+                // 跳过已在本轮成功入库的账号，避免重复推送
+                if s2a_pushed_emails.contains(&member.email.to_lowercase()) {
+                    broadcast_log(&format!(
+                        "[恢复] 跳过 {} (已入库)",
+                        member.email
+                    ));
+                    continue;
+                }
+
                 if let Some(password) = pw_map.get(&member.email) {
                     // 住宅代理：每次 RT 请求前刷新 IP
                     if proxy_pool.has_refresh_urls() {
@@ -1255,6 +1267,13 @@ pub async fn run_invite_workflow(
                 let (ok, failed) = workflow_runner
                     .push_to_s2a(team_cfg, accounts_for_s2a.clone(), None)
                     .await;
+
+                // 记录已成功入库的邮箱，防止恢复路径重复入库
+                for (idx, acc) in accounts_for_s2a.iter().enumerate() {
+                    if idx < ok {
+                        s2a_pushed_emails.insert(acc.account.to_lowercase());
+                    }
+                }
 
                 for (idx, &email_db_id) in s2a_email_db_ids.iter().enumerate() {
                     let status = if idx < ok { "ok" } else { "failed" };
