@@ -283,7 +283,6 @@ async fn invite_single_email(
 #[derive(Debug, Clone)]
 struct TeamMember {
     pub email: String,
-    #[allow(dead_code)]
     pub user_id: String,
 }
 
@@ -485,6 +484,50 @@ async fn delete_pending_invites(
         }
     });
     futures::future::join_all(futs).await;
+}
+
+// ─── 踢除 Team 成员 ─────────────────────────────────────────────────────────
+
+/// 踢除单个 team 成员，释放席位
+async fn kick_member(
+    owner: &TeamOwner,
+    member: &TeamMember,
+    invite_cfg: &InviteRuntimeConfig,
+) -> Result<()> {
+    let client = rquest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let url = format!(
+        "https://chatgpt.com/backend-api/accounts/{}/users/{}",
+        owner.account_id, member.user_id
+    );
+
+    let device_id = uuid::Uuid::new_v4().to_string();
+
+    let resp = client
+        .delete(&url)
+        .header("Accept", "*/*")
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Authorization", format!("Bearer {}", owner.access_token))
+        .header("Chatgpt-Account-Id", &owner.account_id)
+        .header("Oai-Language", "zh-CN")
+        .header("Oai-Device-Id", &device_id)
+        .header("User-Agent", &invite_cfg.user_agent)
+        .header("Referer", "https://chatgpt.com/admin/members")
+        .header("Origin", "https://chatgpt.com")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!("HTTP {}: {}", status.as_u16(), if body.len() > 200 { &body[..200] } else { &body });
+    }
+
+    Ok(())
 }
 
 // ─── 注销 Owner 账号 ────────────────────────────────────────────────────────
@@ -711,6 +754,7 @@ pub async fn run_invite_workflow(
 
             // 为已有成员构造 RegisteredAccount，批量获取 RT
             let mut recovery_accounts: Vec<crate::models::AccountWithRt> = Vec::new();
+            let mut deactivated_members: Vec<TeamMember> = Vec::new();
 
             for member in &existing_members {
                 // 跳过已在本轮成功入库的账号，避免重复推送
@@ -767,14 +811,56 @@ pub async fn run_invite_workflow(
                             });
                         }
                         Err(e) => {
+                            let err_msg = format!("{e:#}");
                             cum_rt_failed += 1;
                             progress.rt_failed.fetch_add(1, Ordering::Relaxed);
+                            // 检测账号是否已被停用
+                            if err_msg.contains("AccountDeactivated") {
+                                broadcast_log(&format!(
+                                    "[恢复-RT失败] {} 账号已被停用(AccountDeactivated)，加入踢除队列",
+                                    member.email
+                                ));
+                                deactivated_members.push(member.clone());
+                            } else {
+                                broadcast_log(&format!(
+                                    "[恢复-RT失败] {} (代理: {}): {err_msg}",
+                                    member.email, proxy_label
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ─── 踢除已停用的成员，释放席位 ────────────────────────────
+            if !deactivated_members.is_empty() {
+                broadcast_log(&format!(
+                    "[恢复-踢除] 发现 {} 个已停用成员，开始踢除释放席位",
+                    deactivated_members.len()
+                ));
+                let mut kicked = 0usize;
+                for m in &deactivated_members {
+                    match kick_member(&owner, m, &invite_cfg).await {
+                        Ok(()) => {
+                            kicked += 1;
                             broadcast_log(&format!(
-                                "[恢复-RT失败] {} (代理: {}): {e:#}",
-                                member.email, proxy_label
+                                "[恢复-踢除] ✓ 已踢除停用成员 {} (user_id={})",
+                                m.email, m.user_id
+                            ));
+                        }
+                        Err(e) => {
+                            broadcast_log(&format!(
+                                "[恢复-踢除] ✗ 踢除 {} 失败: {e:#}",
+                                m.email
                             ));
                         }
                     }
+                }
+                if kicked > 0 {
+                    broadcast_log(&format!(
+                        "[恢复-踢除] 已释放 {} 个席位，将进入下一轮重新邀请",
+                        kicked
+                    ));
                 }
             }
 
@@ -817,8 +903,16 @@ pub async fn run_invite_workflow(
 
             if cum_s2a_ok >= target {
                 broadcast_log(&format!("[目标达成] 恢复入库 {}/{}", cum_s2a_ok, target));
+                break;
             }
-            break; // 恢复路径完成，退出循环
+
+            // 有成员被踢除 → 席位已释放，进入下一轮重新邀请填补
+            if !deactivated_members.is_empty() {
+                broadcast_log("[恢复] 有停用成员已踢除，进入下一轮补充邀请");
+                continue;
+            }
+
+            break; // 恢复路径完成，无需补充
         }
 
         // ─── 正常路径：邀请 → 注册 → RT → S2A ──────────────────────────
