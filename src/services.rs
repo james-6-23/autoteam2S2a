@@ -708,15 +708,29 @@ impl LiveRegisterService {
             bail!("account_check: banned(empty)");
         }
 
+        // 优先选择 team 账户（HashMap 迭代顺序不确定，不能依赖第一个结果）
+        let mut fallback: Option<(String, String)> = None;
         for (account_id, entry) in accounts {
-            if account_id != "default" {
-                let plan = if entry.account.plan_type.is_empty() {
-                    "free".to_string()
-                } else {
-                    entry.account.plan_type
-                };
+            if account_id == "default" {
+                continue;
+            }
+            let plan = if entry.account.plan_type.is_empty() {
+                "free".to_string()
+            } else {
+                entry.account.plan_type
+            };
+            // 非 free 账户（team/plus 等）直接返回
+            if !plan.eq_ignore_ascii_case("free") {
                 return Ok((account_id, plan));
             }
+            // 记录第一个 free 账户作为兜底
+            if fallback.is_none() {
+                fallback = Some((account_id, plan));
+            }
+        }
+        // 没有 team 账户时，返回 free 兜底
+        if let Some(fb) = fallback {
+            return Ok(fb);
         }
         bail!("account_check: banned(default_only)");
     }
