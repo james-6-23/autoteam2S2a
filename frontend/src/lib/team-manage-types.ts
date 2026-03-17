@@ -2,6 +2,7 @@ export interface TeamOwner {
   email: string;
   account_id: string;
   access_token?: string;
+  has_refresh_token?: boolean;
   member_count?: number;
   state?: string;
   disabled_reason?: string;

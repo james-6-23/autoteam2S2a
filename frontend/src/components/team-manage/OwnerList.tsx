@@ -9,10 +9,12 @@ interface OwnerListProps {
   ownerQuotaLoading: Record<string, boolean>;
   healthMap: Record<string, OwnerHealth>;
   selectedOwnerIds: Set<string>;
+  refreshingTokenIds?: Set<string>;
   onOpenMembers: (accountId: string) => void;
   onToggleSelected: (accountId: string) => void;
   onLoadOwnerQuota: (accountId: string) => void;
   onRefreshMembers: (accountId: string) => void;
+  onRefreshToken?: (accountId: string) => void;
 }
 
 export function OwnerList({
@@ -23,10 +25,12 @@ export function OwnerList({
   ownerQuotaLoading,
   healthMap,
   selectedOwnerIds,
+  refreshingTokenIds,
   onOpenMembers,
   onToggleSelected,
   onLoadOwnerQuota,
   onRefreshMembers,
+  onRefreshToken,
 }: OwnerListProps) {
   if (loading && owners.length === 0) {
     return <div className="py-8 text-center c-dim">加载中...</div>;
@@ -64,10 +68,12 @@ export function OwnerList({
             quotaLoading={ownerQuotaLoading[owner.account_id]}
             health={healthMap[owner.account_id]}
             selected={selectedOwnerIds.has(owner.account_id)}
+            refreshingToken={refreshingTokenIds?.has(owner.account_id)}
             onOpenMembers={onOpenMembers}
             onToggleSelected={onToggleSelected}
             onLoadOwnerQuota={onLoadOwnerQuota}
             onRefreshMembers={onRefreshMembers}
+            onRefreshToken={onRefreshToken}
           />
         ))}
       </div>

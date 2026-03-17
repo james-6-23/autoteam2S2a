@@ -136,6 +136,7 @@ export default function TeamManage() {
   const [pendingInviteCounts, setPendingInviteCounts] = useState<Record<string, number>>({});
   const [ownerQuotas, setOwnerQuotas] = useState<Record<string, CodexQuota>>({});
   const [ownerQuotaLoading, setOwnerQuotaLoading] = useState<Record<string, boolean>>({});
+  const [refreshingTokenIds, setRefreshingTokenIds] = useState<Set<string>>(new Set());
   const [memberQuotas, setMemberQuotas] = useState<Record<string, CodexQuota>>({});
   const [memberQuotaLoading, setMemberQuotaLoading] = useState<Record<string, boolean>>({});
   const [healthMap, setHealthMap] = useState<Record<string, OwnerHealth>>({});
@@ -383,6 +384,23 @@ export default function TeamManage() {
       toast("额度查询失败", "error");
     } finally {
       setOwnerQuotaLoading(prev => ({ ...prev, [accountId]: false }));
+    }
+  };
+
+  const refreshOwnerToken = async (accountId: string) => {
+    setRefreshingTokenIds(prev => new Set(prev).add(accountId));
+    try {
+      const resp = await fetch(`/api/team-manage/owners/${accountId}/refresh-token`, { method: "POST" });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({ error: resp.statusText }));
+        throw new Error(body.error || `HTTP ${resp.status}`);
+      }
+      toast("access_token 已刷新", "success");
+      void loadOwners(ownerPage);
+    } catch (err) {
+      toast(`刷新令牌失败: ${err instanceof Error ? err.message : String(err)}`, "error");
+    } finally {
+      setRefreshingTokenIds(prev => { const s = new Set(prev); s.delete(accountId); return s; });
     }
   };
 
@@ -1345,10 +1363,12 @@ export default function TeamManage() {
           ownerQuotaLoading={ownerQuotaLoading}
           healthMap={healthMap}
           selectedOwnerIds={selectedOwnerSet}
+          refreshingTokenIds={refreshingTokenIds}
           onOpenMembers={loadMembers}
           onToggleSelected={toggleOwnerSelected}
           onLoadOwnerQuota={accountId => { void loadOwnerQuota(accountId); }}
           onRefreshMembers={accountId => { void refreshMembers(accountId); }}
+          onRefreshToken={accountId => { void refreshOwnerToken(accountId); }}
         />
 
 

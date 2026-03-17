@@ -189,6 +189,7 @@ pub struct InviteOwnerInsert {
     pub account_id: String,
     pub access_token: String,
     pub expires: Option<String>,
+    pub refresh_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -361,6 +362,7 @@ pub struct OwnerRegistryRecord {
     pub created_at: String,
     pub updated_at: String,
     pub has_banned_member: bool,
+    pub has_refresh_token: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -747,6 +749,8 @@ impl RunHistoryDb {
 
         // Migration: 为旧数据库补充 refresh_token 列
         let _ = conn.execute_batch("ALTER TABLE invite_emails ADD COLUMN refresh_token TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE invite_owners ADD COLUMN refresh_token TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE owner_registry ADD COLUMN refresh_token TEXT;");
 
         // owner_health 表：缓存 Owner 健康检查结果
         conn.execute_batch(
@@ -982,7 +986,7 @@ impl RunHistoryDb {
                 let tx = conn.transaction()?;
                 {
                     let mut stmt = tx.prepare(
-                        "INSERT INTO invite_owners (upload_id, email, account_id, access_token, expires) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        "INSERT INTO invite_owners (upload_id, email, account_id, access_token, expires, refresh_token) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     )?;
                     for o in owners {
                         stmt.execute(params![
@@ -990,7 +994,8 @@ impl RunHistoryDb {
                             o.email,
                             o.account_id,
                             o.access_token,
-                            o.expires
+                            o.expires,
+                            o.refresh_token
                         ])?;
                     }
                 }
@@ -2039,9 +2044,9 @@ impl RunHistoryDb {
         let affected = conn.execute(
             "INSERT INTO owner_registry (
                 account_id, display_email, latest_access_token, token_expires_at,
-                source_upload_id, state, created_at, updated_at
+                source_upload_id, refresh_token, state, created_at, updated_at
              )
-             SELECT o.account_id, o.email, o.access_token, o.expires, o.upload_id, 'active', ?1, ?2
+             SELECT o.account_id, o.email, o.access_token, o.expires, o.upload_id, o.refresh_token, 'active', ?1, ?2
              FROM invite_owners o
              INNER JOIN (
                 SELECT account_id, MAX(id) AS max_id
@@ -2055,10 +2060,44 @@ impl RunHistoryDb {
                 latest_access_token = excluded.latest_access_token,
                 token_expires_at = excluded.token_expires_at,
                 source_upload_id = excluded.source_upload_id,
+                refresh_token = COALESCE(excluded.refresh_token, owner_registry.refresh_token),
                 updated_at = excluded.updated_at",
             params![now, now],
         )?;
         Ok(affected)
+    }
+
+    /// 获取 owner 的 refresh_token
+    pub fn get_owner_refresh_token(&self, account_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT refresh_token FROM owner_registry WHERE account_id = ?1 AND refresh_token IS NOT NULL AND refresh_token != ''",
+            params![account_id],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(token) => Ok(Some(token)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 刷新成功后更新 owner 的 access_token
+    pub fn update_owner_access_token(&self, account_id: &str, new_access_token: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = crate::util::beijing_now().to_rfc3339();
+        conn.execute(
+            "UPDATE owner_registry SET latest_access_token = ?1, updated_at = ?2 WHERE account_id = ?3",
+            params![new_access_token, now, account_id],
+        )?;
+        // 同步更新 invite_owners 中最新记录的 access_token
+        conn.execute(
+            "UPDATE invite_owners SET access_token = ?1 WHERE id = (
+                SELECT MAX(id) FROM invite_owners WHERE account_id = ?2
+             )",
+            params![new_access_token, account_id],
+        )?;
+        Ok(())
     }
 
     pub fn list_owner_registry_page(
@@ -2098,7 +2137,11 @@ impl RunHistoryDb {
                           AND h.members_json LIKE '%\"status\":\"banned\"%'
                     ) THEN 1
                     ELSE 0
-                END AS has_banned_member
+                END AS has_banned_member,
+                CASE
+                    WHEN r.refresh_token IS NOT NULL AND r.refresh_token != '' THEN 1
+                    ELSE 0
+                END AS has_refresh_token
              FROM owner_registry r
              {where_sql}
              ORDER BY {order_by}
@@ -2162,7 +2205,11 @@ impl RunHistoryDb {
                           AND h.members_json LIKE '%\"status\":\"banned\"%'
                     ) THEN 1
                     ELSE 0
-                END AS has_banned_member
+                END AS has_banned_member,
+                CASE
+                    WHEN r.refresh_token IS NOT NULL AND r.refresh_token != '' THEN 1
+                    ELSE 0
+                END AS has_refresh_token
              FROM owner_registry r
              WHERE r.account_id = ?1",
             params![account_id],
@@ -2963,6 +3010,7 @@ fn map_owner_registry_row(row: &rusqlite::Row) -> rusqlite::Result<OwnerRegistry
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
         has_banned_member: row.get::<_, i64>(14)? != 0,
+        has_refresh_token: row.get::<_, i64>(15).unwrap_or(0) != 0,
     })
 }
 

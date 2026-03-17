@@ -22,6 +22,7 @@ pub struct TeamOwner {
     pub account_id: String,
     pub access_token: String,
     pub expires: Option<String>,
+    pub refresh_token: Option<String>,
 }
 
 /// 解析上传的 accounts JSON，兼容多种格式：
@@ -79,11 +80,20 @@ pub fn parse_owners_json(value: &serde_json::Value) -> Result<Vec<TeamOwner>> {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // refresh_token: 兼容 refreshToken / refresh_token
+        let refresh_token = item
+            .get("refresh_token")
+            .or_else(|| item.get("refreshToken"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         owners.push(TeamOwner {
             email,
             account_id,
             access_token,
             expires,
+            refresh_token,
         });
     }
 
@@ -119,6 +129,7 @@ pub fn owners_to_db(owners: &[TeamOwner]) -> Vec<InviteOwnerInsert> {
             account_id: o.account_id.clone(),
             access_token: o.access_token.clone(),
             expires: o.expires.clone(),
+            refresh_token: o.refresh_token.clone(),
         })
         .collect()
 }

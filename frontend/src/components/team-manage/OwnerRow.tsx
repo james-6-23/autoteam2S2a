@@ -1,4 +1,4 @@
-import { Loader2, RefreshCw, ShieldAlert, Users, Zap } from "lucide-react";
+import { KeyRound, Loader2, RefreshCw, ShieldAlert, Users, Zap } from "lucide-react";
 
 import type { CodexQuota, OwnerHealth, TeamOwner } from "../../lib/team-manage-types";
 import { quotaColor } from "../../lib/team-manage-types";
@@ -10,10 +10,12 @@ interface OwnerRowProps {
   quotaLoading?: boolean;
   health?: OwnerHealth;
   selected?: boolean;
+  refreshingToken?: boolean;
   onOpenMembers: (accountId: string) => void;
   onToggleSelected: (accountId: string) => void;
   onLoadOwnerQuota: (accountId: string) => void;
   onRefreshMembers: (accountId: string) => void;
+  onRefreshToken?: (accountId: string) => void;
 }
 
 function MiniBar({ percent }: { percent: number }) {
@@ -95,10 +97,12 @@ export function OwnerRow({
   quotaLoading,
   health,
   selected,
+  refreshingToken,
   onOpenMembers,
   onToggleSelected,
   onLoadOwnerQuota,
   onRefreshMembers,
+  onRefreshToken,
 }: OwnerRowProps) {
   const isOwnerBanned = health?.owner_status === "banned";
   const isCheckError = health?.owner_status === "check_failed" || health?.owner_status === "timeout" || health?.owner_status === "lock_conflict";
@@ -213,6 +217,21 @@ export function OwnerRow({
 
       {/* 列7: 操作按钮 */}
       <div className="flex items-center justify-end gap-1">
+        {owner.has_refresh_token && onRefreshToken && (
+          <button
+            type="button"
+            onClick={event => {
+              event.stopPropagation();
+              onRefreshToken(owner.account_id);
+            }}
+            disabled={refreshingToken}
+            className="inline-flex items-center justify-center rounded-md p-1.5 transition-colors hover:bg-[rgba(255,255,255,0.06)]"
+            style={{ color: refreshingToken ? "var(--accent)" : "var(--text-dim)" }}
+            title="刷新令牌"
+          >
+            {refreshingToken ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
+          </button>
+        )}
         <button
           type="button"
           onClick={event => {

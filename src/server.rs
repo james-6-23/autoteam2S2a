@@ -3148,6 +3148,10 @@ pub async fn start_server(
             post(team_manage_batch_refresh_members_handler),
         )
         .route(
+            "/api/team-manage/owners/{accountId}/refresh-token",
+            post(team_manage_refresh_owner_token_handler),
+        )
+        .route(
             "/api/team-manage/dashboard",
             get(team_manage_dashboard_handler),
         )
@@ -3468,6 +3472,7 @@ async fn execute_invite_handler(
             account_id: owner_account_id,
             access_token,
             expires: None,
+            refresh_token: None,
         };
 
         let progress = Arc::new(crate::models::InviteProgress::new());
@@ -3612,6 +3617,7 @@ struct TeamManageOwnerListItem {
     email: String,
     account_id: String,
     access_token: Option<String>,
+    has_refresh_token: bool,
     member_count: Option<usize>,
     state: Option<String>,
     disabled_reason: Option<String>,
@@ -4173,6 +4179,7 @@ async fn team_manage_list_owners_handler(
                 email: record.display_email.clone(),
                 account_id: record.account_id.clone(),
                 access_token: record.latest_access_token.clone(),
+                has_refresh_token: record.has_refresh_token,
                 member_count: Some(record.member_count_cached),
                 state: Some(record.state.clone()),
                 disabled_reason: record.disabled_reason.clone(),
@@ -5327,6 +5334,43 @@ async fn refresh_rt_to_at(refresh_token: &str) -> Result<String, String> {
         .ok_or_else(|| "刷新 token 响应缺少 access_token".to_string())
 }
 
+// ─── 刷新 Owner Token ────────────────────────────────────────────────────────
+
+async fn team_manage_refresh_owner_token_handler(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    tracing::info!("[TeamManage] 刷新 owner token: account_id={account_id}");
+
+    // 1. 从 DB 获取 refresh_token
+    let rt = state
+        .run_history_db
+        .get_owner_refresh_token(&account_id)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("查询失败: {e}")))?
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, "该 Owner 没有存储 refresh_token"))?;
+
+    // 2. 用 RT 换 AT
+    let new_at = refresh_rt_to_at(&rt)
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &e))?;
+
+    // 3. 更新 DB
+    state
+        .run_history_db
+        .update_owner_access_token(&account_id, &new_at)
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("更新失败: {e}")))?;
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[刷新Token] ✓ owner={} access_token 已刷新",
+        account_id
+    ));
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "access_token 已刷新"
+    })))
+}
+
 /// 从 S2A 号池中搜索邮箱对应的账号，返回 (access_token, refresh_token)
 async fn search_s2a_for_email(config: &AppConfig, email: &str) -> Option<(String, Option<String>)> {
     let client = shared_http_client_8s();
@@ -5553,6 +5597,7 @@ async fn create_team_manage_invite_task(
         account_id: account_id.to_string(),
         access_token,
         expires: None,
+        refresh_token: None,
     };
     let progress = Arc::new(crate::models::InviteProgress::new());
     let db = state.run_history_db.clone();
