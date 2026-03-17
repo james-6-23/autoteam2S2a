@@ -932,6 +932,69 @@ pub async fn run_invite_workflow(
         broadcast_log("[等待] 等待 5s 让邀请在服务端生效...");
         tokio::time::sleep(Duration::from_secs(5)).await;
 
+        // ─── 校验邀请是否真正生效 ──────────────────────────────────────────
+        match fetch_pending_invites(&owner, &invite_cfg).await {
+            Ok(pending) => {
+                let pending_set: std::collections::HashSet<String> = pending
+                    .iter()
+                    .map(|p| p.email.to_lowercase())
+                    .collect();
+                broadcast_log(&format!(
+                    "[检查] 当前 pending invites: {} 条",
+                    pending_set.len()
+                ));
+                let before = invited_emails_ok.len();
+                invited_emails_ok.retain(|&(seed_idx, email_db_id)| {
+                    let email_lower = round_seeds[seed_idx].account.to_lowercase();
+                    if pending_set.contains(&email_lower) {
+                        true
+                    } else {
+                        broadcast_log(&format!(
+                            "[邀请校验] {} 不在 pending invites 中，邀请可能未生效",
+                            round_seeds[seed_idx].account
+                        ));
+                        let _ = db.enqueue_update_invite_email(
+                            email_db_id,
+                            InviteEmailUpdate {
+                                invite_status: Some("unverified".to_string()),
+                                error: Some(
+                                    "邀请API返回成功但未出现在pending invites中".to_string(),
+                                ),
+                                ..Default::default()
+                            },
+                        );
+                        invited_failed += 1;
+                        invited_ok = invited_ok.saturating_sub(1);
+                        false
+                    }
+                });
+                let removed = before - invited_emails_ok.len();
+                if removed > 0 {
+                    broadcast_log(&format!(
+                        "[邀请校验] {}/{} 个邀请已确认，{} 个未通过校验",
+                        invited_emails_ok.len(),
+                        before,
+                        removed
+                    ));
+                } else {
+                    broadcast_log(&format!(
+                        "[邀请校验] 全部 {} 个邀请已确认",
+                        before
+                    ));
+                }
+            }
+            Err(e) => {
+                broadcast_log(&format!(
+                    "[邀请校验] 查询 pending invites 失败: {e:#}，跳过校验继续执行"
+                ));
+            }
+        }
+
+        if invited_emails_ok.is_empty() {
+            broadcast_log("[邀请校验] 所有邮箱均未通过校验，跳过本轮注册");
+            continue;
+        }
+
         // ─── 阶段 2: 注册 + RT ──────────────────────────────────────────
         progress.set_stage("注册 + RT");
 
@@ -1041,6 +1104,13 @@ pub async fn run_invite_workflow(
                         "[注册成功] {} plan={} (代理: {})",
                         acc.account, acc.plan_type, proxy_label
                     ));
+
+                    // 强制使用 owner 的 team account_id 进行 RT workspace 选择
+                    // 如果邀请未生效，workspace/select 会直接失败，提前暴露问题
+                    let acc = crate::models::RegisteredAccount {
+                        account_id: owner_account_id.clone(),
+                        ..acc
+                    };
 
                     // ── RT（最多 3 次尝试，退避 1s → 3s）──
                     const MAX_RT_RETRIES: usize = 3;
