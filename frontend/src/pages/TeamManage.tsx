@@ -94,6 +94,18 @@ function MemberQuotaInline({ quota, loading, onLoad }: { quota?: CodexQuota; loa
   );
 }
 
+/** navigator.clipboard 不可用时（HTTP 环境）的回退复制方案 */
+function fallbackCopy(text: string) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
+}
+
 export default function TeamManage() {
   const { toast } = useToast();
   const [owners, setOwners] = useState<TeamOwner[]>([]);
@@ -1377,9 +1389,19 @@ export default function TeamManage() {
                         `    "resend_emails": true`,
                         `}'`,
                       ].join(" \\\n");
-                      navigator.clipboard.writeText(curl).then(() => {
+                      // navigator.clipboard 在非 HTTPS 下不可用，回退到 execCommand
+                      if (navigator.clipboard?.writeText) {
+                        navigator.clipboard.writeText(curl).then(
+                          () => toast("已复制邀请 cURL 命令", "success"),
+                          () => {
+                            fallbackCopy(curl);
+                            toast("已复制邀请 cURL 命令", "success");
+                          }
+                        );
+                      } else {
+                        fallbackCopy(curl);
                         toast("已复制邀请 cURL 命令", "success");
-                      });
+                      }
                     }}
                     className="btn btn-ghost flex items-center gap-1 px-2 py-1 text-[.65rem]"
                     title="复制邀请 cURL 命令"
