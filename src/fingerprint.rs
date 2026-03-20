@@ -185,20 +185,22 @@ fn accept_encoding_for(name: &str) -> &'static str {
     }
 }
 
-/// 获取 Accept 头
+/// 获取 Accept 头（按浏览器版本精确匹配差异）
 fn accept_for(name: &str) -> &'static str {
     match name {
         n if n.starts_with("safari") => {
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
         n if n.starts_with("firefox") => {
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
         }
         n if n.starts_with("edge") => {
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"
+            // Edge 使用 signed-exchange
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
         }
+        // Chrome 131+ 包含 signed-exchange
         _ => {
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
         }
     }
 }
@@ -232,6 +234,27 @@ fn build_chrome_sec_ch_ua(major: u32, salt: usize) -> String {
     format!("{}, {}, {}", items[perm[0]], items[perm[1]], items[perm[2]])
 }
 
+/// 构建带完整补丁版本号的 sec-ch-ua-full-version-list（Chrome）
+fn build_chrome_sec_ch_ua_full_version_list(major: u32, salt: usize) -> String {
+    let (brand_name, brand_ver) = not_a_brand_tag(major);
+    let patch = pick_chrome_patch(major, salt);
+    let items = [
+        format!("\"Chromium\";v=\"{patch}\""),
+        format!("\"{brand_name}\";v=\"{brand_ver}.0.0.0\""),
+        format!("\"Google Chrome\";v=\"{patch}\""),
+    ];
+    let permutations: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let perm = &permutations[salt % 6];
+    format!("{}, {}, {}", items[perm[0]], items[perm[1]], items[perm[2]])
+}
+
 fn build_edge_sec_ch_ua(chromium_major: u32, edge_major: u32, salt: usize) -> String {
     let (brand_name, brand_ver) = not_a_brand_tag(chromium_major);
     let chromium_str = chromium_major.to_string();
@@ -240,6 +263,28 @@ fn build_edge_sec_ch_ua(chromium_major: u32, edge_major: u32, salt: usize) -> St
         format!("\"Chromium\";v=\"{chromium_str}\""),
         format!("\"{brand_name}\";v=\"{brand_ver}\""),
         format!("\"Microsoft Edge\";v=\"{edge_str}\""),
+    ];
+    let permutations: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let perm = &permutations[salt % 6];
+    format!("{}, {}, {}", items[perm[0]], items[perm[1]], items[perm[2]])
+}
+
+/// 构建带完整补丁版本号的 sec-ch-ua-full-version-list（Edge）
+fn build_edge_sec_ch_ua_full_version_list(chromium_major: u32, edge_major: u32, salt: usize) -> String {
+    let (brand_name, brand_ver) = not_a_brand_tag(chromium_major);
+    let chrome_patch = pick_chrome_patch(chromium_major, salt);
+    let edge_patch = pick_edge_patch(edge_major, salt);
+    let items = [
+        format!("\"Chromium\";v=\"{chrome_patch}\""),
+        format!("\"{brand_name}\";v=\"{brand_ver}.0.0.0\""),
+        format!("\"Microsoft Edge\";v=\"{edge_patch}\""),
     ];
     let permutations: [[usize; 3]; 6] = [
         [0, 1, 2],
@@ -320,6 +365,36 @@ fn build_sec_ch_ua(name: &str, salt: usize) -> Option<String> {
     }
 }
 
+/// 构建 sec-ch-ua-full-version-list（包含完整补丁版本号）
+fn build_sec_ch_ua_full_version_list(name: &str, salt: usize) -> Option<String> {
+    match name {
+        n if n.starts_with("chrome") => {
+            let major = extract_chrome_major(n);
+            Some(build_chrome_sec_ch_ua_full_version_list(major, salt))
+        }
+        n if n.starts_with("edge") => {
+            let major = extract_edge_major(n);
+            Some(build_edge_sec_ch_ua_full_version_list(major, major, salt))
+        }
+        _ => None,
+    }
+}
+
+/// 构建 sec-ch-ua-full-version（单个浏览器完整版本号）
+fn build_sec_ch_ua_full_version(name: &str, salt: usize) -> Option<String> {
+    match name {
+        n if n.starts_with("chrome") => {
+            let major = extract_chrome_major(n);
+            Some(format!("\"{}\"", pick_chrome_patch(major, salt)))
+        }
+        n if n.starts_with("edge") => {
+            let major = extract_edge_major(n);
+            Some(format!("\"{}\"", pick_edge_patch(major, salt)))
+        }
+        _ => None,
+    }
+}
+
 fn extract_chrome_major(name: &str) -> u32 {
     // "chrome136_mac" -> 136, "chrome131" -> 131
     let stripped = name.strip_prefix("chrome").unwrap_or("136");
@@ -353,21 +428,45 @@ fn build_default_headers(name: &str, accept_language: &str, salt: usize) -> Resu
         HeaderValue::from_static(accept_encoding_for(name)),
     );
 
-    // Client Hints（仅 Chromium 系）
+    // ── DNT (Do Not Track) 随机发送 ──
+    // 真实浏览器约 15-25% 启用此设置
+    if salt % 5 == 0 {
+        headers.insert(
+            HeaderName::from_static("dnt"),
+            HeaderValue::from_static("1"),
+        );
+    }
+
+    // ── Client Hints（仅 Chromium 系）──
     if let Some(ch_ua) = build_sec_ch_ua(name, salt) {
         headers.insert(
             HeaderName::from_static("sec-ch-ua"),
             HeaderValue::from_str(&ch_ua)?,
         );
+    }
+    // sec-ch-ua-full-version-list: 带完整补丁版本号
+    if let Some(full_ver_list) = build_sec_ch_ua_full_version_list(name, salt) {
         headers.insert(
             HeaderName::from_static("sec-ch-ua-full-version-list"),
-            HeaderValue::from_str(&ch_ua)?,
+            HeaderValue::from_str(&full_ver_list)?,
+        );
+    }
+    // sec-ch-ua-full-version: 单个浏览器完整版本
+    if let Some(full_ver) = build_sec_ch_ua_full_version(name, salt) {
+        headers.insert(
+            HeaderName::from_static("sec-ch-ua-full-version"),
+            HeaderValue::from_str(&full_ver)?,
         );
     }
     if is_chromium(name) {
         headers.insert(
             HeaderName::from_static("sec-ch-ua-mobile"),
             HeaderValue::from_static("?0"),
+        );
+        // sec-ch-ua-model: 桌面端为空字符串
+        headers.insert(
+            HeaderName::from_static("sec-ch-ua-model"),
+            HeaderValue::from_static("\"\""),
         );
     }
     if let Some(platform) = pick_platform(name) {
@@ -392,6 +491,20 @@ fn build_default_headers(name: &str, accept_language: &str, salt: usize) -> Resu
         headers.insert(
             HeaderName::from_static("sec-ch-ua-bitness"),
             HeaderValue::from_static("\"64\""),
+        );
+        // sec-ch-prefers-color-scheme: 随机 light/dark
+        headers.insert(
+            HeaderName::from_static("sec-ch-prefers-color-scheme"),
+            HeaderValue::from_static(if salt % 3 == 0 { "dark" } else { "light" }),
+        );
+    }
+
+    // ── Firefox 专有头 ──
+    if name.starts_with("firefox") {
+        // Firefox 发送 TE: trailers
+        headers.insert(
+            HeaderName::from_static("te"),
+            HeaderValue::from_static("trailers"),
         );
     }
 
