@@ -74,6 +74,7 @@ impl RegisterService for DryRunRegisterService {
             account_id: format!("acc_{}", random_hex(12)),
             plan_type: "free".to_string(),
             proxy: input.proxy,
+            refresh_token: None,
         })
     }
 }
@@ -302,6 +303,22 @@ impl LiveRegisterService {
             &format!("Token: {}", token_preview(&access_token)),
         );
 
+        // ========== 注册阶段直接获取 Refresh Token ==========
+        log_worker(input.worker_id, "RT", "尝试在注册会话中获取 refresh_token...");
+        let refresh_token = self.try_get_refresh_token(client, input.worker_id).await;
+        match &refresh_token {
+            Some(rt) => log_worker(
+                input.worker_id,
+                "OK",
+                &format!("注册阶段 RT 获取成功: {}...", &rt[..rt.len().min(20)]),
+            ),
+            None => log_worker(
+                input.worker_id,
+                "RT",
+                "注册阶段 RT 获取失败，将由 RT 阶段补获",
+            ),
+        }
+
         // ========== 支付步骤 ==========
         if !input.skip_payment && self.cfg.payment.payment_retries > 0 {
             log_worker(input.worker_id, "支付", "获取 checkout URL...");
@@ -341,6 +358,7 @@ impl LiveRegisterService {
             account_id,
             plan_type,
             proxy: input.proxy.clone(),
+            refresh_token,
         })
     }
 
@@ -872,6 +890,315 @@ impl LiveRegisterService {
         }
 
         Err(last_err.unwrap_or_else(|| anyhow!("支付失败，未知错误")))
+    }
+
+    // ========== PKCE OAuth: 注册阶段直接获取 refresh_token ==========
+
+    /// 尝试在已认证的注册会话中获取 refresh_token。
+    /// 失败不影响注册结果，返回 None 由 RT 阶段补获。
+    async fn try_get_refresh_token(
+        &self,
+        client: &rquest::Client,
+        worker_id: usize,
+    ) -> Option<String> {
+        match self.do_get_refresh_token(client, worker_id).await {
+            Ok(rt) => Some(rt),
+            Err(e) => {
+                log_worker(
+                    worker_id,
+                    "RT",
+                    &format!("注册阶段 RT 流程失败（不影响注册）: {e:#}"),
+                );
+                None
+            }
+        }
+    }
+
+    /// PKCE OAuth 流程：利用注册会话 Cookie 获取 refresh_token
+    ///
+    /// 注意：注册客户端使用 `Policy::limited(10)` 自动跟随重定向。
+    /// 当重定向链命中 localhost:1455 回调时，会触发连接错误，
+    /// 此时从错误的 URL 中提取 authorization_code。
+    async fn do_get_refresh_token(
+        &self,
+        client: &rquest::Client,
+        worker_id: usize,
+    ) -> Result<String> {
+        // 1. 生成 PKCE 参数
+        let code_verifier = generate_code_verifier();
+        let code_challenge = generate_code_challenge(&code_verifier);
+        let state = Uuid::new_v4().to_string();
+
+        // 2. 构建并访问 OAuth authorize URL
+        //    客户端会自动跟随重定向，可能的结果：
+        //    a) 直接到 consent 页面 → 需要 workspace select 流程
+        //    b) 重定向到 localhost:1455 → 连接失败，从 error URL 中提取 code
+        //    c) 成功返回某个页面 → 检查最终 URL 是否包含 code
+        let auth_url = self.build_pkce_authorize_url(&code_challenge, &state)?;
+        match client
+            .get(&auth_url)
+            .header("Referer", "https://auth.openai.com/")
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                // 检查最终 URL 是否包含 code（自动重定向可能已到达回调）
+                if let Ok(code) = self.extract_code_from_url(resp.url().as_str()) {
+                    log_worker(worker_id, "RT", "PKCE: 授权自动重定向获得 code");
+                    return self
+                        .exchange_code_for_refresh_token(client, &code, &code_verifier)
+                        .await;
+                }
+                // 没有直接获取到 code，需要走 workspace select 流程
+            }
+            Err(e) => {
+                // 连接错误可能是因为重定向到了 localhost:1455
+                if let Some(code) = self.extract_code_from_redirect_error(&e) {
+                    log_worker(worker_id, "RT", "PKCE: 从重定向错误中提取到 code");
+                    return self
+                        .exchange_code_for_refresh_token(client, &code, &code_verifier)
+                        .await;
+                }
+                bail!("PKCE: 访问 authorize URL 失败: {e:#}");
+            }
+        }
+
+        // 3. 没有直接获取到 code，尝试从 Cookie 解析 workspace 并选择
+        let workspace_id = self.extract_workspace_from_auth_cookie(client)?;
+        log_worker(
+            worker_id,
+            "RT",
+            &format!("PKCE: 选择 workspace {}", &workspace_id[..workspace_id.len().min(12)]),
+        );
+
+        let workspace_result = client
+            .post("https://auth.openai.com/api/accounts/workspace/select")
+            .header("Origin", "https://auth.openai.com")
+            .header("Referer", "https://auth.openai.com/sign-in-with-chatgpt/codex/consent")
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "workspace_id": workspace_id }))
+            .send()
+            .await;
+
+        match workspace_result {
+            Ok(resp) => {
+                // 检查最终 URL 是否包含 code
+                if let Ok(code) = self.extract_code_from_url(resp.url().as_str()) {
+                    log_worker(worker_id, "RT", "PKCE: workspace select 后自动重定向获得 code");
+                    return self
+                        .exchange_code_for_refresh_token(client, &code, &code_verifier)
+                        .await;
+                }
+                if resp.status() != StatusCode::OK {
+                    bail!("PKCE: workspace select 失败: HTTP {}", resp.status());
+                }
+                let ws_data: serde_json::Value = resp
+                    .json()
+                    .await
+                    .context("PKCE: 解析 workspace 响应失败")?;
+                let continue_url = ws_data
+                    .get("continue_url")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| anyhow!("PKCE: workspace 响应缺少 continue_url"))?;
+
+                // 4. 跟随 continue_url（客户端自动重定向，可能触发连接错误）
+                match client
+                    .get(continue_url)
+                    .header("Referer", "https://auth.openai.com/")
+                    .send()
+                    .await
+                {
+                    Ok(final_resp) => {
+                        if let Ok(code) = self.extract_code_from_url(final_resp.url().as_str()) {
+                            log_worker(worker_id, "RT", "PKCE: continue_url 重定向获得 code");
+                            return self
+                                .exchange_code_for_refresh_token(client, &code, &code_verifier)
+                                .await;
+                        }
+                        bail!(
+                            "PKCE: continue_url 未重定向到回调 (最终 URL: {})",
+                            final_resp.url()
+                        );
+                    }
+                    Err(e) => {
+                        if let Some(code) = self.extract_code_from_redirect_error(&e) {
+                            log_worker(worker_id, "RT", "PKCE: continue_url 错误中提取到 code");
+                            return self
+                                .exchange_code_for_refresh_token(client, &code, &code_verifier)
+                                .await;
+                        }
+                        bail!("PKCE: continue_url 请求失败: {e:#}");
+                    }
+                }
+            }
+            Err(e) => {
+                // workspace select 本身不应重定向到 localhost，但以防万一
+                if let Some(code) = self.extract_code_from_redirect_error(&e) {
+                    log_worker(worker_id, "RT", "PKCE: workspace select 错误中提取到 code");
+                    return self
+                        .exchange_code_for_refresh_token(client, &code, &code_verifier)
+                        .await;
+                }
+                bail!("PKCE: workspace select 请求失败: {e:#}");
+            }
+        }
+    }
+
+    fn build_pkce_authorize_url(&self, code_challenge: &str, state: &str) -> Result<String> {
+        let mut url = rquest::Url::parse("https://auth.openai.com/oauth/authorize")?;
+        url.query_pairs_mut()
+            .append_pair("client_id", &self.cfg.codex_client_id)
+            .append_pair("code_challenge", code_challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("codex_cli_simplified_flow", "true")
+            .append_pair("id_token_add_organizations", "true")
+            .append_pair("redirect_uri", &self.cfg.codex_redirect_uri)
+            .append_pair("response_type", "code")
+            .append_pair("scope", &self.cfg.codex_scope)
+            .append_pair("state", state);
+        Ok(url.to_string())
+    }
+
+    /// 从 oai-client-auth-session Cookie 中解析第一个 workspace ID
+    fn extract_workspace_from_auth_cookie(&self, client: &rquest::Client) -> Result<String> {
+        // rquest 的 cookie_store 将 Cookie 存在内部，
+        // 我们需要通过构造一个 URL 来获取对应的 Cookie
+        let url = rquest::Url::parse("https://auth.openai.com/")?;
+        let cookies = client
+            .get_cookies(&url)
+            .ok_or_else(|| anyhow!("PKCE: 无法获取 auth.openai.com 的 Cookie"))?;
+
+        let cookie_str = cookies
+            .to_str()
+            .map_err(|_| anyhow!("PKCE: Cookie 解码失败"))?;
+
+        // 查找 oai-client-auth-session=xxx
+        let auth_value = cookie_str
+            .split("; ")
+            .find_map(|pair| {
+                if let Some(rest) = pair.strip_prefix("oai-client-auth-session=") {
+                    Some(rest.to_string())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| anyhow!("PKCE: 未找到 oai-client-auth-session Cookie"))?;
+
+        // 解码第一段（Base64 JSON，非 JWT）
+        let first_segment = auth_value
+            .split('.')
+            .next()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("PKCE: auth cookie 格式异常"))?;
+
+        let padded = match first_segment.len() % 4 {
+            2 => format!("{first_segment}=="),
+            3 => format!("{first_segment}="),
+            _ => first_segment.to_string(),
+        };
+        let decoded = general_purpose::URL_SAFE_NO_PAD
+            .decode(&padded)
+            .or_else(|_| general_purpose::STANDARD.decode(&padded))
+            .context("PKCE: auth cookie Base64 解码失败")?;
+        let json: serde_json::Value = serde_json::from_slice(&decoded)
+            .context("PKCE: auth cookie JSON 解析失败")?;
+
+        let workspaces = json
+            .get("workspaces")
+            .and_then(|v| v.as_array())
+            .filter(|arr| !arr.is_empty())
+            .ok_or_else(|| anyhow!("PKCE: auth cookie 中无 workspace 信息"))?;
+
+        let ws_id = workspaces[0]
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("PKCE: workspace id 为空"))?;
+
+        Ok(ws_id.to_string())
+    }
+
+    /// 从 rquest 的连接错误中提取 authorization_code。
+    /// 当自动重定向到 localhost:1455 时连接失败，
+    /// 此时可以从错误的 URL 中提取 code 参数。
+    fn extract_code_from_redirect_error(&self, err: &rquest::Error) -> Option<String> {
+        // rquest::Error 有一个 url() 方法，返回触发错误的 URL
+        if let Some(url) = err.url() {
+            if let Some((_, code)) = url.query_pairs().find(|(k, _)| k == "code") {
+                let code = code.to_string();
+                if !code.is_empty() {
+                    return Some(code);
+                }
+            }
+        }
+        // 如果 url() 返回 None，尝试从错误消息中解析
+        let err_text = format!("{err:#}");
+        if let Some(start) = err_text.find("code=") {
+            let rest = &err_text[start + 5..];
+            let code: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !code.is_empty() {
+                return Some(code);
+            }
+        }
+        None
+    }
+
+    /// 从 URL 中提取 code 参数
+    fn extract_code_from_url(&self, url: &str) -> Result<String> {
+        let parsed = rquest::Url::parse(url).context("URL 解析失败")?;
+        parsed
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.to_string())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| anyhow!("URL 中未找到 code 参数"))
+    }
+
+    /// 用 authorization_code + code_verifier 换取 refresh_token
+    async fn exchange_code_for_refresh_token(
+        &self,
+        client: &rquest::Client,
+        code: &str,
+        code_verifier: &str,
+    ) -> Result<String> {
+        let resp = client
+            .post("https://auth.openai.com/oauth/token")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", self.cfg.codex_redirect_uri.as_str()),
+                ("client_id", self.cfg.codex_client_id.as_str()),
+                ("code_verifier", code_verifier),
+            ])
+            .send()
+            .await
+            .context("PKCE: token exchange 请求失败")?;
+
+        if resp.status() != StatusCode::OK {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!(
+                "PKCE: token exchange 失败: HTTP {} {}",
+                status,
+                truncate_text(&body, 180)
+            );
+        }
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .context("PKCE: token exchange 响应解析失败")?;
+        let rt = body
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| anyhow!("PKCE: token 响应中缺少 refresh_token"))?;
+        Ok(rt.to_string())
     }
 }
 

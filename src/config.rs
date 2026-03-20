@@ -162,6 +162,10 @@ pub struct RegisterRuntimeConfig {
     pub register_log_mode: RegisterLogMode,
     pub register_perf_mode: RegisterPerfMode,
     pub payment: crate::stripe::PaymentRuntimeConfig,
+    // Codex PKCE 参数（用于注册阶段直接获取 refresh_token）
+    pub codex_client_id: String,
+    pub codex_redirect_uri: String,
+    pub codex_scope: String,
 }
 
 #[derive(Debug, Clone)]
@@ -467,6 +471,9 @@ impl AppConfig {
             register_log_mode: self.register.register_log_mode.unwrap_or_default(),
             register_perf_mode: self.register.register_perf_mode.unwrap_or_default(),
             payment: self.payment_runtime(),
+            codex_client_id: self.codex.client_id.clone().unwrap_or_else(default_codex_client_id),
+            codex_redirect_uri: self.codex.redirect_uri.clone().unwrap_or_else(default_codex_redirect_uri),
+            codex_scope: self.codex.scope.clone().unwrap_or_else(default_codex_scope),
         }
     }
 

@@ -16,6 +16,9 @@ pub struct RegisteredAccount {
     pub account_id: String,
     pub plan_type: String,
     pub proxy: Option<String>,
+    /// 注册阶段直接获取的 refresh_token（可选，获取失败时为 None，由 RT 阶段补获）
+    #[serde(default)]
+    pub refresh_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

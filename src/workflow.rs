@@ -759,6 +759,25 @@ impl WorkflowRunner {
             join_set.spawn(async move {
                 let _permit = permit; // 持有信号量直到任务完成
                 let started = Instant::now();
+
+                // 如果注册阶段已经获取到了 refresh_token，直接跳过 CodexService 获取
+                if let Some(rt) = acc.refresh_token.clone() {
+                    if let Some(ref p) = prog { p.rt_ok.fetch_add(1, Ordering::Relaxed); }
+                    log_worker_green(
+                        worker_id,
+                        "OK",
+                        &format!("RT已在注册阶段获取 (耗时 {:.1}s)", started.elapsed().as_secs_f32()),
+                    );
+                    return Ok(AccountWithRt {
+                        account: acc.account,
+                        password: acc.password,
+                        token: acc.token,
+                        account_id: acc.account_id,
+                        plan_type: acc.plan_type,
+                        refresh_token: rt,
+                    });
+                }
+
                 // 高并发下开始日志会非常密集，跳过逐账号起始日志以降低广播压力
 
                 let mut last_err = None;
