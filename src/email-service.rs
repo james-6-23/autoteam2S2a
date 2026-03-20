@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -18,6 +21,74 @@ static CODE_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn code_regex() -> &'static Regex {
     CODE_REGEX.get_or_init(|| Regex::new(r"\b(\d{6})\b").unwrap())
+}
+
+// ==================== D1 过载自动清理 ====================
+
+static D1_CLEANUP_CONFIG: OnceLock<crate::config::D1CleanupConfig> = OnceLock::new();
+static D1_CLEANUP_RUNNING: AtomicBool = AtomicBool::new(false);
+/// 上次清理完成的 UNIX 时间戳（秒）
+static D1_CLEANUP_LAST: AtomicU64 = AtomicU64::new(0);
+/// 防抖冷却时间（秒）
+const D1_CLEANUP_COOLDOWN_SECS: u64 = 60;
+
+/// 在程序启动时调用，注入 D1 清理配置
+pub fn set_d1_cleanup_config(config: crate::config::D1CleanupConfig) {
+    let _ = D1_CLEANUP_CONFIG.set(config);
+}
+
+/// 检测到 D1 过载时触发清理（带防抖）
+async fn trigger_d1_cleanup_if_needed() {
+    // 检查是否已配置且启用
+    let Some(config) = D1_CLEANUP_CONFIG.get() else {
+        return;
+    };
+    if !config.enabled.unwrap_or(false) {
+        return;
+    }
+
+    // 检查冷却时间
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = D1_CLEANUP_LAST.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < D1_CLEANUP_COOLDOWN_SECS {
+        return;
+    }
+
+    // CAS：确保只有一个任务在执行清理
+    if D1_CLEANUP_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let config = config.clone();
+    tokio::spawn(async move {
+        crate::log_broadcast::broadcast_log(
+            "[D1-AUTO] 检测到 D1 过载，自动触发邮箱清理...",
+        );
+        match crate::d1_cleanup::run_cleanup(&config).await {
+            Ok(()) => {
+                crate::log_broadcast::broadcast_log(
+                    "[D1-AUTO] D1 邮箱清理完成",
+                );
+            }
+            Err(e) => {
+                crate::log_broadcast::broadcast_log(
+                    &format!("[D1-AUTO] D1 清理失败: {e}"),
+                );
+            }
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        D1_CLEANUP_LAST.store(now, Ordering::Relaxed);
+        D1_CLEANUP_RUNNING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// 后台邮箱轮询句柄
@@ -179,6 +250,14 @@ impl EmailProvider for HttpEmailProvider {
 
         let code = json.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
         if code != 200 {
+            // 检测 D1 过载错误，自动触发清理
+            if code == 500 {
+                if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
+                    if msg.contains("D1_ERROR") || msg.contains("D1 DB is overloaded") {
+                        trigger_d1_cleanup_if_needed().await;
+                    }
+                }
+            }
             bail!(
                 "验证码接口返回错误码: {} {}",
                 code,

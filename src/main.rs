@@ -137,6 +137,8 @@ async fn main() -> Result<()> {
             proxy_file,
         }) => {
             let cfg = config::AppConfig::load_or_default(&config);
+            // 注入 D1 清理配置，供邮件服务 D1 过载时自动触发
+            email_service::set_d1_cleanup_config(cfg.d1_cleanup.clone());
             let host = cfg.server.host.clone().unwrap_or(host);
             let port = cfg.server.port.unwrap_or(port);
             server::start_server(cfg, config.clone(), host, port, proxy_file).await
@@ -200,6 +202,10 @@ async fn run(
 ) -> Result<()> {
     let cfg = AppConfig::load(&config_path)
         .with_context(|| format!("加载配置失败: {}", config_path.display()))?;
+
+    // 注入 D1 清理配置，供邮件服务 D1 过载时自动触发
+    email_service::set_d1_cleanup_config(cfg.d1_cleanup.clone());
+
     let teams = cfg.effective_s2a_configs();
     let selected_team = select_team(&teams, team_name.as_deref())?.clone();
 
