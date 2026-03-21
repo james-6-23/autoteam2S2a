@@ -45,7 +45,7 @@ async function api(path,opts={}){
 }
 
 // Tabs
-const ALL_TABS=['dashboard','teams','config','tasks','schedules','runs','logs'];
+const ALL_TABS=['dashboard','teams','config','email','tasks','schedules','runs','logs'];
 function switchTab(name){
   ALL_TABS.forEach(t=>{
     document.getElementById('panel-'+t).classList.toggle('hidden',t!==name);
@@ -53,7 +53,7 @@ function switchTab(name){
     b.classList.toggle('tab-active',t===name);
   });
   if(name==='tasks'){refreshTasks();startTaskPoll()}else{stopTaskPoll();closeTaskProgress()}
-  if(name==='dashboard'||name==='teams'||name==='config') loadConfig();
+  if(name==='dashboard'||name==='teams'||name==='config'||name==='email') loadConfig();
   if(name==='schedules'){loadSchedules();startSchedulePoll()}else{stopSchedulePoll()}
   if(name==='runs'){loadRunStats();loadRunsFilter();loadRuns(1)}
   if(name==='logs') connectLogStream();
@@ -282,7 +282,10 @@ function renderConfigForm(){
   document.getElementById('cfg-reg-log-mode').value=r.register_log_mode||'verbose';
   document.getElementById('cfg-reg-perf-mode').value=r.register_perf_mode||'baseline';
   document.getElementById('cfg-gptmail-key').value=r.chatgpt_mail_api_key||'';
-  renderEmailDomains();renderGptMailDomains();renderD1Cleanup();
+  document.getElementById('cfg-duckmail-key').value=r.duckmail_api_key||'';
+  document.getElementById('cfg-duckmail-password').value=r.duckmail_password||'';
+  document.getElementById('cfg-tempmail-key').value=r.tempmail_api_key||'';
+  renderEmailDomains();renderGptMailDomains();renderDuckMailDomains();renderTempMailDomains();renderD1Cleanup();
 }
 
 // D1
@@ -539,6 +542,57 @@ async function testGptMail(){
   }catch(e){st.textContent='连接失败';st.className='text-xs text-red-400'}
 }
 async function saveToFile(){try{const d=await api('/api/config/save',{method:'POST'});toast(d.message,'success')}catch{}}
+
+// DuckMail
+async function saveDuckMail(){const key=document.getElementById('cfg-duckmail-key').value.trim();const pwd=document.getElementById('cfg-duckmail-password').value.trim();try{await api('/api/config/register',{method:'PUT',body:{duckmail_api_key:key,duckmail_password:pwd}});toast('DuckMail 配置已保存','success');loadConfig()}catch{}}
+function renderDuckMailDomains(){
+  if(!configData)return;const doms=configData.duckmail_domains||[];
+  document.getElementById('duckmail-domain-count').textContent=doms.length;
+  const el=document.getElementById('duckmail-domain-list');
+  if(!doms.length){el.innerHTML='<p class="text-xs text-dim">未配置（使用自动获取）</p>';return}
+  el.innerHTML=doms.map(d=>`<span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style="background:var(--domain-bg);border:1px solid var(--domain-border);color:var(--text-dim2)">${d}<button onclick="deleteDuckMailDomain('${d.replace(/'/g,"\\\'")}')" class="text-red-400 hover:text-red-300 ml-1">&times;</button></span>`).join('');
+}
+async function addDuckMailDomain(){const v=document.getElementById('new-duckmail-domain').value.trim();if(!v){toast('请输入域名','error');return}try{await api('/api/config/duckmail_domains',{method:'POST',body:{domain:v}});document.getElementById('new-duckmail-domain').value='';toast('域名已添加','success');loadConfig()}catch{}}
+async function deleteDuckMailDomain(d){try{await api('/api/config/duckmail_domains',{method:'DELETE',body:{domain:d}});toast('域名已删除','success');loadConfig()}catch{}}
+async function testDuckMail(){
+  const key=document.getElementById('cfg-duckmail-key').value.trim();
+  const st=document.getElementById('duckmail-status');const info=document.getElementById('duckmail-info');
+  st.textContent='测试中…';st.className='text-xs text-amber-400';info.classList.add('hidden');
+  try{
+    await api('/api/config/register',{method:'PUT',body:{duckmail_api_key:key}});
+    const json=await api('/api/test/duckmail',{method:'POST'});
+    const d=json.data;
+    st.textContent='连接成功';st.className='text-xs text-teal-400';
+    info.classList.remove('hidden');
+    info.innerHTML=`<span>可用域名 <span class="c-heading font-mono">${d.domain_count||0}</span></span>`;
+  }catch(e){st.textContent='连接失败';st.className='text-xs text-red-400'}
+}
+
+// TempMail
+async function saveTempMail(){const key=document.getElementById('cfg-tempmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{tempmail_api_key:key}});toast('TempMail 配置已保存','success');loadConfig()}catch{}}
+function renderTempMailDomains(){
+  if(!configData)return;const doms=configData.tempmail_domains||[];
+  document.getElementById('tempmail-domain-count').textContent=doms.length;
+  const el=document.getElementById('tempmail-domain-list');
+  if(!doms.length){el.innerHTML='<p class="text-xs text-dim">未配置（使用自动获取）</p>';return}
+  el.innerHTML=doms.map(d=>`<span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style="background:var(--domain-bg);border:1px solid var(--domain-border);color:var(--text-dim2)">${d}<button onclick="deleteTempMailDomain('${d.replace(/'/g,"\\\'")}')" class="text-red-400 hover:text-red-300 ml-1">&times;</button></span>`).join('');
+}
+async function addTempMailDomain(){const v=document.getElementById('new-tempmail-domain').value.trim();if(!v){toast('请输入域名','error');return}try{await api('/api/config/tempmail_domains',{method:'POST',body:{domain:v}});document.getElementById('new-tempmail-domain').value='';toast('域名已添加','success');loadConfig()}catch{}}
+async function deleteTempMailDomain(d){try{await api('/api/config/tempmail_domains',{method:'DELETE',body:{domain:d}});toast('域名已删除','success');loadConfig()}catch{}}
+async function testTempMail(){
+  const key=document.getElementById('cfg-tempmail-key').value.trim();
+  if(!key){toast('请先输入 API Key 并保存','error');return}
+  const st=document.getElementById('tempmail-status');const info=document.getElementById('tempmail-info');
+  st.textContent='测试中…';st.className='text-xs text-amber-400';info.classList.add('hidden');
+  try{
+    await api('/api/config/register',{method:'PUT',body:{tempmail_api_key:key}});
+    const json=await api('/api/test/tempmail',{method:'POST'});
+    const d=json.data;
+    st.textContent='连接成功';st.className='text-xs text-teal-400';
+    info.classList.remove('hidden');
+    info.innerHTML=`<span>邮箱数 <span class="c-heading font-mono">${d.mailbox_count||0}</span></span>`;
+  }catch(e){st.textContent='连接失败';st.className='text-xs text-red-400'}
+}
 
 // Domains
 function renderEmailDomains(){

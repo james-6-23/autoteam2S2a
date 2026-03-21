@@ -60,6 +60,7 @@ tailwind.config={theme:{extend:{
   <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-btn tab-active px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">概览</button>
   <button onclick="switchTab('teams')" id="tab-teams" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">号池</button>
   <button onclick="switchTab('config')" id="tab-config" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">配置</button>
+  <button onclick="switchTab('email')" id="tab-email" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">邮箱</button>
   <button onclick="switchTab('tasks')" id="tab-tasks" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">任务</button>
   <button onclick="switchTab('schedules')" id="tab-schedules" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">定时</button>
   <button onclick="switchTab('runs')" id="tab-runs" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">记录</button>
@@ -84,7 +85,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" step="25" value="4" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" max="512" step="25" value="4" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" max="512" step="25" value="4" class="field-input"></div>
-      <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="kyx">kyx-cloud</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option></select></div>
+      <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="kyx">cloud-mail</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option></select></div>
       <div><label class="field-label">模式</label><select id="q-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div class="flex items-end"><button onclick="quickCreateTask()" class="btn btn-amber w-full justify-center">执行</button></div>
     </div>
@@ -256,8 +257,16 @@ tailwind.config={theme:{extend:{
     </div>
     <button onclick="saveDefaults()" class="btn btn-amber mt-4">保存</button>
   </div>
+  <div class="card p-5 flex items-center justify-between">
+    <div><div class="text-sm font-medium c-heading">持久化配置</div><div class="text-xs c-dim mt-0.5">写入 config.toml 文件，容器重启后保留</div></div>
+    <button onclick="saveToFile()" class="btn btn-amber">保存到文件</button>
+  </div>
+</div>
+
+<!-- Email -->
+<div id="panel-email" class="hidden animate-enter space-y-4">
   <div class="card p-5">
-    <div class="section-title">Kyx-Cloud 邮箱</div>
+    <div class="section-title">Cloud-Mail 邮箱</div>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
       <div><label class="field-label">邮件 API 地址</label><input id="cfg-mail-base" class="field-input"></div>
       <div><label class="field-label">邮件 API 路径</label><input id="cfg-mail-path" class="field-input"></div>
@@ -296,6 +305,30 @@ tailwind.config={theme:{extend:{
   </div>
   <div class="card p-5">
     <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">D1 邮件清理</div>
+      <label class="switch">
+        <input id="cfg-d1-enabled" class="switch-input" type="checkbox">
+        <span class="switch-slider"></span>
+        <span class="switch-text">启用</span>
+      </label>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div><label class="field-label">Account ID</label><input id="cfg-d1-account-id" class="field-input" placeholder="CF Account ID"></div>
+      <div><label class="field-label">API Key</label><input id="cfg-d1-api-key" class="field-input" placeholder="API Token"></div>
+      <div><label class="field-label">保留比例</label><input id="cfg-d1-keep-percent" type="number" step="0.01" min="0" max="1" class="field-input" placeholder="0.1"></div>
+      <div><label class="field-label">批量大小</label><input id="cfg-d1-batch-size" type="number" min="100" class="field-input" placeholder="5000"></div>
+    </div>
+    <div class="mt-3">
+      <div class="flex items-center justify-between mb-2">
+        <label class="field-label mb-0">数据库列表</label>
+        <button onclick="addD1DbRow()" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 添加</button>
+      </div>
+      <div id="d1-db-rows" class="space-y-2"></div>
+    </div>
+    <button onclick="saveD1Cleanup()" class="btn btn-amber mt-4">保存</button>
+  </div>
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
       <div class="section-title mb-0">GPTMail (chatgpt.org.uk)</div>
       <span id="gptmail-status" class="text-xs text-dim"></span>
     </div>
@@ -321,31 +354,54 @@ tailwind.config={theme:{extend:{
   </div>
   <div class="card p-5">
     <div class="flex items-center justify-between mb-3">
-      <div class="section-title mb-0">D1 邮件清理</div>
-      <label class="switch">
-        <input id="cfg-d1-enabled" class="switch-input" type="checkbox">
-        <span class="switch-slider"></span>
-        <span class="switch-text">启用</span>
-      </label>
+      <div class="section-title mb-0">DuckMail (api.duckmail.sbs)</div>
+      <span id="duckmail-status" class="text-xs text-dim"></span>
     </div>
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
-      <div><label class="field-label">Account ID</label><input id="cfg-d1-account-id" class="field-input" placeholder="CF Account ID"></div>
-      <div><label class="field-label">API Key</label><input id="cfg-d1-api-key" class="field-input" placeholder="API Token"></div>
-      <div><label class="field-label">保留比例</label><input id="cfg-d1-keep-percent" type="number" step="0.01" min="0" max="1" class="field-input" placeholder="0.1"></div>
-      <div><label class="field-label">批量大小</label><input id="cfg-d1-batch-size" type="number" min="100" class="field-input" placeholder="5000"></div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div><label class="field-label">API Key</label><input id="cfg-duckmail-key" class="field-input font-mono" placeholder="API Key"></div>
+      <div><label class="field-label">默认密码</label><input id="cfg-duckmail-password" class="field-input font-mono" placeholder="默认邮箱密码"></div>
+      <div class="flex items-end gap-2">
+        <button onclick="testDuckMail()" class="btn btn-ghost text-xs py-1.5">测试连接</button>
+        <button onclick="saveDuckMail()" class="btn btn-amber text-xs py-1.5">保存</button>
+      </div>
     </div>
+    <div id="duckmail-info" class="hidden mt-3 card-inner p-3 text-xs grid grid-cols-2 gap-2"></div>
     <div class="mt-3">
       <div class="flex items-center justify-between mb-2">
-        <label class="field-label mb-0">数据库列表</label>
-        <button onclick="addD1DbRow()" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 添加</button>
+        <label class="field-label mb-0">指定域名 <span class="text-dim">(留空则自动获取)</span></label>
+        <span id="duckmail-domain-count" class="text-xs font-mono text-dim">0</span>
       </div>
-      <div id="d1-db-rows" class="space-y-2"></div>
+      <div id="duckmail-domain-list" class="flex flex-wrap gap-2 mb-2"></div>
+      <div class="flex gap-2">
+        <input id="new-duckmail-domain" class="field-input flex-1" placeholder="example.com">
+        <button onclick="addDuckMailDomain()" class="btn btn-teal text-xs py-1.5">添加</button>
+      </div>
     </div>
-    <button onclick="saveD1Cleanup()" class="btn btn-amber mt-4">保存</button>
   </div>
-  <div class="card p-5 flex items-center justify-between">
-    <div><div class="text-sm font-medium c-heading">持久化配置</div><div class="text-xs c-dim mt-0.5">写入 config.toml 文件，容器重启后保留</div></div>
-    <button onclick="saveToFile()" class="btn btn-amber">保存到文件</button>
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">TempMail (mail.123nhh.de)</div>
+      <span id="tempmail-status" class="text-xs text-dim"></span>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">API Key</label><input id="cfg-tempmail-key" class="field-input font-mono" placeholder="API Key"></div>
+      <div class="flex items-end gap-2">
+        <button onclick="testTempMail()" class="btn btn-ghost text-xs py-1.5">测试连接</button>
+        <button onclick="saveTempMail()" class="btn btn-amber text-xs py-1.5">保存</button>
+      </div>
+    </div>
+    <div id="tempmail-info" class="hidden mt-3 card-inner p-3 text-xs grid grid-cols-2 gap-2"></div>
+    <div class="mt-3">
+      <div class="flex items-center justify-between mb-2">
+        <label class="field-label mb-0">指定域名 <span class="text-dim">(留空则自动获取)</span></label>
+        <span id="tempmail-domain-count" class="text-xs font-mono text-dim">0</span>
+      </div>
+      <div id="tempmail-domain-list" class="flex flex-wrap gap-2 mb-2"></div>
+      <div class="flex gap-2">
+        <input id="new-tempmail-domain" class="field-input flex-1" placeholder="example.com">
+        <button onclick="addTempMailDomain()" class="btn btn-teal text-xs py-1.5">添加</button>
+      </div>
+    </div>
   </div>
 </div>
 

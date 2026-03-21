@@ -4,7 +4,10 @@
       "mcp__auggie-mcp__codebase-retrieval",
       "mcp__acemcp__search_context",
       "WebFetch(domain:www.chatgpt.org.uk)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.duckmail.sbs)",
+      "WebFetch(domain:mail.123nhh.de)"
     ]
   }
 }
