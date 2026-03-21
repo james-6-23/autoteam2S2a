@@ -193,11 +193,11 @@ function renderTeams(){
   hideEditTeamForm();
   hideTeamGroupsModal();
   if(!configData||configData.teams.length===0){el.innerHTML='<p class="team-grid-empty text-sm text-dim text-center py-6">暂无号池</p>';return}
-  el.innerHTML=configData.teams.map(t=>`
-  <div class="row-item" id="team-card-${t.name}">
+  el.innerHTML=configData.teams.map((t,idx)=>`
+  <div class="row-item" id="team-card-${t.name||idx}">
     <div class="flex items-start justify-between mb-2">
       <div class="flex-1 grid grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-2 text-[.8125rem]">
-        <div><span class="field-label">名称</span><div class="font-medium c-heading">${t.name}</div></div>
+        <div><span class="field-label">名称</span><div class="font-medium c-heading">${t.name||'<span class="text-red-400">(未命名)</span>'}</div></div>
         <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${t.api_base}</div></div>
         <div><span class="field-label">并发</span><div class="font-mono c-heading">${t.concurrency}</div></div>
         <div><span class="field-label">优先级</span><div class="font-mono c-heading">${t.priority}</div></div>
@@ -206,9 +206,9 @@ function renderTeams(){
       </div>
       <div class="flex items-center gap-1 ml-3 shrink-0">
         <button onclick="showTeamGroupsModal('${t.name.replace(/'/g,"\\'")}')" class="btn btn-ghost text-xs py-1 px-2">分组详情</button>
-        <button onclick="testS2a('${t.name.replace(/'/g,"\\'")}')" class="btn btn-ghost text-xs py-1 px-2" id="test-btn-${t.name}">测试</button>
-        <button onclick="editTeam('${t.name.replace(/'/g,"\\'")}')" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
-        <button onclick="deleteTeam('${t.name.replace(/'/g,"\\'")}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
+        <button onclick="testS2a('${t.name.replace(/'/g,"\\'")}')" class="btn btn-ghost text-xs py-1 px-2" id="test-btn-${t.name||idx}">测试</button>
+        <button onclick="editTeam('${t.name.replace(/'/g,"\\'")}',${idx})" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
+        <button onclick="deleteTeam('${t.name.replace(/'/g,"\\'")}',${idx})" class="btn btn-danger text-xs py-1 px-2">删除</button>
       </div>
     </div>
     <div class="flex items-center gap-4 text-[.8125rem] mt-1">
@@ -402,22 +402,34 @@ async function submitAddTeam(){
   const freeConc=parseInt(document.getElementById('at-free-concurrency').value);
   try{await api('/api/config/s2a',{method:'POST',body:{name:document.getElementById('at-name').value.trim(),api_base:document.getElementById('at-api').value.trim(),admin_key:document.getElementById('at-key').value.trim(),concurrency:parseInt(document.getElementById('at-concurrency').value)||50,priority:parseInt(document.getElementById('at-priority').value)||30,group_ids:groups,free_group_ids:freeGroups,free_priority:freePri||undefined,free_concurrency:freeConc||undefined,extra:buildS2aExtraPayload('at')}});toast('号池已添加','success');hideAddTeamForm();['at-name','at-api','at-key','at-free-priority','at-free-concurrency'].forEach(id=>document.getElementById(id).value='');atGroupsData=[];loadConfig()}catch{}
 }
-async function deleteTeam(name){if(!confirm(`删除号池 "${name}"?`))return;try{await api(`/api/config/s2a/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`${name} 已删除`,'success');loadConfig()}catch{}}
+async function deleteTeam(name,idx){
+  const label=name||`#${idx}`;
+  if(!confirm(`删除号池 "${label}"?`))return;
+  try{
+    // 名称为空时按索引删除
+    const url=name?`/api/config/s2a/${encodeURIComponent(name)}`:`/api/config/s2a/by-index/${idx}`;
+    await api(url,{method:'DELETE'});
+    toast(`${label} 已删除`,'success');loadConfig()
+  }catch{}
+}
 let editTeamName=null;
+let editTeamIdx=null;
 let etGroupsData=[];
 function hideEditTeamForm(){
   document.getElementById('edit-team-modal').classList.add('hidden');
   document.getElementById('et-fetch-groups-btn').disabled=false;
   document.getElementById('et-fetch-groups-btn').textContent='获取分组';
   document.getElementById('et-groups-status').textContent='';
+  editTeamName=null;editTeamIdx=null;
 }
-function editTeam(name){
+function editTeam(name,idx){
   editTeamName=name;
-  const t=configData?.teams?.find(x=>x.name===name);if(!t) return;
+  editTeamIdx=idx;
+  const t=configData?.teams?.[idx];if(!t) return;
   hideAddTeamForm();
   hideTeamGroupsModal();
   document.getElementById('edit-team-modal').classList.remove('hidden');
-  document.getElementById('et-name').textContent=name;
+  document.getElementById('et-name').value=t.name||'';
   document.getElementById('et-api').value=t.api_base||'';
   document.getElementById('et-key').value=t.admin_key||'';
   document.getElementById('et-concurrency').value=t.concurrency||50;
@@ -443,7 +455,7 @@ async function fetchGroupsEdit(){
     const res=await fetch(API+'/api/s2a/fetch-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_base:apiBase,admin_key:adminKey})});
     const data=await res.json();if(!res.ok) throw new Error(data.error||'请求失败');
     etGroupsData=data;
-    const t=configData?.teams?.find(x=>x.name===editTeamName);
+    const t=editTeamIdx!=null?configData?.teams?.[editTeamIdx]:configData?.teams?.find(x=>x.name===editTeamName);
     const curGroups=t?.group_ids||[];const curFree=t?.free_group_ids||[];
     const container=document.getElementById('et-groups-container');
     if(!data.length){container.innerHTML='<span class="text-xs text-dim">未找到分组</span>';return}
@@ -468,8 +480,10 @@ function autoFetchGroupsEdit(){
   if(apiBase&&adminKey) fetchGroupsEdit();
 }
 async function submitEditTeam(){
-  if(!editTeamName) return;
+  if(editTeamIdx==null&&!editTeamName) return;
+  const newName=document.getElementById('et-name').value.trim();
   const body={
+    name:newName||undefined,
     api_base:document.getElementById('et-api').value.trim()||undefined,
     admin_key:document.getElementById('et-key').value.trim()||undefined,
     concurrency:parseInt(document.getElementById('et-concurrency').value)||undefined,
@@ -487,7 +501,9 @@ async function submitEditTeam(){
   body.free_priority=fp?parseInt(fp):null;
   body.free_concurrency=fc?parseInt(fc):null;
   body.extra=buildS2aExtraPayload('et');
-  try{await api(`/api/config/s2a/${encodeURIComponent(editTeamName)}`,{method:'PUT',body});toast(`${editTeamName} 已更新`,'success');hideEditTeamForm();loadConfig()}catch{}
+  // 名称为空时按索引更新
+  const url=editTeamName?`/api/config/s2a/${encodeURIComponent(editTeamName)}`:`/api/config/s2a/by-index/${editTeamIdx}`;
+  try{await api(url,{method:'PUT',body});toast(`${newName||editTeamName||'号池'} 已更新`,'success');hideEditTeamForm();loadConfig()}catch{}
 }
 
 // Config save
@@ -538,7 +554,7 @@ async function deleteEmailDomain(domain){try{await api('/api/config/email_domain
 // Tasks
 async function quickCreateTask(){
   const team=document.getElementById('q-team').value;if(!team){toast('请先配置号池','error');return}
-  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,use_chatgpt_mail:document.getElementById('q-mail').value==='true',free_mode:document.getElementById('q-mode').value==='free'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks');setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
+  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks');setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
 }
 async function refreshTasks(){
   try{
@@ -825,7 +841,7 @@ async function loadSchedules(){
         <span>优先级 <span class="font-mono text-dim-2">${s.priority??100}</span></span>
         <span>注册 <span class="font-mono text-dim-2">${s.register_workers||'默认'}</span></span>
         <span>RT <span class="font-mono text-dim-2">${s.rt_workers||'默认'}</span></span>
-        <span>邮箱 <span class="text-dim-2">${s.use_chatgpt_mail?'chatgpt':'kyx'}</span></span>
+        <span>邮箱 <span class="text-dim-2">${s.mail_provider||(s.use_chatgpt_mail?'chatgpt':'kyx')}</span></span>
         <span>模式 <span class="text-dim-2">${s.free_mode?'free':'team'}</span></span>
         <span>日志 <span class="text-dim-2">${logModeTxt}</span></span>
         <span>性能 <span class="text-dim-2">${perfModeTxt}</span></span>
@@ -864,7 +880,7 @@ async function submitAddSchedule(){
     const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
     if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
   }
-  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,use_chatgpt_mail:document.getElementById('sched-mail').value==='true',free_mode:isFree};
+  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree};
   const addLogMode=document.getElementById('sched-reg-log-mode').value;
   const addPerfMode=normalizeRegisterPerfMode(document.getElementById('sched-reg-perf-mode').value);
   body.register_log_mode=addLogMode==='inherit'?null:addLogMode;
@@ -906,7 +922,7 @@ async function editSchedule(name){
   document.getElementById('es-reg-workers').value=s.register_workers||'';
   document.getElementById('es-rt-workers').value=s.rt_workers||'';
   document.getElementById('es-rt-retries').value=s.rt_retries||'';
-  document.getElementById('es-mail').value=s.use_chatgpt_mail?'true':'false';
+  document.getElementById('es-mail').value=s.mail_provider||(s.use_chatgpt_mail?'chatgpt':'kyx');
   document.getElementById('es-mode').value=s.free_mode?'free':'team';
   document.getElementById('es-reg-log-mode').value=s.register_log_mode||'inherit';
   document.getElementById('es-reg-perf-mode').value=normalizeRegisterPerfMode(s.register_perf_mode||'inherit');
@@ -940,7 +956,7 @@ async function submitEditSchedule(){
     batch_interval_mins:parseInt(document.getElementById('es-interval').value)||30,
     priority,
     push_s2a:document.getElementById('es-push-s2a').checked,
-    use_chatgpt_mail:document.getElementById('es-mail').value==='true',
+    mail_provider:document.getElementById('es-mail').value,
     free_mode:document.getElementById('es-mode').value==='free',
     enabled:document.getElementById('es-enabled').checked
   };

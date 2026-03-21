@@ -22,6 +22,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub chatgpt_mail_domains: Vec<String>,
     #[serde(default)]
+    pub duckmail_domains: Vec<String>,
+    #[serde(default)]
+    pub tempmail_domains: Vec<String>,
+    #[serde(default)]
     pub d1_cleanup: D1CleanupConfig,
     #[serde(default)]
     pub server: ServerConfig,
@@ -69,6 +73,31 @@ pub enum RegisterPerfMode {
     Baseline,
     #[serde(rename = "adaptive", alias = "optimized")]
     Adaptive,
+    /// 极致效率模式：无补偿轮询，主超时更短，失败直接跳过
+    #[serde(rename = "turbo")]
+    Turbo,
+}
+
+/// 邮件服务提供商
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MailProvider {
+    #[default]
+    Kyx,
+    Chatgpt,
+    Duckmail,
+    Tempmail,
+}
+
+impl std::fmt::Display for MailProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MailProvider::Kyx => write!(f, "kyx"),
+            MailProvider::Chatgpt => write!(f, "chatgpt"),
+            MailProvider::Duckmail => write!(f, "duckmail"),
+            MailProvider::Tempmail => write!(f, "tempmail"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -85,6 +114,12 @@ pub struct RegisterConfig {
     pub user_agent: Option<String>,
     pub tls_emulation: Option<String>,
     pub chatgpt_mail_api_key: Option<String>,
+    /// DuckMail API Key（可选，dk_xxx 格式，用于私有域名）
+    pub duckmail_api_key: Option<String>,
+    /// DuckMail 创建邮箱时的默认密码
+    pub duckmail_password: Option<String>,
+    /// TempMail API Key（tm_xxx 格式，用于 mail.123nhh.de）
+    pub tempmail_api_key: Option<String>,
     /// 邮件 API 最大并发数（默认 50）
     pub mail_max_concurrency: Option<usize>,
     /// 支付后 plan 激活轮询最大次数
@@ -154,6 +189,9 @@ pub struct RegisterRuntimeConfig {
     pub user_agent: String,
     pub tls_emulation: String,
     pub chatgpt_mail_api_key: String,
+    pub duckmail_api_key: String,
+    pub duckmail_password: String,
+    pub tempmail_api_key: String,
     pub mail_max_concurrency: usize,
     pub plan_poll_max_attempts: usize,
     pub plan_poll_initial_delay_ms: u64,
@@ -303,6 +341,9 @@ pub struct ScheduleConfig {
     pub push_s2a: bool,
     #[serde(default)]
     pub use_chatgpt_mail: bool,
+    /// 邮件服务提供商（优先于 use_chatgpt_mail）
+    #[serde(default)]
+    pub mail_provider: Option<MailProvider>,
     #[serde(default)]
     pub free_mode: bool,
     /// 计划级注册日志模式（None 表示继承全局 register.register_log_mode）
@@ -312,6 +353,20 @@ pub struct ScheduleConfig {
     #[serde(default)]
     pub register_perf_mode: Option<RegisterPerfMode>,
     pub distribution: Vec<DistributionEntry>,
+}
+
+impl ScheduleConfig {
+    /// 获取实际生效的邮件提供商（mail_provider 优先，回退 use_chatgpt_mail）
+    pub fn effective_mail_provider(&self) -> MailProvider {
+        if let Some(mp) = self.mail_provider {
+            return mp;
+        }
+        if self.use_chatgpt_mail {
+            MailProvider::Chatgpt
+        } else {
+            MailProvider::Kyx
+        }
+    }
 }
 
 fn default_batch_interval() -> u64 {
@@ -467,6 +522,21 @@ impl AppConfig {
                 .chatgpt_mail_api_key
                 .clone()
                 .unwrap_or_else(|| "sk-HQ5kHZao".to_string()),
+            duckmail_api_key: self
+                .register
+                .duckmail_api_key
+                .clone()
+                .unwrap_or_default(),
+            duckmail_password: self
+                .register
+                .duckmail_password
+                .clone()
+                .unwrap_or_else(|| "Temp@2026x".to_string()),
+            tempmail_api_key: self
+                .register
+                .tempmail_api_key
+                .clone()
+                .unwrap_or_default(),
             mail_max_concurrency: self.register.mail_max_concurrency.unwrap_or(50).max(1),
             plan_poll_max_attempts,
             plan_poll_initial_delay_ms,
@@ -475,8 +545,16 @@ impl AppConfig {
             register_log_mode: self.register.register_log_mode.unwrap_or_default(),
             register_perf_mode: self.register.register_perf_mode.unwrap_or_default(),
             payment: self.payment_runtime(),
-            codex_client_id: self.codex.client_id.clone().unwrap_or_else(default_codex_client_id),
-            codex_redirect_uri: self.codex.redirect_uri.clone().unwrap_or_else(default_codex_redirect_uri),
+            codex_client_id: self
+                .codex
+                .client_id
+                .clone()
+                .unwrap_or_else(default_codex_client_id),
+            codex_redirect_uri: self
+                .codex
+                .redirect_uri
+                .clone()
+                .unwrap_or_else(default_codex_redirect_uri),
             codex_scope: self.codex.scope.clone().unwrap_or_else(default_codex_scope),
             sentinel_enabled: self.codex.sentinel_enabled.unwrap_or(true),
             strict_sentinel: self.codex.strict_sentinel.unwrap_or(false),

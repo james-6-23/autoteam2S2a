@@ -84,7 +84,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" step="25" value="4" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" max="512" step="25" value="4" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" max="512" step="25" value="4" class="field-input"></div>
-      <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="kyx">kyx-cloud</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option></select></div>
       <div><label class="field-label">模式</label><select id="q-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div class="flex items-end"><button onclick="quickCreateTask()" class="btn btn-amber w-full justify-center">执行</button></div>
     </div>
@@ -161,10 +161,11 @@ tailwind.config={theme:{extend:{
     <div class="team-modal-card p-5" onclick="event.stopPropagation()">
       <div id="edit-team-form">
         <div class="flex items-center justify-between mb-3">
-          <div class="section-title mb-0">编辑号池: <span id="et-name" class="text-amber-400"></span></div>
+          <div class="section-title mb-0">编辑号池</div>
           <button onclick="hideEditTeamForm()" class="btn btn-ghost text-xs py-1">关闭</button>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div><label class="field-label">名称</label><input id="et-name" class="field-input" placeholder="号池名称"></div>
           <div><label class="field-label">API 地址</label><input id="et-api" class="field-input" placeholder="https://..." onchange="autoFetchGroupsEdit()"></div>
           <div><label class="field-label">Admin Key</label><input id="et-key" class="field-input" placeholder="admin-xxx" onchange="autoFetchGroupsEdit()"></div>
           <div><label class="field-label">并发</label><input id="et-concurrency" type="number" min="1" step="25" class="field-input"></div>
@@ -441,7 +442,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="sched-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
-      <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="kyx">kyx-cloud</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option></select></div>
       <div><label class="field-label">模式</label><select id="sched-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div>
         <label class="field-label">日志输出</label>
@@ -499,7 +500,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="es-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
-      <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="false">kyx-cloud</option><option value="true">chatgpt.org.uk</option></select></div>
+      <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="kyx">kyx-cloud</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option></select></div>
       <div><label class="field-label">模式</label><select id="es-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div>
         <label class="field-label">日志输出</label>

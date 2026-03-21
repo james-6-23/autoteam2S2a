@@ -588,7 +588,7 @@ async fn run_batch_once(
     let runner = match crate::server::build_workflow_runner(
         &cfg,
         state.proxy_file.as_deref(),
-        schedule.use_chatgpt_mail,
+        schedule.effective_mail_provider(),
     )
     .await
     {
@@ -691,6 +691,7 @@ mod tests {
             rt_retries: None,
             push_s2a: true,
             use_chatgpt_mail: false,
+            mail_provider: None,
             free_mode: false,
             register_log_mode: None,
             register_perf_mode: None,

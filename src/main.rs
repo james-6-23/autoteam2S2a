@@ -117,6 +117,11 @@ async fn main() -> Result<()> {
             chatgpt_mail,
         }) => {
             let dry_run = !live;
+            let mail_provider = if chatgpt_mail {
+                config::MailProvider::Chatgpt
+            } else {
+                config::MailProvider::Kyx
+            };
             run(
                 config,
                 team,
@@ -126,7 +131,7 @@ async fn main() -> Result<()> {
                 rt_retries,
                 dry_run,
                 push_s2a,
-                chatgpt_mail,
+                mail_provider,
                 proxy_file,
             )
             .await
@@ -198,7 +203,7 @@ async fn run(
     rt_retries: Option<usize>,
     dry_run: bool,
     push_s2a: bool,
-    use_chatgpt_mail: bool,
+    mail_provider: crate::config::MailProvider,
     proxy_file: Option<PathBuf>,
 ) -> Result<()> {
     let cfg = AppConfig::load(&config_path)
@@ -245,6 +250,7 @@ async fn run(
     let codex_runtime = cfg.codex_runtime();
 
     // 根据邮箱系统选择创建不同的 EmailService
+    use crate::config::MailProvider;
     let (register_service, codex_service): (
         Arc<dyn services::RegisterService>,
         Arc<dyn services::CodexService>,
@@ -253,61 +259,128 @@ async fn run(
             Arc::new(DryRunRegisterService),
             Arc::new(DryRunCodexService),
         )
-    } else if use_chatgpt_mail {
-        let api_key = register_runtime.chatgpt_mail_api_key.clone();
-        let gpt_domains = cfg.chatgpt_mail_domains.clone();
-        println!(
-            "邮箱系统: chatgpt.org.uk (自动生成邮箱, 域名: {})",
-            if gpt_domains.is_empty() {
-                "随机".to_string()
-            } else {
-                format!("{}", gpt_domains.len())
-            }
-        );
-        let mail_concurrency = register_runtime.mail_max_concurrency;
-        let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(),
-            gpt_domains.clone(),
-            mail_concurrency,
-        ));
-        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key,
-            gpt_domains,
-            mail_concurrency,
-        ));
-        (
-            Arc::new(LiveRegisterService::new(
-                register_runtime.clone(),
-                reg_email,
-            )) as Arc<dyn services::RegisterService>,
-            Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                as Arc<dyn services::CodexService>,
-        )
     } else {
-        let email_cfg = email_service::EmailServiceConfig {
-            mail_api_base: register_runtime.mail_api_base.clone(),
-            mail_api_path: register_runtime.mail_api_path.clone(),
-            mail_api_token: register_runtime.mail_api_token.clone(),
-            request_timeout_sec: register_runtime.mail_request_timeout_sec,
-        };
-        println!("邮箱系统: kyx-cloud (自定义域名)");
-        let mail_concurrency = register_runtime.mail_max_concurrency;
-        let reg_email = Arc::new(email_service::EmailService::new_http(
-            email_cfg.clone(),
-            mail_concurrency,
-        ));
-        let rt_email = Arc::new(email_service::EmailService::new_http(
-            email_cfg,
-            mail_concurrency,
-        ));
-        (
-            Arc::new(LiveRegisterService::new(
-                register_runtime.clone(),
-                reg_email,
-            )) as Arc<dyn services::RegisterService>,
-            Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                as Arc<dyn services::CodexService>,
-        )
+        match mail_provider {
+            MailProvider::Chatgpt => {
+                let api_key = register_runtime.chatgpt_mail_api_key.clone();
+                let gpt_domains = cfg.chatgpt_mail_domains.clone();
+                println!(
+                    "邮箱系统: chatgpt.org.uk (自动生成邮箱, 域名: {})",
+                    if gpt_domains.is_empty() {
+                        "随机".to_string()
+                    } else {
+                        format!("{}", gpt_domains.len())
+                    }
+                );
+                let mail_concurrency = register_runtime.mail_max_concurrency;
+                let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
+                    api_key.clone(),
+                    gpt_domains.clone(),
+                    mail_concurrency,
+                ));
+                let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
+                    api_key,
+                    gpt_domains,
+                    mail_concurrency,
+                ));
+                (
+                    Arc::new(LiveRegisterService::new(
+                        register_runtime.clone(),
+                        reg_email,
+                    )) as Arc<dyn services::RegisterService>,
+                    Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                        as Arc<dyn services::CodexService>,
+                )
+            }
+            MailProvider::Duckmail => {
+                let duck_domains = cfg.duckmail_domains.clone();
+                println!(
+                    "邮箱系统: duckmail (私有域名, 域名: {})",
+                    if duck_domains.is_empty() {
+                        "随机".to_string()
+                    } else {
+                        format!("{}", duck_domains.len())
+                    }
+                );
+                let mail_concurrency = register_runtime.mail_max_concurrency;
+                let reg_email = Arc::new(email_service::EmailService::new_duckmail(
+                    register_runtime.duckmail_api_key.clone(),
+                    register_runtime.duckmail_password.clone(),
+                    duck_domains.clone(),
+                    mail_concurrency,
+                ));
+                let rt_email = Arc::new(email_service::EmailService::new_duckmail(
+                    register_runtime.duckmail_api_key.clone(),
+                    register_runtime.duckmail_password.clone(),
+                    duck_domains,
+                    mail_concurrency,
+                ));
+                (
+                    Arc::new(LiveRegisterService::new(
+                        register_runtime.clone(),
+                        reg_email,
+                    )) as Arc<dyn services::RegisterService>,
+                    Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                        as Arc<dyn services::CodexService>,
+                )
+            }
+            MailProvider::Tempmail => {
+                let tm_domains = cfg.tempmail_domains.clone();
+                println!(
+                    "邮箱系统: tempmail (mail.123nhh.de, 域名: {})",
+                    if tm_domains.is_empty() {
+                        "随机".to_string()
+                    } else {
+                        format!("{}", tm_domains.len())
+                    }
+                );
+                let mail_concurrency = register_runtime.mail_max_concurrency;
+                let reg_email = Arc::new(email_service::EmailService::new_tempmail(
+                    register_runtime.tempmail_api_key.clone(),
+                    tm_domains.clone(),
+                    mail_concurrency,
+                ));
+                let rt_email = Arc::new(email_service::EmailService::new_tempmail(
+                    register_runtime.tempmail_api_key.clone(),
+                    tm_domains,
+                    mail_concurrency,
+                ));
+                (
+                    Arc::new(LiveRegisterService::new(
+                        register_runtime.clone(),
+                        reg_email,
+                    )) as Arc<dyn services::RegisterService>,
+                    Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                        as Arc<dyn services::CodexService>,
+                )
+            }
+            MailProvider::Kyx => {
+                let email_cfg = email_service::EmailServiceConfig {
+                    mail_api_base: register_runtime.mail_api_base.clone(),
+                    mail_api_path: register_runtime.mail_api_path.clone(),
+                    mail_api_token: register_runtime.mail_api_token.clone(),
+                    request_timeout_sec: register_runtime.mail_request_timeout_sec,
+                };
+                println!("邮箱系统: kyx-cloud (自定义域名)");
+                let mail_concurrency = register_runtime.mail_max_concurrency;
+                let reg_email = Arc::new(email_service::EmailService::new_http(
+                    email_cfg.clone(),
+                    mail_concurrency,
+                ));
+                let rt_email = Arc::new(email_service::EmailService::new_http(
+                    email_cfg,
+                    mail_concurrency,
+                ));
+                (
+                    Arc::new(LiveRegisterService::new(
+                        register_runtime.clone(),
+                        reg_email,
+                    )) as Arc<dyn services::RegisterService>,
+                    Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                        as Arc<dyn services::CodexService>,
+                )
+            }
+        }
     };
     let s2a_service: Arc<dyn services::S2aService> = if dry_run {
         Arc::new(DryRunS2aService)
@@ -349,7 +422,7 @@ async fn run(
         // CLI 保持原语义：补注册最多 5 轮
         target_fill_max_rounds: 5,
         push_s2a,
-        use_chatgpt_mail,
+        mail_provider,
         free_mode: !cfg.payment_enabled(),
         register_log_mode: register_runtime.register_log_mode,
         register_perf_mode: register_runtime.register_perf_mode,
@@ -439,8 +512,15 @@ async fn run_interactive() -> Result<()> {
     println!("选择邮箱系统:");
     println!("  [1] kyx-cloud (自定义域名)");
     println!("  [2] chatgpt.org.uk (自动生成邮箱)");
-    let mail_choice = prompt_usize("邮箱系统", 1, 1, 2)?;
-    let use_chatgpt_mail = mail_choice == 2;
+    println!("  [3] duckmail (私有域名)");
+    println!("  [4] tempmail (mail.123nhh.de)");
+    let mail_choice = prompt_usize("邮箱系统", 1, 1, 4)?;
+    let mail_provider = match mail_choice {
+        2 => config::MailProvider::Chatgpt,
+        3 => config::MailProvider::Duckmail,
+        4 => config::MailProvider::Tempmail,
+        _ => config::MailProvider::Kyx,
+    };
 
     // 第三步：直接执行
     run(
@@ -452,7 +532,7 @@ async fn run_interactive() -> Result<()> {
         Some(rt_retries),
         !live_mode,
         push_s2a,
-        use_chatgpt_mail,
+        mail_provider,
         None,
     )
     .await

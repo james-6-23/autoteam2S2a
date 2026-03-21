@@ -17,12 +17,12 @@ use uuid::Uuid;
 use crate::config::{
     CodexRuntimeConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig, S2aExtraConfig,
 };
-use crate::sentinel;
 use crate::email_service::{EmailService, WaitCodeOptions};
 use crate::fingerprint::{
     build_fingerprint_material, is_retryable_challenge_error, looks_like_challenge_page,
 };
 use crate::models::{AccountSeed, AccountWithRt, RegisteredAccount};
+use crate::sentinel;
 use crate::util::{log_worker, random_delay_ms, random_hex, summarize_user_agent, token_preview};
 
 #[derive(Debug, Clone)]
@@ -83,11 +83,16 @@ impl RegisterService for DryRunRegisterService {
 pub struct LiveRegisterService {
     cfg: RegisterRuntimeConfig,
     email_service: Arc<EmailService>,
+    sentinel_cache: sentinel::SentinelCache,
 }
 
 impl LiveRegisterService {
     pub fn new(cfg: RegisterRuntimeConfig, email_service: Arc<EmailService>) -> Self {
-        Self { cfg, email_service }
+        Self {
+            cfg,
+            email_service,
+            sentinel_cache: sentinel::SentinelCache::new(120),
+        }
     }
 
     fn build_client(
@@ -165,9 +170,28 @@ impl LiveRegisterService {
         };
 
         let optimized_poll = matches!(self.cfg.register_perf_mode, RegisterPerfMode::Adaptive);
-        let primary_timeout_secs = if optimized_poll { 32 } else { 35 };
+        let turbo_mode = matches!(self.cfg.register_perf_mode, RegisterPerfMode::Turbo);
+        let primary_timeout_secs = if turbo_mode {
+            25
+        } else if optimized_poll {
+            32
+        } else {
+            35
+        };
         let retry_timeout_secs = if optimized_poll { 24 } else { 20 };
-        let primary_options = if optimized_poll {
+        let primary_options = if turbo_mode {
+            WaitCodeOptions {
+                after_email_id: 0,
+                prefetch_latest_email_id: true,
+                max_retries: (self.cfg.otp_max_retries + 8).max(12),
+                interval_ms: (self.cfg.otp_interval_ms / 5).clamp(150, 300),
+                max_interval_ms: self.cfg.otp_interval_ms.max(800).min(1200),
+                interval_backoff_step_ms: 80,
+                size: 3,
+                subject_must_contain_code_word: false,
+                strict_fetch: false,
+            }
+        } else if optimized_poll {
             WaitCodeOptions {
                 after_email_id: 0,
                 prefetch_latest_email_id: true,
@@ -227,7 +251,9 @@ impl LiveRegisterService {
         log_worker(input.worker_id, "注册", "发送验证码...");
         self.send_verification_email(client).await?;
 
-        let wait_hint = if optimized_poll {
+        let wait_hint = if turbo_mode {
+            format!("等待验证码 (turbo, {}s超时)...", primary_timeout_secs)
+        } else if optimized_poll {
             format!("等待验证码 (自适应轮询, {}s超时)...", primary_timeout_secs)
         } else {
             format!("等待验证码 ({}s超时)...", primary_timeout_secs)
@@ -247,6 +273,10 @@ impl LiveRegisterService {
             Ok(Err(_)) => bail!("后台验证码轮询任务意外终止"),
             Err(_) => {
                 otp_handle.cancel();
+                // Turbo 模式：不做补偿轮询，直接跳过
+                if turbo_mode {
+                    bail!("otp_timeout_skip");
+                }
                 // 第1轮超时，重新轮询邮箱
                 let retry_hint = if optimized_poll {
                     format!(
@@ -300,20 +330,26 @@ impl LiveRegisterService {
         };
         // 使用 oai_did 作为 device_id，user_agent 从配置获取
         let mut sentinel_state = sentinel::SentinelState::new(&oai_did, &self.cfg.user_agent);
-        let sentinel_header = sentinel::build_sentinel_header(
+        let sentinel_header = sentinel::build_sentinel_header_cached(
             client,
             &sentinel_cfg,
             &mut sentinel_state,
             "create_account",
             input.worker_id,
             "REG-POW",
+            &self.sentinel_cache,
         )
         .await
         .ok();
 
         log_worker(input.worker_id, "注册", "创建账户...");
-        self.create_account(client, &input.seed.real_name, &input.seed.birthdate, sentinel_header.as_deref())
-            .await?;
+        self.create_account(
+            client,
+            &input.seed.real_name,
+            &input.seed.birthdate,
+            sentinel_header.as_deref(),
+        )
+        .await?;
         log_worker(input.worker_id, "OK", "账户创建成功");
 
         let access_token = self.get_session_token(client).await?;
@@ -324,7 +360,11 @@ impl LiveRegisterService {
         );
 
         // ========== 注册阶段直接获取 Refresh Token ==========
-        log_worker(input.worker_id, "RT", "尝试在注册会话中获取 refresh_token...");
+        log_worker(
+            input.worker_id,
+            "RT",
+            "尝试在注册会话中获取 refresh_token...",
+        );
         let refresh_token = self.try_get_refresh_token(client, input.worker_id).await;
         match &refresh_token {
             Some(rt) => log_worker(
@@ -686,7 +726,11 @@ impl LiveRegisterService {
         if resp.status() != StatusCode::OK {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            bail!("创建账号失败: HTTP {} {}", status, truncate_text(&body, 200));
+            bail!(
+                "创建账号失败: HTTP {} {}",
+                status,
+                truncate_text(&body, 200)
+            );
         }
 
         let json: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -925,14 +969,24 @@ impl LiveRegisterService {
         client: &rquest::Client,
         worker_id: usize,
     ) -> Option<String> {
-        match self.do_get_refresh_token(client, worker_id).await {
-            Ok(rt) => Some(rt),
-            Err(e) => {
+        // 15s 超时保护，避免 PKCE 流程卡住影响注册速度
+        match tokio::time::timeout(
+            Duration::from_secs(15),
+            self.do_get_refresh_token(client, worker_id),
+        )
+        .await
+        {
+            Ok(Ok(rt)) => Some(rt),
+            Ok(Err(e)) => {
                 log_worker(
                     worker_id,
                     "RT",
                     &format!("注册阶段 RT 流程失败（不影响注册）: {e:#}"),
                 );
+                None
+            }
+            Err(_) => {
+                log_worker(worker_id, "RT", "注册阶段 RT 15s 超时（不影响注册）");
                 None
             }
         }
@@ -992,13 +1046,19 @@ impl LiveRegisterService {
         log_worker(
             worker_id,
             "RT",
-            &format!("PKCE: 选择 workspace {}", &workspace_id[..workspace_id.len().min(12)]),
+            &format!(
+                "PKCE: 选择 workspace {}",
+                &workspace_id[..workspace_id.len().min(12)]
+            ),
         );
 
         let workspace_result = client
             .post("https://auth.openai.com/api/accounts/workspace/select")
             .header("Origin", "https://auth.openai.com")
-            .header("Referer", "https://auth.openai.com/sign-in-with-chatgpt/codex/consent")
+            .header(
+                "Referer",
+                "https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+            )
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "workspace_id": workspace_id }))
             .send()
@@ -1008,7 +1068,11 @@ impl LiveRegisterService {
             Ok(resp) => {
                 // 检查最终 URL 是否包含 code
                 if let Ok(code) = self.extract_code_from_url(resp.url().as_str()) {
-                    log_worker(worker_id, "RT", "PKCE: workspace select 后自动重定向获得 code");
+                    log_worker(
+                        worker_id,
+                        "RT",
+                        "PKCE: workspace select 后自动重定向获得 code",
+                    );
                     return self
                         .exchange_code_for_refresh_token(client, &code, &code_verifier)
                         .await;
@@ -1016,10 +1080,8 @@ impl LiveRegisterService {
                 if resp.status() != StatusCode::OK {
                     bail!("PKCE: workspace select 失败: HTTP {}", resp.status());
                 }
-                let ws_data: serde_json::Value = resp
-                    .json()
-                    .await
-                    .context("PKCE: 解析 workspace 响应失败")?;
+                let ws_data: serde_json::Value =
+                    resp.json().await.context("PKCE: 解析 workspace 响应失败")?;
                 let continue_url = ws_data
                     .get("continue_url")
                     .and_then(|v| v.as_str())
@@ -1125,8 +1187,8 @@ impl LiveRegisterService {
             .decode(&padded)
             .or_else(|_| general_purpose::STANDARD.decode(&padded))
             .context("PKCE: auth cookie Base64 解码失败")?;
-        let json: serde_json::Value = serde_json::from_slice(&decoded)
-            .context("PKCE: auth cookie JSON 解析失败")?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&decoded).context("PKCE: auth cookie JSON 解析失败")?;
 
         let workspaces = json
             .get("workspaces")
@@ -1184,6 +1246,25 @@ impl LiveRegisterService {
 
     /// 用 authorization_code + code_verifier 换取 refresh_token
     async fn exchange_code_for_refresh_token(
+        &self,
+        client: &rquest::Client,
+        code: &str,
+        code_verifier: &str,
+    ) -> Result<String> {
+        // 第一次尝试
+        match self.do_exchange_code(client, code, code_verifier).await {
+            Ok(rt) => return Ok(rt),
+            Err(first_err) => {
+                // 重试一次
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                self.do_exchange_code(client, code, code_verifier)
+                    .await
+                    .map_err(|_| first_err)
+            }
+        }
+    }
+
+    async fn do_exchange_code(
         &self,
         client: &rquest::Client,
         code: &str,
@@ -1812,10 +1893,8 @@ impl CodexService for LiveCodexService {
         let code_challenge = generate_code_challenge(&code_verifier);
         let auth_url = self.build_authorize_url(&code_challenge, &Uuid::new_v4().to_string())?;
 
-        let mut state = sentinel::SentinelState::new(
-            &Uuid::new_v4().to_string(),
-            &runtime_user_agent,
-        );
+        let mut state =
+            sentinel::SentinelState::new(&Uuid::new_v4().to_string(), &runtime_user_agent);
 
         let auth_started = Instant::now();
         let code = self
@@ -1871,7 +1950,11 @@ impl S2aService for DryRunS2aService {
         Ok(())
     }
 
-    async fn add_account(&self, _team: &S2aConfig, _account: &AccountWithRt) -> Result<Option<i64>> {
+    async fn add_account(
+        &self,
+        _team: &S2aConfig,
+        _account: &AccountWithRt,
+    ) -> Result<Option<i64>> {
         let wait_ms = random_delay_ms(40, 120);
         sleep(Duration::from_millis(wait_ms)).await;
         Ok(None)

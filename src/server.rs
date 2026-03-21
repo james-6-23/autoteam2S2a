@@ -264,6 +264,8 @@ pub struct CreateTaskRequest {
     pub rt_retries: Option<usize>,
     pub push_s2a: Option<bool>,
     pub use_chatgpt_mail: Option<bool>,
+    #[serde(default)]
+    pub mail_provider: Option<crate::config::MailProvider>,
     pub free_mode: Option<bool>,
 }
 
@@ -314,6 +316,7 @@ struct FullConfigResponse {
     proxy_pool: Vec<String>,
     email_domains: Vec<String>,
     chatgpt_mail_domains: Vec<String>,
+    duckmail_domains: Vec<String>,
     d1_cleanup: D1CleanupResp,
 }
 
@@ -553,6 +556,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
         proxy_pool: cfg.proxy_pool.clone(),
         email_domains: cfg.email_domains.clone(),
         chatgpt_mail_domains: cfg.chatgpt_mail_domains.clone(),
+        duckmail_domains: cfg.duckmail_domains.clone(),
         d1_cleanup: D1CleanupResp {
             enabled: cfg.d1_cleanup.enabled.unwrap_or(false),
             account_id: cfg.d1_cleanup.account_id.clone().unwrap_or_default(),
@@ -600,6 +604,7 @@ async fn add_s2a_handler(
 
 #[derive(Deserialize)]
 struct UpdateS2aRequest {
+    name: Option<String>,
     api_base: Option<String>,
     admin_key: Option<String>,
     concurrency: Option<usize>,
@@ -617,12 +622,30 @@ async fn update_s2a_handler(
     Json(req): Json<UpdateS2aRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let mut cfg = state.config.write().await;
-    let team = cfg
-        .s2a
-        .iter_mut()
-        .find(|t| t.name == name)
-        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到号池: {name}")))?;
+    if !cfg.s2a.iter().any(|t| t.name == name) {
+        return Err(error_json(StatusCode::NOT_FOUND, &format!("未找到号池: {name}")));
+    }
 
+    // 支持改名：检查新名称是否冲突
+    if let Some(ref v) = req.name {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() && trimmed != name {
+            let conflict = cfg.s2a.iter().any(|t| t.name == trimmed && t.name != name);
+            if conflict {
+                return Err(error_json(
+                    StatusCode::CONFLICT,
+                    &format!("号池名称 {trimmed} 已存在"),
+                ));
+            }
+        }
+    }
+    let team = cfg.s2a.iter_mut().find(|t| t.name == name).unwrap();
+    if let Some(ref v) = req.name {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() {
+            team.name = trimmed;
+        }
+    }
     if let Some(v) = req.api_base {
         team.api_base = v;
     }
@@ -650,9 +673,74 @@ async fn update_s2a_handler(
     if let Some(v) = req.extra {
         team.extra = v;
     }
+    let updated_name = team.name.clone();
     auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse {
-        message: format!("号池 {name} 已更新"),
+        message: format!("号池 {updated_name} 已更新"),
+    }))
+}
+
+/// 按索引更新号池（用于名称为空等无法按名称匹配的场景）
+async fn update_s2a_by_index_handler(
+    State(state): State<AppState>,
+    Path(idx): Path<usize>,
+    Json(req): Json<UpdateS2aRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    let s2a_len = cfg.s2a.len();
+    if idx >= s2a_len {
+        return Err(error_json(
+            StatusCode::NOT_FOUND,
+            &format!("号池索引 {idx} 超出范围（共 {s2a_len} 个）"),
+        ));
+    }
+
+    // 改名：检查冲突
+    if let Some(ref v) = req.name {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() {
+            let conflict = cfg.s2a.iter().enumerate().any(|(i, t)| i != idx && t.name == trimmed);
+            if conflict {
+                return Err(error_json(
+                    StatusCode::CONFLICT,
+                    &format!("号池名称 {trimmed} 已存在"),
+                ));
+            }
+            cfg.s2a[idx].name = trimmed;
+        }
+    }
+    let team = &mut cfg.s2a[idx];
+    if let Some(v) = req.api_base {
+        team.api_base = v;
+    }
+    if let Some(v) = req.admin_key {
+        team.admin_key = v;
+    }
+    if let Some(v) = req.concurrency {
+        team.concurrency = v;
+    }
+    if let Some(v) = req.priority {
+        team.priority = v;
+    }
+    if let Some(v) = req.group_ids {
+        team.group_ids = v;
+    }
+    if let Some(v) = req.free_group_ids {
+        team.free_group_ids = v;
+    }
+    if let Some(v) = req.free_priority {
+        team.free_priority = v;
+    }
+    if let Some(v) = req.free_concurrency {
+        team.free_concurrency = v;
+    }
+    if let Some(v) = req.extra {
+        team.extra = v;
+    }
+    let updated_name = team.name.clone();
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse {
+        message: format!("号池 {updated_name} 已更新"),
     }))
 }
 
@@ -672,6 +760,25 @@ async fn delete_s2a_handler(
     auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse {
         message: format!("号池 {name} 已删除"),
+    }))
+}
+
+/// 按索引删除号池（用于名称为空等无法按名称匹配的场景）
+async fn delete_s2a_by_index_handler(
+    State(state): State<AppState>,
+    Path(idx): Path<usize>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    if idx >= cfg.s2a.len() {
+        return Err(error_json(
+            StatusCode::NOT_FOUND,
+            &format!("号池索引 {idx} 超出范围（共 {} 个）", cfg.s2a.len()),
+        ));
+    }
+    let removed = cfg.s2a.remove(idx);
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse {
+        message: format!("号池 #{idx} ({}) 已删除", removed.name),
     }))
 }
 
@@ -1304,7 +1411,13 @@ async fn create_task_handler(
         .unwrap_or(default_rt_retries)
         .clamp(1, MAX_RT_RETRIES);
     let push_s2a = req.push_s2a.unwrap_or(true);
-    let use_chatgpt_mail = req.use_chatgpt_mail.unwrap_or(false);
+    let mail_provider = req.mail_provider.unwrap_or_else(|| {
+        if req.use_chatgpt_mail.unwrap_or(false) {
+            crate::config::MailProvider::Chatgpt
+        } else {
+            crate::config::MailProvider::Kyx
+        }
+    });
     let config_snapshot = cfg.clone();
     drop(cfg); // release read lock
 
@@ -1331,7 +1444,7 @@ async fn create_task_handler(
             rt_workers,
             rt_retries,
             push_s2a,
-            use_chatgpt_mail,
+            mail_provider,
             free_mode,
             proxy_file,
         )
@@ -1452,7 +1565,7 @@ async fn execute_task(
     rt_workers: usize,
     rt_retries: usize,
     push_s2a: bool,
-    use_chatgpt_mail: bool,
+    mail_provider: crate::config::MailProvider,
     free_mode: bool,
     proxy_file: Option<PathBuf>,
 ) {
@@ -1516,52 +1629,99 @@ async fn execute_task(
     let (register_service, codex_service): (
         Arc<dyn crate::services::RegisterService>,
         Arc<dyn crate::services::CodexService>,
-    ) = if use_chatgpt_mail {
-        let api_key = register_runtime.chatgpt_mail_api_key.clone();
-        let gpt_domains = cfg.chatgpt_mail_domains.clone();
-        let mail_concurrency = register_runtime.mail_max_concurrency;
-        let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(),
-            gpt_domains.clone(),
-            mail_concurrency,
-        ));
-        let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
-            api_key,
-            gpt_domains,
-            mail_concurrency,
-        ));
-        (
-            Arc::new(LiveRegisterService::new(
-                register_runtime.clone(),
-                reg_email,
-            )) as Arc<dyn crate::services::RegisterService>,
-            Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                as Arc<dyn crate::services::CodexService>,
-        )
-    } else {
-        let email_cfg = email_service::EmailServiceConfig {
-            mail_api_base: register_runtime.mail_api_base.clone(),
-            mail_api_path: register_runtime.mail_api_path.clone(),
-            mail_api_token: register_runtime.mail_api_token.clone(),
-            request_timeout_sec: register_runtime.mail_request_timeout_sec,
-        };
-        let mail_concurrency = register_runtime.mail_max_concurrency;
-        let reg_email = Arc::new(email_service::EmailService::new_http(
-            email_cfg.clone(),
-            mail_concurrency,
-        ));
-        let rt_email = Arc::new(email_service::EmailService::new_http(
-            email_cfg,
-            mail_concurrency,
-        ));
-        (
-            Arc::new(LiveRegisterService::new(
-                register_runtime.clone(),
-                reg_email,
-            )) as Arc<dyn crate::services::RegisterService>,
-            Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                as Arc<dyn crate::services::CodexService>,
-        )
+    ) = match mail_provider {
+        crate::config::MailProvider::Chatgpt => {
+            let api_key = register_runtime.chatgpt_mail_api_key.clone();
+            let gpt_domains = cfg.chatgpt_mail_domains.clone();
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let reg_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
+                api_key.clone(),
+                gpt_domains.clone(),
+                mail_concurrency,
+            ));
+            let rt_email = Arc::new(email_service::EmailService::new_chatgpt_org_uk(
+                api_key,
+                gpt_domains,
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    reg_email,
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
+        crate::config::MailProvider::Duckmail => {
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let reg_email = Arc::new(email_service::EmailService::new_duckmail(
+                register_runtime.duckmail_api_key.clone(),
+                register_runtime.duckmail_password.clone(),
+                cfg.duckmail_domains.clone(),
+                mail_concurrency,
+            ));
+            let rt_email = Arc::new(email_service::EmailService::new_duckmail(
+                register_runtime.duckmail_api_key.clone(),
+                register_runtime.duckmail_password.clone(),
+                cfg.duckmail_domains.clone(),
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    reg_email,
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
+        crate::config::MailProvider::Tempmail => {
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let reg_email = Arc::new(email_service::EmailService::new_tempmail(
+                register_runtime.tempmail_api_key.clone(),
+                cfg.tempmail_domains.clone(),
+                mail_concurrency,
+            ));
+            let rt_email = Arc::new(email_service::EmailService::new_tempmail(
+                register_runtime.tempmail_api_key.clone(),
+                cfg.tempmail_domains.clone(),
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    reg_email,
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
+        crate::config::MailProvider::Kyx => {
+            let email_cfg = email_service::EmailServiceConfig {
+                mail_api_base: register_runtime.mail_api_base.clone(),
+                mail_api_path: register_runtime.mail_api_path.clone(),
+                mail_api_token: register_runtime.mail_api_token.clone(),
+                request_timeout_sec: register_runtime.mail_request_timeout_sec,
+            };
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let reg_email = Arc::new(email_service::EmailService::new_http(
+                email_cfg.clone(),
+                mail_concurrency,
+            ));
+            let rt_email = Arc::new(email_service::EmailService::new_http(
+                email_cfg,
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    reg_email,
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
     };
 
     let s2a_service: Arc<dyn crate::services::S2aService> = Arc::new(S2aHttpService::new());
@@ -1574,7 +1734,7 @@ async fn execute_task(
         // 兼容手动任务历史行为：补注册最多 5 轮；定时计划走 schedule 自身 rt_retries
         target_fill_max_rounds: 5,
         push_s2a,
-        use_chatgpt_mail,
+        mail_provider,
         free_mode,
         register_log_mode: register_runtime.register_log_mode,
         register_perf_mode: register_runtime.register_perf_mode,
@@ -1651,6 +1811,8 @@ struct CreateScheduleRequest {
     #[serde(default)]
     use_chatgpt_mail: bool,
     #[serde(default)]
+    mail_provider: Option<crate::config::MailProvider>,
+    #[serde(default)]
     free_mode: bool,
     #[serde(default)]
     register_log_mode: Option<RegisterLogMode>,
@@ -1685,6 +1847,7 @@ struct UpdateScheduleRequest {
     rt_retries: Option<usize>,
     push_s2a: Option<bool>,
     use_chatgpt_mail: Option<bool>,
+    mail_provider: Option<crate::config::MailProvider>,
     free_mode: Option<bool>,
     register_log_mode: Option<Option<RegisterLogMode>>,
     register_perf_mode: Option<Option<RegisterPerfMode>>,
@@ -1817,6 +1980,7 @@ async fn create_schedule_handler(
         rt_retries,
         push_s2a: req.push_s2a,
         use_chatgpt_mail: req.use_chatgpt_mail,
+        mail_provider: req.mail_provider,
         free_mode: req.free_mode,
         register_log_mode: req.register_log_mode,
         register_perf_mode: req.register_perf_mode,
@@ -1914,6 +2078,9 @@ async fn update_schedule_handler(
     }
     if let Some(cm) = req.use_chatgpt_mail {
         sched.use_chatgpt_mail = cm;
+    }
+    if let Some(mp) = req.mail_provider {
+        sched.mail_provider = Some(mp);
     }
     if let Some(fm) = req.free_mode {
         sched.free_mode = fm;
@@ -2097,7 +2264,7 @@ async fn trigger_schedule_handler(
             let runner = match build_workflow_runner(
                 &config_snapshot,
                 state_clone.proxy_file.as_deref(),
-                schedule.use_chatgpt_mail,
+                schedule.effective_mail_provider(),
             )
             .await
             {
@@ -2251,7 +2418,7 @@ async fn run_once_schedule_handler(
     let runner = match build_workflow_runner(
         &config_snapshot,
         state.proxy_file.as_deref(),
-        schedule.use_chatgpt_mail,
+        schedule.effective_mail_provider(),
     )
     .await
     {
@@ -2406,7 +2573,7 @@ async fn get_run_handler(
 pub async fn build_workflow_runner(
     cfg: &AppConfig,
     proxy_file: Option<&std::path::Path>,
-    use_chatgpt_mail: bool,
+    mail_provider: crate::config::MailProvider,
 ) -> anyhow::Result<WorkflowRunner> {
     let proxy_pool = build_proxy_pool(cfg, proxy_file).await?;
     let register_runtime = cfg.register_runtime();
@@ -2424,52 +2591,99 @@ pub async fn build_workflow_runner(
     let (register_service, codex_service): (
         Arc<dyn crate::services::RegisterService>,
         Arc<dyn crate::services::CodexService>,
-    ) = if use_chatgpt_mail {
-        let api_key = register_runtime.chatgpt_mail_api_key.clone();
-        let gpt_domains = cfg.chatgpt_mail_domains.clone();
-        let mail_concurrency = register_runtime.mail_max_concurrency;
-        let reg_email = Arc::new(crate::email_service::EmailService::new_chatgpt_org_uk(
-            api_key.clone(),
-            gpt_domains.clone(),
-            mail_concurrency,
-        ));
-        let rt_email = Arc::new(crate::email_service::EmailService::new_chatgpt_org_uk(
-            api_key,
-            gpt_domains,
-            mail_concurrency,
-        ));
-        (
-            Arc::new(LiveRegisterService::new(
-                register_runtime.clone(),
-                reg_email,
-            )) as Arc<dyn crate::services::RegisterService>,
-            Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                as Arc<dyn crate::services::CodexService>,
-        )
-    } else {
-        let email_cfg = crate::email_service::EmailServiceConfig {
-            mail_api_base: register_runtime.mail_api_base.clone(),
-            mail_api_path: register_runtime.mail_api_path.clone(),
-            mail_api_token: register_runtime.mail_api_token.clone(),
-            request_timeout_sec: register_runtime.mail_request_timeout_sec,
-        };
-        let mail_concurrency = register_runtime.mail_max_concurrency;
-        let reg_email = Arc::new(crate::email_service::EmailService::new_http(
-            email_cfg.clone(),
-            mail_concurrency,
-        ));
-        let rt_email = Arc::new(crate::email_service::EmailService::new_http(
-            email_cfg,
-            mail_concurrency,
-        ));
-        (
-            Arc::new(LiveRegisterService::new(
-                register_runtime.clone(),
-                reg_email,
-            )) as Arc<dyn crate::services::RegisterService>,
-            Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                as Arc<dyn crate::services::CodexService>,
-        )
+    ) = match mail_provider {
+        crate::config::MailProvider::Chatgpt => {
+            let api_key = register_runtime.chatgpt_mail_api_key.clone();
+            let gpt_domains = cfg.chatgpt_mail_domains.clone();
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let reg_email = Arc::new(crate::email_service::EmailService::new_chatgpt_org_uk(
+                api_key.clone(),
+                gpt_domains.clone(),
+                mail_concurrency,
+            ));
+            let rt_email = Arc::new(crate::email_service::EmailService::new_chatgpt_org_uk(
+                api_key,
+                gpt_domains,
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    reg_email,
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
+        crate::config::MailProvider::Duckmail => {
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let reg_email = Arc::new(crate::email_service::EmailService::new_duckmail(
+                register_runtime.duckmail_api_key.clone(),
+                register_runtime.duckmail_password.clone(),
+                cfg.duckmail_domains.clone(),
+                mail_concurrency,
+            ));
+            let rt_email = Arc::new(crate::email_service::EmailService::new_duckmail(
+                register_runtime.duckmail_api_key.clone(),
+                register_runtime.duckmail_password.clone(),
+                cfg.duckmail_domains.clone(),
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    reg_email,
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
+        crate::config::MailProvider::Tempmail => {
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let reg_email = Arc::new(crate::email_service::EmailService::new_tempmail(
+                register_runtime.tempmail_api_key.clone(),
+                cfg.tempmail_domains.clone(),
+                mail_concurrency,
+            ));
+            let rt_email = Arc::new(crate::email_service::EmailService::new_tempmail(
+                register_runtime.tempmail_api_key.clone(),
+                cfg.tempmail_domains.clone(),
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    reg_email,
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
+        crate::config::MailProvider::Kyx => {
+            let email_cfg = crate::email_service::EmailServiceConfig {
+                mail_api_base: register_runtime.mail_api_base.clone(),
+                mail_api_path: register_runtime.mail_api_path.clone(),
+                mail_api_token: register_runtime.mail_api_token.clone(),
+                request_timeout_sec: register_runtime.mail_request_timeout_sec,
+            };
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let reg_email = Arc::new(crate::email_service::EmailService::new_http(
+                email_cfg.clone(),
+                mail_concurrency,
+            ));
+            let rt_email = Arc::new(crate::email_service::EmailService::new_http(
+                email_cfg,
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    reg_email,
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
     };
 
     let s2a_service: Arc<dyn crate::services::S2aService> = Arc::new(S2aHttpService::new());
@@ -2490,19 +2704,13 @@ async fn log_stream_handler(
     let rx = state.log_tx.subscribe();
 
     let stream = futures::stream::unfold(rx, |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(msg) => {
-                    return Some((Ok(Event::default().data(msg)), rx));
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    let msg = format!("[... 跳过 {} 条日志]", n);
-                    return Some((Ok(Event::default().data(msg)), rx));
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return None;
-                }
+        match rx.recv().await {
+            Ok(msg) => Some((Ok(Event::default().data(msg)), rx)),
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                let msg = format!("[... 跳过 {} 条日志]", n);
+                Some((Ok(Event::default().data(msg)), rx))
             }
+            Err(broadcast::error::RecvError::Closed) => None,
         }
     });
 
@@ -2559,6 +2767,10 @@ pub async fn start_server(
         // Config management
         .route("/api/config", get(config_handler))
         .route("/api/config/s2a", post(add_s2a_handler))
+        .route(
+            "/api/config/s2a/by-index/{idx}",
+            delete(delete_s2a_by_index_handler).put(update_s2a_by_index_handler),
+        )
         .route(
             "/api/config/s2a/{name}",
             delete(delete_s2a_handler).put(update_s2a_handler),

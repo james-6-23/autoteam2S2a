@@ -277,7 +277,11 @@ fn build_edge_sec_ch_ua(chromium_major: u32, edge_major: u32, salt: usize) -> St
 }
 
 /// 构建带完整补丁版本号的 sec-ch-ua-full-version-list（Edge）
-fn build_edge_sec_ch_ua_full_version_list(chromium_major: u32, edge_major: u32, salt: usize) -> String {
+fn build_edge_sec_ch_ua_full_version_list(
+    chromium_major: u32,
+    edge_major: u32,
+    salt: usize,
+) -> String {
     let (brand_name, brand_ver) = not_a_brand_tag(chromium_major);
     let chrome_patch = pick_chrome_patch(chromium_major, salt);
     let edge_patch = pick_edge_patch(edge_major, salt);

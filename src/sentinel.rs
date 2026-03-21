@@ -46,6 +46,57 @@ impl SentinelState {
     }
 }
 
+// ─── 缓存 ───────────────────────────────────────────────
+
+use std::sync::{Arc, Mutex};
+
+/// 缓存的 sentinel token，多 worker 共享，减少重复 sentinel/req 调用。
+#[derive(Debug, Clone)]
+struct CachedSentinelToken {
+    token: String,
+    created_at: std::time::Instant,
+}
+
+/// 线程安全的 Sentinel token 缓存。
+///
+/// sentinel/req 返回的 turnstile token 可以被多个 worker 复用，
+/// 每个 worker 仍然需要独立计算 PoW（因为 seed 不同）。
+#[derive(Debug, Clone)]
+pub struct SentinelCache {
+    inner: Arc<Mutex<Option<CachedSentinelToken>>>,
+    ttl_secs: u64,
+}
+
+impl SentinelCache {
+    pub fn new(ttl_secs: u64) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+            ttl_secs,
+        }
+    }
+
+    /// 获取缓存的 sentinel token（如果未过期）。
+    pub fn get(&self) -> Option<String> {
+        let guard = self.inner.lock().ok()?;
+        let cached = guard.as_ref()?;
+        if cached.created_at.elapsed().as_secs() < self.ttl_secs {
+            Some(cached.token.clone())
+        } else {
+            None
+        }
+    }
+
+    /// 存入新的 sentinel token。
+    pub fn set(&self, token: String) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some(CachedSentinelToken {
+                token,
+                created_at: std::time::Instant::now(),
+            });
+        }
+    }
+}
+
 // ─── 公开 API ───────────────────────────────────────────
 
 /// 一站式获取 Sentinel header 的值（JSON 字符串）。
@@ -54,6 +105,7 @@ impl SentinelState {
 /// 调用方只需把返回值设为 `OpenAI-Sentinel-Token` header。
 ///
 /// 如果 Sentinel 已禁用或出错（非 strict 模式），返回一个基础 token。
+#[allow(dead_code)]
 pub async fn build_sentinel_header(
     client: &rquest::Client,
     cfg: &SentinelConfig,
@@ -63,6 +115,40 @@ pub async fn build_sentinel_header(
     log_tag: &str,
 ) -> Result<String> {
     call_sentinel_req(client, cfg, state, flow, worker_id, log_tag).await?;
+    get_sentinel_header_value(state, flow)
+}
+
+/// 缓存版本：复用 sentinel_token 减少 sentinel/req 调用。
+///
+/// 如果缓存命中，跳过 sentinel/req HTTP 请求，只计算 PoW。
+/// 缓存未命中时，正常调用 sentinel/req 并更新缓存。
+pub async fn build_sentinel_header_cached(
+    client: &rquest::Client,
+    cfg: &SentinelConfig,
+    state: &mut SentinelState,
+    flow: &str,
+    worker_id: usize,
+    log_tag: &str,
+    cache: &SentinelCache,
+) -> Result<String> {
+    if let Some(cached_token) = cache.get() {
+        // 缓存命中：复用 sentinel_token，跳过 HTTP 请求
+        state.sentinel_token = cached_token;
+        log_worker(
+            worker_id,
+            log_tag,
+            &format!("{flow}: sentinel_token 缓存命中，跳过 sentinel/req"),
+        );
+        // 仍需重新计算 PoW（每次 seed 不同），直接生成基础 requirements token
+        state.solved_pow = get_requirements_token(&state.sid, &state.user_agent);
+    } else {
+        // 缓存未命中：正常调用 sentinel/req
+        call_sentinel_req(client, cfg, state, flow, worker_id, log_tag).await?;
+        // 更新缓存
+        if !state.sentinel_token.is_empty() {
+            cache.set(state.sentinel_token.clone());
+        }
+    }
     get_sentinel_header_value(state, flow)
 }
 
@@ -257,8 +343,7 @@ pub fn get_requirements_token(sid: &str, user_agent: &str) -> String {
     let mut config = build_pow_config(sid, user_agent);
     config[3] = serde_json::Value::from(0);
     config[9] = serde_json::Value::from(0);
-    let encoded =
-        general_purpose::STANDARD.encode(serde_json::to_vec(&config).unwrap_or_default());
+    let encoded = general_purpose::STANDARD.encode(serde_json::to_vec(&config).unwrap_or_default());
     format!("gAAAAAC{encoded}~S")
 }
 

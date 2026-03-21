@@ -57,6 +57,7 @@ pub struct RegisterRtResult {
     pub rt_success: Vec<AccountWithRt>,
     /// 供后续 S2A 分流使用的 RT 成功账号。
     /// team 模式下会补充非目标模式账号，避免 free 分组漏推送。
+    #[allow(dead_code)]
     pub rt_success_for_s2a: Vec<AccountWithRt>,
     pub rt_failed: Vec<RegisteredAccount>,
     pub total_registered: usize,
@@ -73,7 +74,7 @@ pub struct WorkflowOptions {
     /// 兜底轮次：超过该轮次后，按当前 RT 成功数收敛
     pub target_fill_max_rounds: usize,
     pub push_s2a: bool,
-    pub use_chatgpt_mail: bool,
+    pub mail_provider: crate::config::MailProvider,
     pub free_mode: bool,
     pub register_log_mode: RegisterLogMode,
     pub register_perf_mode: RegisterPerfMode,
@@ -101,6 +102,11 @@ impl WorkflowRunner {
         }
     }
 
+    /// 获取 S2A 服务实例（供分发流式消费者使用）
+    pub fn s2a_service(&self) -> Arc<dyn S2aService> {
+        Arc::clone(&self.s2a_service)
+    }
+
     /// 注册 + RT 流水线（不包含 S2A 入库）
     pub async fn run_register_and_rt(
         &self,
@@ -108,6 +114,7 @@ impl WorkflowRunner {
         options: &WorkflowOptions,
         cancel_flag: Arc<AtomicBool>,
         progress: Option<&Arc<TaskProgress>>,
+        s2a_tx: Option<mpsc::Sender<AccountWithRt>>,
     ) -> Result<RegisterRtResult> {
         let target = options.target_count;
         let reg_concurrency = options.register_workers.max(1);
@@ -148,6 +155,12 @@ impl WorkflowRunner {
                         let queue_cap = deficit.max(reg_concurrency * 2).min(reg_concurrency * 8);
                         (jitter_min, jitter_max, queue_cap)
                     }
+                    RegisterPerfMode::Turbo => {
+                        let jitter_max = (300u64 / reg_concurrency as u64).clamp(20, 100);
+                        let jitter_min = (jitter_max / 8).max(5);
+                        let queue_cap = deficit.max(reg_concurrency * 2).min(reg_concurrency * 10);
+                        (jitter_min, jitter_max, queue_cap)
+                    }
                 };
 
             if round > 0 {
@@ -170,43 +183,47 @@ impl WorkflowRunner {
             }
 
             // 根据邮箱系统选择生成 seeds
-            let seeds = if options.use_chatgpt_mail {
-                let email_service = Arc::clone(&self.register_service);
-                let proxy_pool = Arc::clone(&self.proxy_pool);
-                let email_domains = Arc::new(cfg.email_domains.clone());
-                let seed_mail_concurrency = cfg
-                    .register
-                    .mail_max_concurrency
-                    .unwrap_or(50)
-                    .max(1)
-                    .min(deficit.max(1));
-                stream::iter(0..deficit)
-                    .map(move |_| {
-                        let email_service = Arc::clone(&email_service);
-                        let proxy_pool = Arc::clone(&proxy_pool);
-                        let email_domains = Arc::clone(&email_domains);
-                        async move {
-                            let proxy = proxy_pool.next();
-                            let mut seed = generate_account_seed(email_domains.as_ref());
-                            match email_service.generate_email(proxy.as_deref()).await {
-                                Ok(Some(email)) => seed.account = email,
-                                Ok(None) => {}
-                                Err(e) => {
-                                    broadcast_log(&format!(
-                                        "[chatgpt.org.uk] 生成邮箱失败: {e}，使用域名列表邮箱"
-                                    ));
+            use crate::config::MailProvider;
+            let seeds = match options.mail_provider {
+                MailProvider::Chatgpt | MailProvider::Duckmail | MailProvider::Tempmail => {
+                    let email_service = Arc::clone(&self.register_service);
+                    let proxy_pool = Arc::clone(&self.proxy_pool);
+                    let email_domains = Arc::new(cfg.email_domains.clone());
+                    let seed_mail_concurrency = cfg
+                        .register
+                        .mail_max_concurrency
+                        .unwrap_or(50)
+                        .max(1)
+                        .min(deficit.max(1));
+                    stream::iter(0..deficit)
+                        .map(move |_| {
+                            let email_service = Arc::clone(&email_service);
+                            let proxy_pool = Arc::clone(&proxy_pool);
+                            let email_domains = Arc::clone(&email_domains);
+                            async move {
+                                let proxy = proxy_pool.next();
+                                let mut seed = generate_account_seed(email_domains.as_ref());
+                                match email_service.generate_email(proxy.as_deref()).await {
+                                    Ok(Some(email)) => seed.account = email,
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        broadcast_log(&format!(
+                                            "[mail-provider] 生成邮箱失败: {e}，使用域名列表邮箱"
+                                        ));
+                                    }
                                 }
+                                seed
                             }
-                            seed
-                        }
-                    })
-                    .buffered(seed_mail_concurrency)
-                    .collect::<Vec<_>>()
-                    .await
-            } else {
-                (0..deficit)
-                    .map(|_| generate_account_seed(&cfg.email_domains))
-                    .collect::<Vec<_>>()
+                        })
+                        .buffered(seed_mail_concurrency)
+                        .collect::<Vec<_>>()
+                        .await
+                }
+                MailProvider::Kyx => {
+                    (0..deficit)
+                        .map(|_| generate_account_seed(&cfg.email_domains))
+                        .collect::<Vec<_>>()
+                }
             };
 
             let (reg_tx, rt_rx) = mpsc::channel(reg_queue_cap);
@@ -375,6 +392,7 @@ impl WorkflowRunner {
                 let rt_retry_max = options.rt_retry_max;
                 let cancel = cancel_flag.clone();
                 let prog = progress.cloned();
+                let s2a_tx = s2a_tx.clone();
                 tokio::spawn(async move {
                     Self::rt_pipeline_consumer(
                         rt_rx,
@@ -384,6 +402,7 @@ impl WorkflowRunner {
                         rt_retry_max,
                         cancel,
                         prog,
+                        s2a_tx,
                     )
                     .await
                 })
@@ -470,6 +489,7 @@ impl WorkflowRunner {
     }
 
     /// 将账号推送到单个 S2A 号池（含重试），返回 (s2a_ok, s2a_failed)
+    #[allow(dead_code)]
     pub async fn push_to_s2a(
         &self,
         team: &S2aConfig,
@@ -586,6 +606,177 @@ impl WorkflowRunner {
         (s2a_ok, s2a_failed)
     }
 
+    /// S2A 流式消费者：实时接收 RT 成功的账号并入库，与注册+RT 并行运行。
+    ///
+    /// 返回 (team_ok + free_ok, team_fail + free_fail, free_ok, free_fail)
+    async fn s2a_streaming_consumer(
+        mut rx: mpsc::Receiver<AccountWithRt>,
+        s2a_service: Arc<dyn crate::services::S2aService>,
+        team: &S2aConfig,
+        progress: Option<&Arc<TaskProgress>>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> (usize, usize, usize, usize) {
+        use tokio::sync::Semaphore;
+
+        const S2A_STREAM_MAX_RETRIES: usize = 3;
+        const S2A_STREAM_RETRY_DELAY_SECS: u64 = 3;
+
+        let s2a_concurrency = team.concurrency.max(1);
+        let semaphore = Arc::new(Semaphore::new(s2a_concurrency));
+        let mut join_set = tokio::task::JoinSet::new();
+
+        let team_ok = Arc::new(AtomicUsize::new(0));
+        let team_fail = Arc::new(AtomicUsize::new(0));
+        let free_ok = Arc::new(AtomicUsize::new(0));
+        let free_fail = Arc::new(AtomicUsize::new(0));
+        let created_ids = Arc::new(std::sync::Mutex::new(Vec::<i64>::new()));
+
+        // 构建 free 配置
+        let free_team = if !team.free_group_ids.is_empty() {
+            Some(S2aConfig {
+                group_ids: team.free_group_ids.clone(),
+                priority: team.free_priority.unwrap_or(team.priority),
+                concurrency: team.free_concurrency.unwrap_or(team.concurrency),
+                ..team.clone()
+            })
+        } else {
+            None
+        };
+
+        broadcast_log(&format!("[S2A-Stream] 流式入库已启动 [{}]", team.name));
+
+        // 从 channel 接收 RT 成功的账号
+        loop {
+            let recv_result = tokio::select! {
+                acc = rx.recv() => acc,
+                _ = Self::wait_for_cancel(cancel_flag.clone()) => {
+                    broadcast_log("[S2A-Stream] 收到中断信号，停止接收新的入库任务");
+                    None
+                }
+            };
+            let Some(acc) = recv_result else {
+                break;
+            };
+
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let s2a_service = Arc::clone(&s2a_service);
+            let is_free = acc.plan_type.eq_ignore_ascii_case("free");
+            let target_cfg = if is_free {
+                match &free_team {
+                    Some(ft) => ft.clone(),
+                    None => {
+                        broadcast_log(&format!(
+                            "[S2A-Stream] 跳过 free 账号（未配置 free 分组）: {}",
+                            acc.account
+                        ));
+                        if let Some(p) = progress {
+                            p.s2a_failed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        free_fail.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                }
+            } else {
+                team.clone()
+            };
+
+            let team_ok = Arc::clone(&team_ok);
+            let team_fail = Arc::clone(&team_fail);
+            let free_ok = Arc::clone(&free_ok);
+            let free_fail = Arc::clone(&free_fail);
+            let created_ids = Arc::clone(&created_ids);
+            let prog = progress.map(Arc::clone);
+
+            join_set.spawn(async move {
+                let _permit = permit;
+                // 重试逻辑
+                let mut last_err = None;
+                for retry in 0..S2A_STREAM_MAX_RETRIES {
+                    if retry > 0 {
+                        tokio::time::sleep(Duration::from_secs(S2A_STREAM_RETRY_DELAY_SECS)).await;
+                    }
+                    match s2a_service.add_account(&target_cfg, &acc).await {
+                        Ok(opt_id) => {
+                            if let Some(id) = opt_id {
+                                if let Ok(mut ids) = created_ids.lock() {
+                                    ids.push(id);
+                                }
+                            }
+                            if let Some(ref p) = prog {
+                                p.s2a_ok.fetch_add(1, Ordering::Relaxed);
+                            }
+                            if is_free {
+                                free_ok.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                team_ok.fetch_add(1, Ordering::Relaxed);
+                            }
+                            broadcast_log(&format!("[S2A-Stream] 入库成功 {}", acc.account));
+                            return;
+                        }
+                        Err(e) => {
+                            last_err = Some(e);
+                        }
+                    }
+                }
+                // 全部重试失败
+                if let Some(ref p) = prog {
+                    p.s2a_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                if is_free {
+                    free_fail.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    team_fail.fetch_add(1, Ordering::Relaxed);
+                }
+                broadcast_log(&format!(
+                    "[S2A-Stream] 入库失败 {} ({}轮重试): {}",
+                    acc.account,
+                    S2A_STREAM_MAX_RETRIES,
+                    last_err.map(|e| format!("{e}")).unwrap_or_default()
+                ));
+            });
+        }
+
+        // 等待所有入库任务完成
+        while join_set.join_next().await.is_some() {}
+
+        let tok = team_ok.load(Ordering::Relaxed);
+        let tfail = team_fail.load(Ordering::Relaxed);
+        let fok = free_ok.load(Ordering::Relaxed);
+        let ffail = free_fail.load(Ordering::Relaxed);
+        let total_ok = tok + fok;
+        let total_fail = tfail + ffail;
+
+        // Batch-refresh
+        let ids: Vec<i64> = created_ids.lock().map(|g| g.clone()).unwrap_or_default();
+        if !ids.is_empty() {
+            broadcast_log(&format!(
+                "[S2A-Stream-Refresh] 刷新 {} 个账号令牌...",
+                ids.len()
+            ));
+            match s2a_service.batch_refresh(team, &ids).await {
+                Ok(n) => {
+                    broadcast_log(&format!(
+                        "[S2A-Stream-Refresh] 刷新完成: {}/{} 成功",
+                        n,
+                        ids.len()
+                    ));
+                }
+                Err(err) => {
+                    broadcast_log(&format!(
+                        "[S2A-Stream-Refresh] 刷新失败（不影响入库）: {err}"
+                    ));
+                }
+            }
+        }
+
+        broadcast_log(&format!(
+            "[S2A-Stream] 流式入库完成: ok={} fail={} (team={}/{} free={}/{})",
+            total_ok, total_fail, tok, tfail, fok, ffail
+        ));
+
+        (total_ok, total_fail, fok, ffail)
+    }
+
     /// 原有入口方法：注册 + RT + 单号池 S2A 入库
     pub async fn run_one_team(
         &self,
@@ -598,11 +789,41 @@ impl WorkflowRunner {
         let workflow_started = Instant::now();
         let mode_label = if options.free_mode { "free" } else { "team" };
 
-        if let Some(ref p) = progress {
-            p.set_stage("注册 + RT");
+        // 注册前 D1 预清理，避免高并发时邮件服务过载
+        if cfg.d1_cleanup.enabled.unwrap_or(false) {
+            broadcast_log("阶01: 注册前 D1 邮件预清理");
+            if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
+                broadcast_log(&format!("D1 预清理失败（继续执行）: {e}"));
+            }
         }
+
+        if let Some(ref p) = progress {
+            p.set_stage("注册 + RT + S2A");
+        }
+
+        // S2A 流式入库：创建 channel，RT 成功后立即推送到 S2A
+        let (s2a_tx, s2a_rx) = if options.push_s2a {
+            let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+        // 启动 S2A 流式消费者（与注册+RT 并行）
+        let s2a_handle = if let Some(rx) = s2a_rx {
+            let s2a_service = Arc::clone(&self.s2a_service);
+            let team = team.clone();
+            let prog = progress.clone();
+            let cancel = cancel_flag.clone();
+            Some(tokio::spawn(async move {
+                Self::s2a_streaming_consumer(rx, s2a_service, &team, prog.as_ref(), cancel).await
+            }))
+        } else {
+            None
+        };
+
         let reg_result = match self
-            .run_register_and_rt(cfg, options, cancel_flag, progress.as_ref())
+            .run_register_and_rt(cfg, options, cancel_flag, progress.as_ref(), s2a_tx)
             .await
         {
             Ok(r) => r,
@@ -611,72 +832,24 @@ impl WorkflowRunner {
                     "[SIG-END][ERR] mode={mode_label} stage=register_rt target_rt={} reason={e:#}",
                     options.target_count
                 ));
+                // 如果有 S2A handle，等待它结束
+                if let Some(h) = s2a_handle {
+                    let _ = h.await;
+                }
                 return Err(e);
             }
         };
 
         let rt_ok = reg_result.rt_success.len();
         let rt_failed = reg_result.rt_failed.len();
-        let mut output_files = reg_result.output_files;
+        let output_files = reg_result.output_files;
 
-        let (s2a_ok, s2a_failed, free_s2a_ok, free_s2a_failed) = if options.push_s2a {
-            if let Some(ref p) = progress {
-                p.set_stage("S2A 入库");
+        // 等待 S2A 流式消费者完成
+        let (s2a_ok, s2a_failed, free_s2a_ok, free_s2a_failed) = if let Some(h) = s2a_handle {
+            match h.await {
+                Ok(result) => result,
+                Err(_) => (0, 0, 0, 0), // JoinError
             }
-            broadcast_log(&format!("阶段3: 入库 S2A [{}]", team.name));
-
-            // 分离 free 账号
-            let (s2a_eligible, free_accounts): (Vec<AccountWithRt>, Vec<AccountWithRt>) =
-                reg_result
-                    .rt_success_for_s2a
-                    .into_iter()
-                    .partition(|acc| !acc.plan_type.eq_ignore_ascii_case("free"));
-
-            // 推送 team 账号
-            let (team_ok, team_fail) = if !s2a_eligible.is_empty() {
-                broadcast_log(&format!(
-                    "[S2A] 准备入库 {} 个 team 账号",
-                    s2a_eligible.len()
-                ));
-                self.push_to_s2a(team, s2a_eligible, progress.as_ref())
-                    .await
-            } else {
-                (0, 0)
-            };
-
-            // 推送 free 账号到 free 分组（如已配置）
-            let (free_ok, free_fail) = if !free_accounts.is_empty() {
-                if team.free_group_ids.is_empty() {
-                    broadcast_log(&format!(
-                        "[S2A] 跳过 {} 个 free 账号（未配置 free 分组）",
-                        free_accounts.len()
-                    ));
-                    if let Some(path) = save_json_records("accounts-free-skipped", &free_accounts)?
-                    {
-                        output_files.push(path.display().to_string());
-                    }
-                    (0, 0)
-                } else {
-                    broadcast_log(&format!(
-                        "[S2A] 推送 {} 个 free 账号到 free 分组 {:?}",
-                        free_accounts.len(),
-                        team.free_group_ids
-                    ));
-                    let free_team = S2aConfig {
-                        group_ids: team.free_group_ids.clone(),
-                        priority: team.free_priority.unwrap_or(team.priority),
-                        concurrency: team.free_concurrency.unwrap_or(team.concurrency),
-                        ..team.clone()
-                    };
-                    self.push_to_s2a(&free_team, free_accounts, progress.as_ref())
-                        .await
-                }
-            } else {
-                (0, 0)
-            };
-
-            // s2a_ok/s2a_failed 包含总数（向后兼容）
-            (team_ok + free_ok, team_fail + free_fail, free_ok, free_fail)
         } else {
             (0, 0, 0, 0)
         };
@@ -727,6 +900,7 @@ impl WorkflowRunner {
         rt_retry_max: usize,
         cancel_flag: Arc<AtomicBool>,
         progress: Option<Arc<TaskProgress>>,
+        s2a_tx: Option<mpsc::Sender<AccountWithRt>>,
     ) -> (Vec<AccountWithRt>, Vec<crate::models::RegisteredAccount>) {
         use tokio::sync::Semaphore;
 
@@ -865,7 +1039,13 @@ impl WorkflowRunner {
         let mut rt_failed = Vec::new();
         while let Some(join_result) = join_set.join_next().await {
             match join_result {
-                Ok(Ok(acc_with_rt)) => rt_success.push(acc_with_rt),
+                Ok(Ok(acc_with_rt)) => {
+                    // S2A 流式入库：RT 成功后立即发送到 S2A consumer
+                    if let Some(ref tx) = s2a_tx {
+                        let _ = tx.send(acc_with_rt.clone()).await;
+                    }
+                    rt_success.push(acc_with_rt);
+                }
                 Ok(Err(acc)) => rt_failed.push(acc),
                 Err(_) => {} // JoinError，任务 panicked
             }
