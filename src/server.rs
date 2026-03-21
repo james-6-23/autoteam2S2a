@@ -316,7 +316,6 @@ struct FullConfigResponse {
     proxy_pool: Vec<String>,
     email_domains: Vec<String>,
     chatgpt_mail_domains: Vec<String>,
-    duckmail_domains: Vec<String>,
     tempmail_domains: Vec<String>,
     d1_cleanup: D1CleanupResp,
 }
@@ -359,8 +358,6 @@ struct RegisterResp {
     otp_interval_ms: u64,
     request_timeout_sec: u64,
     chatgpt_mail_api_key: String,
-    duckmail_api_key: String,
-    duckmail_password: String,
     tempmail_api_key: String,
     mail_max_concurrency: usize,
     register_log_mode: RegisterLogMode,
@@ -419,8 +416,6 @@ struct UpdateRegisterRequest {
     otp_interval_ms: Option<u64>,
     request_timeout_sec: Option<u64>,
     chatgpt_mail_api_key: Option<String>,
-    duckmail_api_key: Option<String>,
-    duckmail_password: Option<String>,
     tempmail_api_key: Option<String>,
     mail_max_concurrency: Option<usize>,
     register_log_mode: Option<RegisterLogMode>,
@@ -556,8 +551,6 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
             otp_interval_ms: reg.otp_interval_ms.unwrap_or(1000),
             request_timeout_sec: reg.request_timeout_sec.unwrap_or(20),
             chatgpt_mail_api_key: reg.chatgpt_mail_api_key.clone().unwrap_or_default(),
-            duckmail_api_key: reg.duckmail_api_key.clone().unwrap_or_default(),
-            duckmail_password: reg.duckmail_password.clone().unwrap_or_default(),
             tempmail_api_key: reg.tempmail_api_key.clone().unwrap_or_default(),
             mail_max_concurrency: reg.mail_max_concurrency.unwrap_or(50),
             register_log_mode: reg.register_log_mode.unwrap_or_default(),
@@ -566,7 +559,6 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
         proxy_pool: cfg.proxy_pool.clone(),
         email_domains: cfg.email_domains.clone(),
         chatgpt_mail_domains: cfg.chatgpt_mail_domains.clone(),
-        duckmail_domains: cfg.duckmail_domains.clone(),
         tempmail_domains: cfg.tempmail_domains.clone(),
         d1_cleanup: D1CleanupResp {
             enabled: cfg.d1_cleanup.enabled.unwrap_or(false),
@@ -1163,12 +1155,6 @@ async fn update_register_handler(
     if let Some(v) = req.chatgpt_mail_api_key {
         cfg.register.chatgpt_mail_api_key = Some(v);
     }
-    if let Some(v) = req.duckmail_api_key {
-        cfg.register.duckmail_api_key = Some(v);
-    }
-    if let Some(v) = req.duckmail_password {
-        cfg.register.duckmail_password = Some(v);
-    }
     if let Some(v) = req.tempmail_api_key {
         cfg.register.tempmail_api_key = Some(v);
     }
@@ -1277,51 +1263,6 @@ async fn delete_gptmail_domain_handler(
     }))
 }
 
-async fn add_duckmail_domain_handler(
-    State(state): State<AppState>,
-    Json(req): Json<EmailDomainRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let domain = req.domain.trim().to_string();
-    if domain.is_empty() {
-        return Err(error_json(StatusCode::BAD_REQUEST, "域名不能为空"));
-    }
-    let mut cfg = state.config.write().await;
-    if cfg.duckmail_domains.contains(&domain) {
-        return Err(error_json(
-            StatusCode::CONFLICT,
-            &format!("域名已存在: {domain}"),
-        ));
-    }
-    cfg.duckmail_domains.push(domain.clone());
-    auto_save(&cfg, &state.config_path);
-    Ok((
-        StatusCode::CREATED,
-        Json(MsgResponse {
-            message: format!("DuckMail 域名 {domain} 已添加"),
-        }),
-    ))
-}
-
-async fn delete_duckmail_domain_handler(
-    State(state): State<AppState>,
-    Json(req): Json<EmailDomainRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let domain = req.domain.trim().to_string();
-    let mut cfg = state.config.write().await;
-    let before = cfg.duckmail_domains.len();
-    cfg.duckmail_domains.retain(|d| d != &domain);
-    if cfg.duckmail_domains.len() == before {
-        return Err(error_json(
-            StatusCode::NOT_FOUND,
-            &format!("未找到域名: {domain}"),
-        ));
-    }
-    auto_save(&cfg, &state.config_path);
-    Ok(Json(MsgResponse {
-        message: format!("DuckMail 域名 {domain} 已删除"),
-    }))
-}
-
 async fn add_tempmail_domain_handler(
     State(state): State<AppState>,
     Json(req): Json<EmailDomainRequest>,
@@ -1365,55 +1306,6 @@ async fn delete_tempmail_domain_handler(
     Ok(Json(MsgResponse {
         message: format!("TempMail 域名 {domain} 已删除"),
     }))
-}
-
-async fn test_duckmail_handler(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let cfg = state.config.read().await;
-    let key = cfg
-        .register
-        .duckmail_api_key
-        .clone()
-        .unwrap_or_default();
-    drop(cfg);
-
-    let client = shared_http_client_10s();
-
-    // Test by fetching domains list
-    let mut req = client.get("https://api.duckmail.sbs/domains?page=1");
-    if !key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {key}"));
-    }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("请求失败: {e}")))?;
-
-    if !resp.status().is_success() {
-        return Err(error_json(
-            StatusCode::BAD_GATEWAY,
-            &format!("HTTP {}", resp.status()),
-        ));
-    }
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("解析失败: {e}")))?;
-
-    let domain_count = json
-        .get("hydra:member")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "data": {
-            "domain_count": domain_count
-        }
-    })))
 }
 
 async fn test_tempmail_handler(
@@ -1864,30 +1756,7 @@ async fn execute_task(
                     as Arc<dyn crate::services::CodexService>,
             )
         }
-        crate::config::MailProvider::Duckmail => {
-            let mail_concurrency = register_runtime.mail_max_concurrency;
-            let reg_email = Arc::new(email_service::EmailService::new_duckmail(
-                register_runtime.duckmail_api_key.clone(),
-                register_runtime.duckmail_password.clone(),
-                cfg.duckmail_domains.clone(),
-                mail_concurrency,
-            ));
-            let rt_email = Arc::new(email_service::EmailService::new_duckmail(
-                register_runtime.duckmail_api_key.clone(),
-                register_runtime.duckmail_password.clone(),
-                cfg.duckmail_domains.clone(),
-                mail_concurrency,
-            ));
-            (
-                Arc::new(LiveRegisterService::new(
-                    register_runtime.clone(),
-                    reg_email,
-                )) as Arc<dyn crate::services::RegisterService>,
-                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                    as Arc<dyn crate::services::CodexService>,
-            )
-        }
-        crate::config::MailProvider::Tempmail => {
+        crate::config::MailProvider::Duckmail | crate::config::MailProvider::Tempmail => {
             let mail_concurrency = register_runtime.mail_max_concurrency;
             let reg_email = Arc::new(email_service::EmailService::new_tempmail(
                 register_runtime.tempmail_api_key.clone(),
@@ -2826,30 +2695,7 @@ pub async fn build_workflow_runner(
                     as Arc<dyn crate::services::CodexService>,
             )
         }
-        crate::config::MailProvider::Duckmail => {
-            let mail_concurrency = register_runtime.mail_max_concurrency;
-            let reg_email = Arc::new(crate::email_service::EmailService::new_duckmail(
-                register_runtime.duckmail_api_key.clone(),
-                register_runtime.duckmail_password.clone(),
-                cfg.duckmail_domains.clone(),
-                mail_concurrency,
-            ));
-            let rt_email = Arc::new(crate::email_service::EmailService::new_duckmail(
-                register_runtime.duckmail_api_key.clone(),
-                register_runtime.duckmail_password.clone(),
-                cfg.duckmail_domains.clone(),
-                mail_concurrency,
-            ));
-            (
-                Arc::new(LiveRegisterService::new(
-                    register_runtime.clone(),
-                    reg_email,
-                )) as Arc<dyn crate::services::RegisterService>,
-                Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                    as Arc<dyn crate::services::CodexService>,
-            )
-        }
-        crate::config::MailProvider::Tempmail => {
+        crate::config::MailProvider::Duckmail | crate::config::MailProvider::Tempmail => {
             let mail_concurrency = register_runtime.mail_max_concurrency;
             let reg_email = Arc::new(crate::email_service::EmailService::new_tempmail(
                 register_runtime.tempmail_api_key.clone(),
@@ -3003,14 +2849,9 @@ pub async fn start_server(
             post(add_gptmail_domain_handler).delete(delete_gptmail_domain_handler),
         )
         .route(
-            "/api/config/duckmail_domains",
-            post(add_duckmail_domain_handler).delete(delete_duckmail_domain_handler),
-        )
-        .route(
             "/api/config/tempmail_domains",
             post(add_tempmail_domain_handler).delete(delete_tempmail_domain_handler),
         )
-        .route("/api/test/duckmail", post(test_duckmail_handler))
         .route("/api/test/tempmail", post(test_tempmail_handler))
         .route("/api/config/save", post(save_config_handler))
         // Task management

@@ -22,8 +22,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub chatgpt_mail_domains: Vec<String>,
     #[serde(default)]
-    pub duckmail_domains: Vec<String>,
-    #[serde(default)]
     pub tempmail_domains: Vec<String>,
     #[serde(default)]
     pub d1_cleanup: D1CleanupConfig,
@@ -85,6 +83,7 @@ pub enum MailProvider {
     #[default]
     Kyx,
     Chatgpt,
+    /// ← 已废弃，保留仅为旧配置反序列化兼容，运行时映射为 Kyx
     Duckmail,
     Tempmail,
 }
@@ -114,10 +113,6 @@ pub struct RegisterConfig {
     pub user_agent: Option<String>,
     pub tls_emulation: Option<String>,
     pub chatgpt_mail_api_key: Option<String>,
-    /// DuckMail API Key（可选，dk_xxx 格式，用于私有域名）
-    pub duckmail_api_key: Option<String>,
-    /// DuckMail 创建邮箱时的默认密码
-    pub duckmail_password: Option<String>,
     /// TempMail API Key（tm_xxx 格式，用于 mail.123nhh.de）
     pub tempmail_api_key: Option<String>,
     /// 邮件 API 最大并发数（默认 50）
@@ -189,8 +184,6 @@ pub struct RegisterRuntimeConfig {
     pub user_agent: String,
     pub tls_emulation: String,
     pub chatgpt_mail_api_key: String,
-    pub duckmail_api_key: String,
-    pub duckmail_password: String,
     pub tempmail_api_key: String,
     pub mail_max_concurrency: usize,
     pub plan_poll_max_attempts: usize,
@@ -522,16 +515,6 @@ impl AppConfig {
                 .chatgpt_mail_api_key
                 .clone()
                 .unwrap_or_else(|| "sk-HQ5kHZao".to_string()),
-            duckmail_api_key: self
-                .register
-                .duckmail_api_key
-                .clone()
-                .unwrap_or_default(),
-            duckmail_password: self
-                .register
-                .duckmail_password
-                .clone()
-                .unwrap_or_else(|| "Temp@2026x".to_string()),
             tempmail_api_key: self
                 .register
                 .tempmail_api_key

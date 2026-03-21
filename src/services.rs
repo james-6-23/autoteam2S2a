@@ -359,25 +359,8 @@ impl LiveRegisterService {
             &format!("Token: {}", token_preview(&access_token)),
         );
 
-        // ========== 注册阶段直接获取 Refresh Token ==========
-        log_worker(
-            input.worker_id,
-            "RT",
-            "尝试在注册会话中获取 refresh_token...",
-        );
-        let refresh_token = self.try_get_refresh_token(client, input.worker_id).await;
-        match &refresh_token {
-            Some(rt) => log_worker(
-                input.worker_id,
-                "OK",
-                &format!("注册阶段 RT 获取成功: {}...", &rt[..rt.len().min(20)]),
-            ),
-            None => log_worker(
-                input.worker_id,
-                "RT",
-                "注册阶段 RT 获取失败，将由 RT 阶段补获",
-            ),
-        }
+        // 注册阶段不再尝试获取 RT，全部交由独立 RT 阶段处理（成功率更高）
+        let refresh_token: Option<String> = None;
 
         // ========== 支付步骤 ==========
         if !input.skip_payment && self.cfg.payment.payment_retries > 0 {

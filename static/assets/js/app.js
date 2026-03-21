@@ -273,7 +273,6 @@ function renderConfigForm(){
   if(modeEl) modeEl.value=mode;
   applyConfigDefaultsByMode(mode);
   document.getElementById('cfg-mail-base').value=r.mail_api_base;
-  document.getElementById('cfg-mail-path').value=r.mail_api_path;
   document.getElementById('cfg-mail-token').value=r.mail_api_token;
   document.getElementById('cfg-mail-timeout').value=r.mail_request_timeout_sec;
   document.getElementById('cfg-otp-retries').value=r.otp_max_retries;
@@ -282,10 +281,8 @@ function renderConfigForm(){
   document.getElementById('cfg-reg-log-mode').value=r.register_log_mode||'verbose';
   document.getElementById('cfg-reg-perf-mode').value=r.register_perf_mode||'baseline';
   document.getElementById('cfg-gptmail-key').value=r.chatgpt_mail_api_key||'';
-  document.getElementById('cfg-duckmail-key').value=r.duckmail_api_key||'';
-  document.getElementById('cfg-duckmail-password').value=r.duckmail_password||'';
   document.getElementById('cfg-tempmail-key').value=r.tempmail_api_key||'';
-  renderEmailDomains();renderGptMailDomains();renderDuckMailDomains();renderTempMailDomains();renderD1Cleanup();
+  renderEmailDomains();renderGptMailDomains();renderTempMailDomains();renderD1Cleanup();
 }
 
 // D1
@@ -515,7 +512,7 @@ async function saveDefaults(){
   const mode=modeEl?.value==='free'?'free':'team';
   try{await api('/api/config/defaults',{method:'PUT',body:{mode,target_count:parseInt(document.getElementById('cfg-target').value),register_workers:parseInt(document.getElementById('cfg-reg-workers').value),rt_workers:parseInt(document.getElementById('cfg-rt-workers').value),rt_retries:parseInt(document.getElementById('cfg-rt-retries').value)}});toast('参数已保存','success');loadConfig()}catch{}
 }
-async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_path:document.getElementById('cfg-mail-path').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value),mail_max_concurrency:parseInt(document.getElementById('cfg-mail-concurrency').value)||50,register_log_mode:document.getElementById('cfg-reg-log-mode').value||'verbose',register_perf_mode:document.getElementById('cfg-reg-perf-mode').value||'baseline'}});toast('注册配置已保存','success');loadConfig()}catch{}}
+async function saveRegister(){try{await api('/api/config/register',{method:'PUT',body:{mail_api_base:document.getElementById('cfg-mail-base').value,mail_api_token:document.getElementById('cfg-mail-token').value,mail_request_timeout_sec:parseInt(document.getElementById('cfg-mail-timeout').value),otp_max_retries:parseInt(document.getElementById('cfg-otp-retries').value),request_timeout_sec:parseInt(document.getElementById('cfg-req-timeout').value),mail_max_concurrency:parseInt(document.getElementById('cfg-mail-concurrency').value)||50,register_log_mode:document.getElementById('cfg-reg-log-mode').value||'verbose',register_perf_mode:document.getElementById('cfg-reg-perf-mode').value||'baseline'}});toast('配置已保存','success');loadConfig()}catch{}}
 async function saveGptMail(){const key=document.getElementById('cfg-gptmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{chatgpt_mail_api_key:key}});toast('GPTMail API Key 已保存','success');loadConfig()}catch{}}
 function renderGptMailDomains(){
   if(!configData)return;const doms=configData.chatgpt_mail_domains||[];
@@ -542,31 +539,6 @@ async function testGptMail(){
   }catch(e){st.textContent='连接失败';st.className='text-xs text-red-400'}
 }
 async function saveToFile(){try{const d=await api('/api/config/save',{method:'POST'});toast(d.message,'success')}catch{}}
-
-// DuckMail
-async function saveDuckMail(){const key=document.getElementById('cfg-duckmail-key').value.trim();const pwd=document.getElementById('cfg-duckmail-password').value.trim();try{await api('/api/config/register',{method:'PUT',body:{duckmail_api_key:key,duckmail_password:pwd}});toast('DuckMail 配置已保存','success');loadConfig()}catch{}}
-function renderDuckMailDomains(){
-  if(!configData)return;const doms=configData.duckmail_domains||[];
-  document.getElementById('duckmail-domain-count').textContent=doms.length;
-  const el=document.getElementById('duckmail-domain-list');
-  if(!doms.length){el.innerHTML='<p class="text-xs text-dim">未配置（使用自动获取）</p>';return}
-  el.innerHTML=doms.map(d=>`<span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style="background:var(--domain-bg);border:1px solid var(--domain-border);color:var(--text-dim2)">${d}<button onclick="deleteDuckMailDomain('${d.replace(/'/g,"\\\'")}')" class="text-red-400 hover:text-red-300 ml-1">&times;</button></span>`).join('');
-}
-async function addDuckMailDomain(){const v=document.getElementById('new-duckmail-domain').value.trim();if(!v){toast('请输入域名','error');return}try{await api('/api/config/duckmail_domains',{method:'POST',body:{domain:v}});document.getElementById('new-duckmail-domain').value='';toast('域名已添加','success');loadConfig()}catch{}}
-async function deleteDuckMailDomain(d){try{await api('/api/config/duckmail_domains',{method:'DELETE',body:{domain:d}});toast('域名已删除','success');loadConfig()}catch{}}
-async function testDuckMail(){
-  const key=document.getElementById('cfg-duckmail-key').value.trim();
-  const st=document.getElementById('duckmail-status');const info=document.getElementById('duckmail-info');
-  st.textContent='测试中…';st.className='text-xs text-amber-400';info.classList.add('hidden');
-  try{
-    await api('/api/config/register',{method:'PUT',body:{duckmail_api_key:key}});
-    const json=await api('/api/test/duckmail',{method:'POST'});
-    const d=json.data;
-    st.textContent='连接成功';st.className='text-xs text-teal-400';
-    info.classList.remove('hidden');
-    info.innerHTML=`<span>可用域名 <span class="c-heading font-mono">${d.domain_count||0}</span></span>`;
-  }catch(e){st.textContent='连接失败';st.className='text-xs text-red-400'}
-}
 
 // TempMail
 async function saveTempMail(){const key=document.getElementById('cfg-tempmail-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{tempmail_api_key:key}});toast('TempMail 配置已保存','success');loadConfig()}catch{}}

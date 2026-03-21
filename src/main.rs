@@ -292,39 +292,7 @@ async fn run(
                         as Arc<dyn services::CodexService>,
                 )
             }
-            MailProvider::Duckmail => {
-                let duck_domains = cfg.duckmail_domains.clone();
-                println!(
-                    "邮箱系统: duckmail (私有域名, 域名: {})",
-                    if duck_domains.is_empty() {
-                        "随机".to_string()
-                    } else {
-                        format!("{}", duck_domains.len())
-                    }
-                );
-                let mail_concurrency = register_runtime.mail_max_concurrency;
-                let reg_email = Arc::new(email_service::EmailService::new_duckmail(
-                    register_runtime.duckmail_api_key.clone(),
-                    register_runtime.duckmail_password.clone(),
-                    duck_domains.clone(),
-                    mail_concurrency,
-                ));
-                let rt_email = Arc::new(email_service::EmailService::new_duckmail(
-                    register_runtime.duckmail_api_key.clone(),
-                    register_runtime.duckmail_password.clone(),
-                    duck_domains,
-                    mail_concurrency,
-                ));
-                (
-                    Arc::new(LiveRegisterService::new(
-                        register_runtime.clone(),
-                        reg_email,
-                    )) as Arc<dyn services::RegisterService>,
-                    Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
-                        as Arc<dyn services::CodexService>,
-                )
-            }
-            MailProvider::Tempmail => {
+            MailProvider::Duckmail | MailProvider::Tempmail => {
                 let tm_domains = cfg.tempmail_domains.clone();
                 println!(
                     "邮箱系统: tempmail (mail.123nhh.de, 域名: {})",
@@ -510,15 +478,13 @@ async fn run_interactive() -> Result<()> {
     println!("已默认启用: live 模式 + S2A 入库");
 
     println!("选择邮箱系统:");
-    println!("  [1] kyx-cloud (自定义域名)");
+    println!("  [1] cloud-mail (自定义域名)");
     println!("  [2] chatgpt.org.uk (自动生成邮箱)");
-    println!("  [3] duckmail (私有域名)");
-    println!("  [4] tempmail (mail.123nhh.de)");
-    let mail_choice = prompt_usize("邮箱系统", 1, 1, 4)?;
+    println!("  [3] tempmail (mail.123nhh.de)");
+    let mail_choice = prompt_usize("邮箱系统", 1, 1, 3)?;
     let mail_provider = match mail_choice {
         2 => config::MailProvider::Chatgpt,
-        3 => config::MailProvider::Duckmail,
-        4 => config::MailProvider::Tempmail,
+        3 => config::MailProvider::Tempmail,
         _ => config::MailProvider::Kyx,
     };
 
