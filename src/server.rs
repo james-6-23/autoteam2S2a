@@ -318,6 +318,7 @@ struct FullConfigResponse {
     chatgpt_mail_domains: Vec<String>,
     tempmail_domains: Vec<String>,
     d1_cleanup: D1CleanupResp,
+    site_title: String,
 }
 
 #[derive(Serialize)]
@@ -568,6 +569,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
             keep_percent: cfg.d1_cleanup.keep_percent.unwrap_or(0.1),
             batch_size: cfg.d1_cleanup.batch_size.unwrap_or(5000),
         },
+        site_title: cfg.server.site_title.clone().unwrap_or_default(),
     })
 }
 
@@ -1386,6 +1388,24 @@ async fn update_d1_cleanup_handler(
     auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
         message: "D1 清理配置已更新".to_string(),
+    })
+}
+
+#[derive(Deserialize)]
+struct UpdateSiteTitleRequest {
+    site_title: String,
+}
+
+async fn update_site_title_handler(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateSiteTitleRequest>,
+) -> impl IntoResponse {
+    let mut cfg = state.config.write().await;
+    let title = req.site_title.trim().to_string();
+    cfg.server.site_title = if title.is_empty() { None } else { Some(title.clone()) };
+    auto_save(&cfg, &state.config_path);
+    Json(MsgResponse {
+        message: format!("站点标题已更新: {}", if title.is_empty() { "(默认)" } else { &title }),
     })
 }
 
@@ -2854,6 +2874,7 @@ pub async fn start_server(
         )
         .route("/api/test/tempmail", post(test_tempmail_handler))
         .route("/api/config/save", post(save_config_handler))
+        .route("/api/config/site_title", put(update_site_title_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
         .route("/api/tasks", get(list_tasks_handler))

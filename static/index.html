@@ -241,6 +241,13 @@ tailwind.config={theme:{extend:{
 <!-- Config -->
 <div id="panel-config" class="hidden animate-enter space-y-4">
   <div class="card p-5">
+    <div class="section-title">站点设置</div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">站点标题</label><input id="cfg-site-title" class="field-input" placeholder="AutoTeam2S2A"></div>
+      <div class="flex items-end"><button onclick="saveSiteTitle()" class="btn btn-amber">保存</button></div>
+    </div>
+  </div>
+  <div class="card p-5">
     <div class="section-title">运行默认参数</div>
     <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
       <div>

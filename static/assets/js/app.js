@@ -71,7 +71,7 @@ async function checkHealth(){
 }
 
 // Config
-async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderConfigForm()}catch{}}
+async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderConfigForm();applySiteTitle(configData.site_title)}catch{}}
 function resolveModeDefaults(mode){
   const d=configData?.defaults||{};
   const common={
@@ -282,7 +282,18 @@ function renderConfigForm(){
   document.getElementById('cfg-reg-perf-mode').value=r.register_perf_mode||'baseline';
   document.getElementById('cfg-gptmail-key').value=r.chatgpt_mail_api_key||'';
   document.getElementById('cfg-tempmail-key').value=r.tempmail_api_key||'';
+  document.getElementById('cfg-site-title').value=configData.site_title||'';
   renderEmailDomains();renderGptMailDomains();renderTempMailDomains();renderD1Cleanup();
+}
+function applySiteTitle(title){
+  const t=title||'AutoTeam2S2A';
+  document.title=t;
+  const el=document.querySelector('header .c-heading');
+  if(el) el.textContent=t;
+}
+async function saveSiteTitle(){
+  const title=document.getElementById('cfg-site-title').value.trim();
+  try{await api('/api/config/site_title',{method:'PUT',body:{site_title:title}});toast('站点标题已保存','success');loadConfig()}catch{}
 }
 
 // D1

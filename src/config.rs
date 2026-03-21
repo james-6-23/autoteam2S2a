@@ -294,6 +294,8 @@ pub struct ServerConfig {
     pub port: Option<u16>,
     /// 最大并发任务数，默认 3
     pub max_concurrent_tasks: Option<usize>,
+    /// 自定义站点标题（浏览器标签页 + 页面 header）
+    pub site_title: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -302,6 +304,7 @@ impl Default for ServerConfig {
             host: None,
             port: None,
             max_concurrent_tasks: None,
+            site_title: None,
         }
     }
 }
