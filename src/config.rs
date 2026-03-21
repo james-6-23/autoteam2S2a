@@ -166,6 +166,10 @@ pub struct RegisterRuntimeConfig {
     pub codex_client_id: String,
     pub codex_redirect_uri: String,
     pub codex_scope: String,
+    // Sentinel PoW 配置（注册阶段 create_account 需要）
+    pub sentinel_enabled: bool,
+    pub strict_sentinel: bool,
+    pub pow_max_iterations: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -474,6 +478,9 @@ impl AppConfig {
             codex_client_id: self.codex.client_id.clone().unwrap_or_else(default_codex_client_id),
             codex_redirect_uri: self.codex.redirect_uri.clone().unwrap_or_else(default_codex_redirect_uri),
             codex_scope: self.codex.scope.clone().unwrap_or_else(default_codex_scope),
+            sentinel_enabled: self.codex.sentinel_enabled.unwrap_or(true),
+            strict_sentinel: self.codex.strict_sentinel.unwrap_or(false),
+            pow_max_iterations: self.codex.pow_max_iterations.unwrap_or(160_000),
         }
     }
 

@@ -10,6 +10,7 @@ mod log_broadcast;
 mod models;
 mod proxy_pool;
 mod scheduler;
+mod sentinel;
 mod server;
 mod services;
 mod storage;

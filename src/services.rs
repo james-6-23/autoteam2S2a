@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::config::{
     CodexRuntimeConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig, S2aExtraConfig,
 };
+use crate::sentinel;
 use crate::email_service::{EmailService, WaitCodeOptions};
 use crate::fingerprint::{
     build_fingerprint_material, is_retryable_challenge_error, looks_like_challenge_page,
@@ -291,8 +292,27 @@ impl LiveRegisterService {
         self.validate_otp(client, &otp_code).await?;
         log_worker(input.worker_id, "OK", "OTP 校验成功");
 
+        log_worker(input.worker_id, "注册", "获取 Sentinel token...");
+        let sentinel_cfg = sentinel::SentinelConfig {
+            enabled: self.cfg.sentinel_enabled,
+            strict: self.cfg.strict_sentinel,
+            pow_max_iterations: self.cfg.pow_max_iterations,
+        };
+        // 使用 oai_did 作为 device_id，user_agent 从配置获取
+        let mut sentinel_state = sentinel::SentinelState::new(&oai_did, &self.cfg.user_agent);
+        let sentinel_header = sentinel::build_sentinel_header(
+            client,
+            &sentinel_cfg,
+            &mut sentinel_state,
+            "create_account",
+            input.worker_id,
+            "REG-POW",
+        )
+        .await
+        .ok();
+
         log_worker(input.worker_id, "注册", "创建账户...");
-        self.create_account(client, &input.seed.real_name, &input.seed.birthdate)
+        self.create_account(client, &input.seed.real_name, &input.seed.birthdate, sentinel_header.as_deref())
             .await?;
         log_worker(input.worker_id, "OK", "账户创建成功");
 
@@ -649,20 +669,24 @@ impl LiveRegisterService {
         client: &rquest::Client,
         real_name: &str,
         birthdate: &str,
+        sentinel_header: Option<&str>,
     ) -> Result<()> {
         let payload = CreateAccountPayload {
             name: real_name.to_string(),
             birthdate: birthdate.to_string(),
         };
-        let resp = client
+        let mut req = client
             .post("https://auth.openai.com/api/accounts/create_account")
-            .header("Origin", "https://auth.openai.com")
-            .json(&payload)
-            .send()
-            .await?;
+            .header("Origin", "https://auth.openai.com");
+        if let Some(header) = sentinel_header {
+            req = req.header("OpenAI-Sentinel-Token", header);
+        }
+        let resp = req.json(&payload).send().await?;
 
         if resp.status() != StatusCode::OK {
-            bail!("创建账号失败: HTTP {}", resp.status());
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("创建账号失败: HTTP {} {}", status, truncate_text(&body, 200));
         }
 
         let json: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -1276,14 +1300,7 @@ pub struct LiveCodexService {
     email_service: Arc<EmailService>,
 }
 
-#[derive(Debug, Clone)]
-struct CodexAuthState {
-    sid: String,
-    device_id: String,
-    user_agent: String,
-    sentinel_token: String,
-    solved_pow: String,
-}
+type CodexAuthState = sentinel::SentinelState;
 
 impl LiveCodexService {
     pub fn new(cfg: CodexRuntimeConfig, email_service: Arc<EmailService>) -> Self {
@@ -1763,259 +1780,16 @@ impl LiveCodexService {
         flow: &str,
         worker_id: usize,
     ) -> Result<()> {
-        let sentinel_started = Instant::now();
-        let init_token = self.get_requirements_token(&state.sid, &state.user_agent);
-        state.solved_pow = init_token.clone();
-
-        if !self.cfg.sentinel_enabled {
-            log_worker(
-                worker_id,
-                "RT-POW",
-                &format!("{flow}: Sentinel 已关闭，跳过"),
-            );
-            return Ok(());
-        }
-
-        let resp = client
-            .post("https://sentinel.openai.com/backend-api/sentinel/req")
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({
-                "p": init_token,
-                "id": state.device_id,
-                "flow": flow
-            }))
-            .send()
-            .await;
-
-        let resp = match resp {
-            Ok(v) => v,
-            Err(err) => {
-                log_worker(
-                    worker_id,
-                    "RT-POW",
-                    &format!(
-                        "{flow}: Sentinel 请求异常 ({:.2}s): {err}",
-                        sentinel_started.elapsed().as_secs_f32()
-                    ),
-                );
-                if self.cfg.strict_sentinel {
-                    bail!("sentinel 请求失败: {err}");
-                }
-                return Ok(());
-            }
+        let cfg = sentinel::SentinelConfig {
+            enabled: self.cfg.sentinel_enabled,
+            strict: self.cfg.strict_sentinel,
+            pow_max_iterations: self.cfg.pow_max_iterations,
         };
-        if resp.status() != StatusCode::OK {
-            log_worker(
-                worker_id,
-                "RT-POW",
-                &format!(
-                    "{flow}: Sentinel 状态异常 HTTP {} ({:.2}s)",
-                    resp.status(),
-                    sentinel_started.elapsed().as_secs_f32()
-                ),
-            );
-            if self.cfg.strict_sentinel {
-                bail!("sentinel 状态异常: HTTP {}", resp.status());
-            }
-            return Ok(());
-        }
-
-        let data: serde_json::Value = resp.json().await.unwrap_or_default();
-        if let Some(token) = data.get("token").and_then(|v| v.as_str()) {
-            state.sentinel_token = token.to_string();
-        }
-
-        let pow_required = data
-            .get("proofofwork")
-            .and_then(|v| v.get("required"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !pow_required {
-            log_worker(
-                worker_id,
-                "RT-POW",
-                &format!(
-                    "{flow}: 不需要 PoW (sentinel {:.2}s)",
-                    sentinel_started.elapsed().as_secs_f32()
-                ),
-            );
-            return Ok(());
-        }
-
-        let seed = data
-            .get("proofofwork")
-            .and_then(|v| v.get("seed"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let difficulty = data
-            .get("proofofwork")
-            .and_then(|v| v.get("difficulty"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if seed.is_empty() || difficulty.is_empty() {
-            log_worker(worker_id, "RT-POW", &format!("{flow}: PoW 参数缺失"));
-            if self.cfg.strict_sentinel {
-                bail!("sentinel PoW 参数缺失");
-            }
-            return Ok(());
-        }
-
-        log_worker(
-            worker_id,
-            "RT-POW",
-            &format!(
-                "{flow}: 开始 PoW difficulty={} max_iter={}",
-                truncate_text(difficulty, 10),
-                self.cfg.pow_max_iterations
-            ),
-        );
-        let pow_started = Instant::now();
-        // 将 CPU 密集型 PoW 移到阻塞线程池，避免卡住 tokio 工作线程
-        let seed_owned = seed.to_string();
-        let difficulty_owned = difficulty.to_string();
-        let sid_owned = state.sid.clone();
-        let ua_owned = state.user_agent.clone();
-        let max_iterations = self.cfg.pow_max_iterations;
-        let pow_result = tokio::task::spawn_blocking(move || {
-            Self::solve_pow(
-                &seed_owned,
-                &difficulty_owned,
-                &sid_owned,
-                &ua_owned,
-                max_iterations,
-            )
-        })
-        .await
-        .ok()
-        .flatten();
-
-        if let Some((solved, iterations)) = pow_result {
-            state.solved_pow = format!("gAAAAAB{solved}");
-            log_worker(
-                worker_id,
-                "RT-POW",
-                &format!(
-                    "{flow}: PoW 成功 iter={} 耗时 {:.2}s",
-                    iterations,
-                    pow_started.elapsed().as_secs_f32()
-                ),
-            );
-            return Ok(());
-        }
-        log_worker(
-            worker_id,
-            "RT-POW",
-            &format!(
-                "{flow}: PoW 失败 (max_iter={}) 耗时 {:.2}s",
-                self.cfg.pow_max_iterations,
-                pow_started.elapsed().as_secs_f32()
-            ),
-        );
-        if self.cfg.strict_sentinel {
-            bail!("sentinel PoW 计算失败");
-        }
-        Ok(())
+        sentinel::call_sentinel_req(client, &cfg, state, flow, worker_id, "RT-POW").await
     }
 
     fn get_sentinel_header(&self, state: &CodexAuthState, flow: &str) -> Result<String> {
-        let mut obj = serde_json::Map::new();
-        obj.insert(
-            "p".to_string(),
-            serde_json::Value::String(state.solved_pow.clone()),
-        );
-        obj.insert(
-            "id".to_string(),
-            serde_json::Value::String(state.device_id.clone()),
-        );
-        obj.insert(
-            "flow".to_string(),
-            serde_json::Value::String(flow.to_string()),
-        );
-        if !state.sentinel_token.is_empty() {
-            obj.insert(
-                "c".to_string(),
-                serde_json::Value::String(state.sentinel_token.clone()),
-            );
-        }
-        Ok(serde_json::to_string(&serde_json::Value::Object(obj))?)
-    }
-
-    fn solve_pow(
-        seed: &str,
-        difficulty: &str,
-        sid: &str,
-        user_agent: &str,
-        max_iterations: usize,
-    ) -> Option<(String, usize)> {
-        let mut config = Self::build_pow_config(sid, user_agent);
-        let seed_bytes = seed.as_bytes();
-        let prefix_len = difficulty.len().min(8);
-        if prefix_len == 0 {
-            let encoded = general_purpose::STANDARD.encode(serde_json::to_vec(&config).ok()?);
-            return Some((format!("{encoded}~S"), 0));
-        }
-        let target_prefix = difficulty.get(..prefix_len)?;
-
-        for iteration in 0..max_iterations {
-            config[3] = serde_json::Value::from(iteration as i64);
-            config[9] = serde_json::Value::from(0);
-
-            let json_str = serde_json::to_vec(&config).ok()?;
-            let encoded = general_purpose::STANDARD.encode(json_str);
-
-            let mut combined = Vec::with_capacity(seed_bytes.len() + encoded.len());
-            combined.extend_from_slice(seed_bytes);
-            combined.extend_from_slice(encoded.as_bytes());
-            let hash = fnv1a32(&combined);
-            let hex_hash = format!("{hash:08x}");
-            if let Some(prefix) = hex_hash.get(..prefix_len)
-                && prefix <= target_prefix
-            {
-                return Some((format!("{encoded}~S"), iteration + 1));
-            }
-        }
-        None
-    }
-
-    fn get_requirements_token(&self, sid: &str, user_agent: &str) -> String {
-        let mut config = Self::build_pow_config(sid, user_agent);
-        config[3] = serde_json::Value::from(0);
-        config[9] = serde_json::Value::from(0);
-        let encoded =
-            general_purpose::STANDARD.encode(serde_json::to_vec(&config).unwrap_or_default());
-        format!("gAAAAAC{encoded}~S")
-    }
-
-    fn build_pow_config(sid: &str, user_agent: &str) -> Vec<serde_json::Value> {
-        let mut rng = rand::rng();
-        let now_ms = unix_millis();
-        let parse_time = fixed_parse_time_string();
-        vec![
-            serde_json::Value::from(rng.random_range(2500..3500)),
-            serde_json::Value::String(parse_time),
-            serde_json::Value::from(4_294_967_296_u64),
-            serde_json::Value::from(0),
-            serde_json::Value::String(user_agent.to_string()),
-            serde_json::Value::String(
-                "chrome-extension://pgojnojmmhpofjgdmaebadhbocahppod/assets/aW5qZWN0X2hhc2g/aW5qZ"
-                    .to_string(),
-            ),
-            serde_json::Value::Null,
-            serde_json::Value::String("zh-CN".to_string()),
-            serde_json::Value::String("zh-CN".to_string()),
-            serde_json::Value::from(0),
-            serde_json::Value::String("canShare-function canShare() { [native code] }".to_string()),
-            serde_json::Value::String(format!(
-                "_reactListening{}",
-                rng.random_range(1_000_000..10_000_000)
-            )),
-            serde_json::Value::String("onhashchange".to_string()),
-            serde_json::Value::from(now_ms as f64),
-            serde_json::Value::String(sid.to_string()),
-            serde_json::Value::String(String::new()),
-            serde_json::Value::from(24),
-            serde_json::Value::from(now_ms - rng.random_range(10_000..50_000)),
-        ]
+        sentinel::get_sentinel_header_value(state, flow)
     }
 }
 
@@ -2038,14 +1812,10 @@ impl CodexService for LiveCodexService {
         let code_challenge = generate_code_challenge(&code_verifier);
         let auth_url = self.build_authorize_url(&code_challenge, &Uuid::new_v4().to_string())?;
 
-        let mut state = CodexAuthState {
-            sid: Uuid::new_v4().to_string(),
-            device_id: Uuid::new_v4().to_string(),
-            user_agent: runtime_user_agent,
-            sentinel_token: String::new(),
-            solved_pow: String::new(),
-        };
-        state.solved_pow = self.get_requirements_token(&state.sid, &state.user_agent);
+        let mut state = sentinel::SentinelState::new(
+            &Uuid::new_v4().to_string(),
+            &runtime_user_agent,
+        );
 
         let auth_started = Instant::now();
         let code = self
@@ -2531,19 +2301,6 @@ fn truncate_text(text: &str, max_len: usize) -> &str {
         end -= 1;
     }
     &text[..end]
-}
-
-fn unix_millis() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    dur.as_millis() as i64
-}
-
-fn fixed_parse_time_string() -> String {
-    "Tue Jan 30 2024 12:00:00 GMT+0000 (Coordinated Universal Time)".to_string()
 }
 
 fn fingerprint_salt(proxy: Option<&str>, retry: usize, entropy: usize) -> usize {
