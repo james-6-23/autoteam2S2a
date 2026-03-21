@@ -22,6 +22,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ── Stage 3: Builder — 编译 ───────────────────────────────────
 FROM chef AS builder
 
+# 编译优化：并行 + 跳过 LTO + 加速索引
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+ENV CARGO_BUILD_JOBS=0
+
 # 先用配方只编译依赖（源码不变时完全命中缓存）
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json

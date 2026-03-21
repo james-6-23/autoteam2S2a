@@ -28,3 +28,8 @@ axum = { version = "0.8", features = ["json"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 urlencoding = "2.1.3"
 uuid = { version = "1.18.1", features = ["v4"] }
+
+[profile.release]
+lto = false          # 跳过 LTO，节省大量编译时间
+codegen-units = 16   # 增加并行编译单元（默认 release=1）
+opt-level = 2        # O2 足够，O3 收益极小但编译更慢
