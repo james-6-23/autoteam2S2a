@@ -202,7 +202,10 @@ tailwind.config={theme:{extend:{
       </div>
       <div id="d1-db-rows" class="space-y-2"></div>
     </div>
-    <button onclick="saveD1Cleanup()" class="btn btn-amber mt-4">保存</button>
+    <div class="flex gap-2 mt-4">
+      <button onclick="saveD1Cleanup()" class="btn btn-amber">保存</button>
+      <button onclick="triggerD1Cleanup()" id="btn-d1-trigger" class="btn btn-teal">立即清理</button>
+    </div>
   </div>
   <div class="card p-5">
     <div class="flex items-center justify-between mb-3">

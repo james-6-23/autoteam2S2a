@@ -320,6 +320,11 @@ async function saveD1Cleanup(){
   document.querySelectorAll('#d1-db-rows > div').forEach(row=>{const n=row.querySelector('.d1-db-name').value.trim(),i=row.querySelector('.d1-db-id').value.trim();if(n&&i) databases.push({name:n,id:i})});
   try{await api('/api/config/d1_cleanup',{method:'PUT',body:{enabled:document.getElementById('cfg-d1-enabled').checked,account_id:document.getElementById('cfg-d1-account-id').value.trim(),api_key:document.getElementById('cfg-d1-api-key').value.trim(),keep_percent:parseFloat(document.getElementById('cfg-d1-keep-percent').value)||0.1,batch_size:parseInt(document.getElementById('cfg-d1-batch-size').value)||5000,databases}});toast('D1 配置已保存','success');loadConfig()}catch{}
 }
+async function triggerD1Cleanup(){
+  const btn=document.getElementById('btn-d1-trigger');
+  btn.disabled=true;btn.textContent='清理中...';
+  try{const r=await api('/api/d1_cleanup/trigger',{method:'POST'});toast(r.message||'清理完成','success')}catch{}finally{btn.disabled=false;btn.textContent='立即清理'}
+}
 
 // Teams
 function showAddTeamForm(){

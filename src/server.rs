@@ -1391,6 +1391,21 @@ async fn update_d1_cleanup_handler(
     })
 }
 
+async fn trigger_d1_cleanup_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    if !cfg.d1_cleanup.enabled.unwrap_or(false) {
+        return Err(error_json(StatusCode::BAD_REQUEST, "D1 邮件清理未启用"));
+    }
+    let d1_cfg = cfg.d1_cleanup.clone();
+    drop(cfg);
+    match crate::d1_cleanup::run_cleanup(&d1_cfg).await {
+        Ok(()) => Ok(Json(MsgResponse { message: "D1 邮件清理完成".into() })),
+        Err(e) => Err(error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("清理失败: {e}"))),
+    }
+}
+
 #[derive(Deserialize)]
 struct UpdateSiteTitleRequest {
     site_title: String,
@@ -2859,6 +2874,7 @@ pub async fn start_server(
         .route("/api/config/register", put(update_register_handler))
         .route("/api/test/gptmail", post(test_gptmail_handler))
         .route("/api/config/d1_cleanup", put(update_d1_cleanup_handler))
+        .route("/api/d1_cleanup/trigger", post(trigger_d1_cleanup_handler))
         .route("/api/config/email_domains", post(add_email_domain_handler))
         .route(
             "/api/config/email_domains",
