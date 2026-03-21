@@ -101,141 +101,6 @@ tailwind.config={theme:{extend:{
     </div>
     <div id="team-list" class="team-grid"></div>
   </div>
-  <div id="add-team-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'add-team-modal','hideAddTeamForm')">
-    <div class="team-modal-card p-5" onclick="event.stopPropagation()">
-      <div id="add-team-form">
-        <div class="section-title">新建号池</div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div><label class="field-label">名称 *</label><input id="at-name" class="field-input" placeholder="agmn"></div>
-          <div><label class="field-label">API 地址 *</label><input id="at-api" class="field-input" placeholder="https://..." onchange="autoFetchGroups()"></div>
-          <div><label class="field-label">Admin Key *</label><input id="at-key" class="field-input" placeholder="admin-xxx" onchange="autoFetchGroups()"></div>
-          <div><label class="field-label">并发</label><input id="at-concurrency" type="number" min="1" step="25" value="50" class="field-input"></div>
-          <div><label class="field-label">优先级</label><input id="at-priority" type="number" value="30" class="field-input"></div>
-          <div>
-            <div class="flex items-center gap-2 mb-1">
-              <label class="field-label mb-0">分组</label>
-              <button onclick="fetchGroups()" id="at-fetch-groups-btn" class="text-[.65rem] px-2 py-0.5 rounded" style="background:var(--ghost);color:var(--text-dim);cursor:pointer">获取分组</button>
-              <span id="at-groups-status" class="text-[.6rem] text-dim"></span>
-            </div>
-            <div id="at-groups-container" class="field-input" style="min-height:38px;max-height:160px;overflow-y:auto;padding:6px 8px">
-              <span class="text-xs text-dim">请先填写 API 地址和 Admin Key</span>
-            </div>
-          </div>
-          <div>
-            <label class="field-label">Free 分组 <span class="text-dim">(可选)</span></label>
-            <div id="at-free-groups-container" class="field-input" style="min-height:38px;max-height:120px;overflow-y:auto;padding:6px 8px">
-              <span class="text-xs text-dim">获取分组后可选</span>
-            </div>
-          </div>
-          <div><label class="field-label">Free 优先级 <span class="text-dim">(可选)</span></label><input id="at-free-priority" type="number" class="field-input" placeholder="默认同 team"></div>
-          <div><label class="field-label">Free 并发 <span class="text-dim">(可选)</span></label><input id="at-free-concurrency" type="number" min="1" step="25" class="field-input" placeholder="默认同 team"></div>
-          <div class="card-inner p-3 space-y-3">
-            <div class="field-label mb-0">OpenAI Extra</div>
-            <div class="switch-stack">
-              <label class="switch">
-                <input id="at-openai-passthrough" class="switch-input" type="checkbox" checked>
-                <span class="switch-slider"></span>
-                <span class="switch-text">自动透传</span>
-              </label>
-              <label class="switch">
-                <input id="at-openai-ws-v2-enabled" class="switch-input" type="checkbox" checked onchange="syncOpenaiWsModeState('at')">
-                <span class="switch-slider"></span>
-                <span class="switch-text">启用 WS v2</span>
-              </label>
-            </div>
-            <div>
-              <label class="field-label">WS Mode</label>
-              <select id="at-openai-ws-v2-mode" class="field-input">
-                <option value="passthrough">透传（passthrough）</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div class="flex gap-2 mt-4">
-          <button onclick="submitAddTeam()" class="btn btn-teal">确认</button>
-          <button onclick="hideAddTeamForm()" class="btn btn-ghost">取消</button>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div id="edit-team-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'edit-team-modal','hideEditTeamForm')">
-    <div class="team-modal-card p-5" onclick="event.stopPropagation()">
-      <div id="edit-team-form">
-        <div class="flex items-center justify-between mb-3">
-          <div class="section-title mb-0">编辑号池</div>
-          <button onclick="hideEditTeamForm()" class="btn btn-ghost text-xs py-1">关闭</button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div><label class="field-label">名称</label><input id="et-name" class="field-input" placeholder="号池名称"></div>
-          <div><label class="field-label">API 地址</label><input id="et-api" class="field-input" placeholder="https://..." onchange="autoFetchGroupsEdit()"></div>
-          <div><label class="field-label">Admin Key</label><input id="et-key" class="field-input" placeholder="admin-xxx" onchange="autoFetchGroupsEdit()"></div>
-          <div><label class="field-label">并发</label><input id="et-concurrency" type="number" min="1" step="25" class="field-input"></div>
-          <div><label class="field-label">优先级</label><input id="et-priority" type="number" class="field-input"></div>
-          <div>
-            <div class="flex items-center gap-2 mb-1">
-              <label class="field-label mb-0">分组</label>
-              <button onclick="fetchGroupsEdit()" id="et-fetch-groups-btn" class="text-[.65rem] px-2 py-0.5 rounded" style="background:var(--ghost);color:var(--text-dim);cursor:pointer">获取分组</button>
-              <span id="et-groups-status" class="text-[.6rem] text-dim"></span>
-            </div>
-            <div id="et-groups-container" class="field-input" style="min-height:38px;max-height:160px;overflow-y:auto;padding:6px 8px">
-              <span class="text-xs text-dim">点击获取分组</span>
-            </div>
-          </div>
-          <div>
-            <label class="field-label">Free 分组 <span class="text-dim">(可选)</span></label>
-            <div id="et-free-groups-container" class="field-input" style="min-height:38px;max-height:120px;overflow-y:auto;padding:6px 8px">
-              <span class="text-xs text-dim">获取分组后可选</span>
-            </div>
-          </div>
-          <div><label class="field-label">Free 优先级 <span class="text-dim">(可选)</span></label><input id="et-free-priority" type="number" class="field-input" placeholder="默认同 team"></div>
-          <div><label class="field-label">Free 并发 <span class="text-dim">(可选)</span></label><input id="et-free-concurrency" type="number" min="1" step="25" class="field-input" placeholder="默认同 team"></div>
-          <div class="card-inner p-3 space-y-3">
-            <div class="field-label mb-0">OpenAI Extra</div>
-            <div class="switch-stack">
-              <label class="switch">
-                <input id="et-openai-passthrough" class="switch-input" type="checkbox">
-                <span class="switch-slider"></span>
-                <span class="switch-text">自动透传</span>
-              </label>
-              <label class="switch">
-                <input id="et-openai-ws-v2-enabled" class="switch-input" type="checkbox" onchange="syncOpenaiWsModeState('et')">
-                <span class="switch-slider"></span>
-                <span class="switch-text">启用 WS v2</span>
-              </label>
-            </div>
-            <div>
-              <label class="field-label">WS Mode</label>
-              <select id="et-openai-ws-v2-mode" class="field-input">
-                <option value="passthrough">透传（passthrough）</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div class="flex gap-2 mt-4">
-          <button onclick="submitEditTeam()" class="btn btn-amber">保存</button>
-          <button onclick="hideEditTeamForm()" class="btn btn-ghost">取消</button>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div id="team-groups-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'team-groups-modal','hideTeamGroupsModal')">
-    <div class="team-modal-card p-5" onclick="event.stopPropagation()">
-      <div class="flex items-center justify-between mb-3">
-        <div class="section-title mb-0">分组详情: <span id="tg-team-name" class="text-amber-400"></span></div>
-        <button onclick="hideTeamGroupsModal()" class="btn btn-ghost text-xs py-1">关闭</button>
-      </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div class="card-inner p-3">
-          <div class="field-label mb-2">Team 分组</div>
-          <div id="tg-team-groups-list" class="team-groups-list space-y-2"></div>
-        </div>
-        <div class="card-inner p-3">
-          <div class="field-label mb-2">Free 分组</div>
-          <div id="tg-free-groups-list" class="team-groups-list space-y-2"></div>
-        </div>
-      </div>
-    </div>
-  </div>
 </div>
 
 <!-- Config -->
@@ -645,6 +510,143 @@ tailwind.config={theme:{extend:{
 </div>
 
 </main>
+
+<!-- ====== Team Modals (must be outside <main> to avoid transform stacking context) ====== -->
+<div id="add-team-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'add-team-modal','hideAddTeamForm')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div id="add-team-form">
+      <div class="section-title">新建号池</div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div><label class="field-label">名称 *</label><input id="at-name" class="field-input" placeholder="agmn"></div>
+        <div><label class="field-label">API 地址 *</label><input id="at-api" class="field-input" placeholder="https://..." onchange="autoFetchGroups()"></div>
+        <div><label class="field-label">Admin Key *</label><input id="at-key" class="field-input" placeholder="admin-xxx" onchange="autoFetchGroups()"></div>
+        <div><label class="field-label">并发</label><input id="at-concurrency" type="number" min="1" step="25" value="50" class="field-input"></div>
+        <div><label class="field-label">优先级</label><input id="at-priority" type="number" value="30" class="field-input"></div>
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <label class="field-label mb-0">分组</label>
+            <button onclick="fetchGroups()" id="at-fetch-groups-btn" class="text-[.65rem] px-2 py-0.5 rounded" style="background:var(--ghost);color:var(--text-dim);cursor:pointer">获取分组</button>
+            <span id="at-groups-status" class="text-[.6rem] text-dim"></span>
+          </div>
+          <div id="at-groups-container" class="field-input" style="min-height:38px;max-height:160px;overflow-y:auto;padding:6px 8px">
+            <span class="text-xs text-dim">请先填写 API 地址和 Admin Key</span>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">Free 分组 <span class="text-dim">(可选)</span></label>
+          <div id="at-free-groups-container" class="field-input" style="min-height:38px;max-height:120px;overflow-y:auto;padding:6px 8px">
+            <span class="text-xs text-dim">获取分组后可选</span>
+          </div>
+        </div>
+        <div><label class="field-label">Free 优先级 <span class="text-dim">(可选)</span></label><input id="at-free-priority" type="number" class="field-input" placeholder="默认同 team"></div>
+        <div><label class="field-label">Free 并发 <span class="text-dim">(可选)</span></label><input id="at-free-concurrency" type="number" min="1" step="25" class="field-input" placeholder="默认同 team"></div>
+        <div class="card-inner p-3 space-y-3">
+          <div class="field-label mb-0">OpenAI Extra</div>
+          <div class="switch-stack">
+            <label class="switch">
+              <input id="at-openai-passthrough" class="switch-input" type="checkbox" checked>
+              <span class="switch-slider"></span>
+              <span class="switch-text">自动透传</span>
+            </label>
+            <label class="switch">
+              <input id="at-openai-ws-v2-enabled" class="switch-input" type="checkbox" checked onchange="syncOpenaiWsModeState('at')">
+              <span class="switch-slider"></span>
+              <span class="switch-text">启用 WS v2</span>
+            </label>
+          </div>
+          <div>
+            <label class="field-label">WS Mode</label>
+            <select id="at-openai-ws-v2-mode" class="field-input">
+              <option value="passthrough">透传（passthrough）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="flex gap-2 mt-4">
+        <button onclick="submitAddTeam()" class="btn btn-teal">确认</button>
+        <button onclick="hideAddTeamForm()" class="btn btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="edit-team-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'edit-team-modal','hideEditTeamForm')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div id="edit-team-form">
+      <div class="flex items-center justify-between mb-3">
+        <div class="section-title mb-0">编辑号池</div>
+        <button onclick="hideEditTeamForm()" class="btn btn-ghost text-xs py-1">关闭</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div><label class="field-label">名称</label><input id="et-name" class="field-input" placeholder="号池名称"></div>
+        <div><label class="field-label">API 地址</label><input id="et-api" class="field-input" placeholder="https://..." onchange="autoFetchGroupsEdit()"></div>
+        <div><label class="field-label">Admin Key</label><input id="et-key" class="field-input" placeholder="admin-xxx" onchange="autoFetchGroupsEdit()"></div>
+        <div><label class="field-label">并发</label><input id="et-concurrency" type="number" min="1" step="25" class="field-input"></div>
+        <div><label class="field-label">优先级</label><input id="et-priority" type="number" class="field-input"></div>
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <label class="field-label mb-0">分组</label>
+            <button onclick="fetchGroupsEdit()" id="et-fetch-groups-btn" class="text-[.65rem] px-2 py-0.5 rounded" style="background:var(--ghost);color:var(--text-dim);cursor:pointer">获取分组</button>
+            <span id="et-groups-status" class="text-[.6rem] text-dim"></span>
+          </div>
+          <div id="et-groups-container" class="field-input" style="min-height:38px;max-height:160px;overflow-y:auto;padding:6px 8px">
+            <span class="text-xs text-dim">点击获取分组</span>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">Free 分组 <span class="text-dim">(可选)</span></label>
+          <div id="et-free-groups-container" class="field-input" style="min-height:38px;max-height:120px;overflow-y:auto;padding:6px 8px">
+            <span class="text-xs text-dim">获取分组后可选</span>
+          </div>
+        </div>
+        <div><label class="field-label">Free 优先级 <span class="text-dim">(可选)</span></label><input id="et-free-priority" type="number" class="field-input" placeholder="默认同 team"></div>
+        <div><label class="field-label">Free 并发 <span class="text-dim">(可选)</span></label><input id="et-free-concurrency" type="number" min="1" step="25" class="field-input" placeholder="默认同 team"></div>
+        <div class="card-inner p-3 space-y-3">
+          <div class="field-label mb-0">OpenAI Extra</div>
+          <div class="switch-stack">
+            <label class="switch">
+              <input id="et-openai-passthrough" class="switch-input" type="checkbox">
+              <span class="switch-slider"></span>
+              <span class="switch-text">自动透传</span>
+            </label>
+            <label class="switch">
+              <input id="et-openai-ws-v2-enabled" class="switch-input" type="checkbox" onchange="syncOpenaiWsModeState('et')">
+              <span class="switch-slider"></span>
+              <span class="switch-text">启用 WS v2</span>
+            </label>
+          </div>
+          <div>
+            <label class="field-label">WS Mode</label>
+            <select id="et-openai-ws-v2-mode" class="field-input">
+              <option value="passthrough">透传（passthrough）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="flex gap-2 mt-4">
+        <button onclick="submitEditTeam()" class="btn btn-amber">保存</button>
+        <button onclick="hideEditTeamForm()" class="btn btn-ghost">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="team-groups-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'team-groups-modal','hideTeamGroupsModal')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">分组详情: <span id="tg-team-name" class="text-amber-400"></span></div>
+      <button onclick="hideTeamGroupsModal()" class="btn btn-ghost text-xs py-1">关闭</button>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div class="card-inner p-3">
+        <div class="field-label mb-2">Team 分组</div>
+        <div id="tg-team-groups-list" class="team-groups-list space-y-2"></div>
+      </div>
+      <div class="card-inner p-3">
+        <div class="field-label mb-2">Free 分组</div>
+        <div id="tg-free-groups-list" class="team-groups-list space-y-2"></div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script src="/assets/js/app.js"></script>
 </body>
