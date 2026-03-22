@@ -782,6 +782,11 @@ function showTaskDetail(taskId){
       document.getElementById('tp-s2a-card').classList.remove('hidden');
       document.getElementById('tp-s2a-progress').classList.remove('hidden');
     }
+    // Tokens 号池任务：切换标签
+    const isTokensTask=t&&t.team&&t.team.startsWith('[Tokens]');
+    const pushLabel=isTokensTask?'Tokens 入库':'S2A 入库';
+    document.getElementById('tp-s2a-label').textContent=pushLabel;
+    document.getElementById('tp-s2a-progress-label').textContent=pushLabel;
     if(t&&t.report&&typeof t.report.elapsed_secs==='number'){
       _tpFinalElapsedSec=t.report.elapsed_secs;
       if((Number(t.report.rt_ok)||0)>0){
@@ -804,9 +809,11 @@ function closeTaskProgress(){
   _tpIsRtOnly=false;
   const elapsedEl=document.getElementById('tp-elapsed');
   if(elapsedEl) elapsedEl.textContent='耗时 0.0s';
-  // 恢复 S2A 区域可见性
+  // 恢复 S2A 区域可见性和标签
   document.getElementById('tp-s2a-card').classList.remove('hidden');
   document.getElementById('tp-s2a-progress').classList.remove('hidden');
+  document.getElementById('tp-s2a-label').textContent='S2A 入库';
+  document.getElementById('tp-s2a-progress-label').textContent='S2A 入库';
   document.getElementById('task-progress-panel').classList.add('hidden');
 }
 async function pollTaskProgress(){
@@ -990,10 +997,32 @@ async function loadSchedules(){
       </div>${runHtml}
     </div>`}).join('')}catch{}
 }
+function fillSchedPoolTargetOptions(prefix){
+  const sel=document.getElementById(`${prefix}-pool-target`);
+  const pools=configData?.tokens_pools||[];
+  const tpOpts=pools.map(p=>`<option value="tp:${p.name}">[Tokens] ${p.name}</option>`).join('');
+  sel.innerHTML=`<option value="s2a">S2A 分发</option>${tpOpts}`;
+}
+function toggleSchedPoolTarget(prefix){
+  const val=document.getElementById(`${prefix}-pool-target`).value;
+  const isTokens=val.startsWith('tp:');
+  const distSection=document.getElementById(`${prefix}-dist-section`);
+  const s2aSwitch=document.getElementById(`${prefix}-push-s2a`);
+  if(isTokens){
+    if(distSection) distSection.classList.add('hidden');
+    if(s2aSwitch) s2aSwitch.closest('label').classList.add('hidden');
+  }else{
+    if(distSection) distSection.classList.remove('hidden');
+    if(s2aSwitch) s2aSwitch.closest('label').classList.remove('hidden');
+  }
+}
 function showAddScheduleForm(){
   document.getElementById('add-schedule-form').classList.remove('hidden');
   document.getElementById('sched-reg-log-mode').value='inherit';
   document.getElementById('sched-reg-perf-mode').value='inherit';
+  fillSchedPoolTargetOptions('sched');
+  document.getElementById('sched-pool-target').value='s2a';
+  toggleSchedPoolTarget('sched');
   const r=document.getElementById('sched-dist-rows');
   if(!r.children.length) addDistRow();
 }
@@ -1012,16 +1041,21 @@ async function submitAddSchedule(){
   const priority=Number.isNaN(priorityValue)?100:priorityValue;
   if(!name||!startTime||!endTime||!target){toast('请填写必填字段','error');return}
   if(startTime===endTime){toast('开始和结束时间不能相同','error');return}
-  const distribution=[];
-  document.querySelectorAll('#sched-dist-rows > div').forEach(r=>{const t=r.querySelector('.dist-team').value,p=parseInt(r.querySelector('.dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
-  const tot=distribution.reduce((s,d)=>s+d.percent,0);
-  if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
+  const poolTarget=document.getElementById('sched-pool-target').value;
+  const isTokensTarget=poolTarget.startsWith('tp:');
+  let distribution=[];
+  if(!isTokensTarget){
+    document.querySelectorAll('#sched-dist-rows > div').forEach(r=>{const t=r.querySelector('.dist-team').value,p=parseInt(r.querySelector('.dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
+    const tot=distribution.reduce((s,d)=>s+d.percent,0);
+    if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
+  }
   const isFree=document.getElementById('sched-mode').value==='free';
-  if(isFree&&distribution.length>0){
+  if(!isTokensTarget&&isFree&&distribution.length>0){
     const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
     if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
   }
-  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree};
+  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:isTokensTarget?false:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree};
+  if(isTokensTarget) body.tokens_pool_name=poolTarget.slice(3);
   const addLogMode=document.getElementById('sched-reg-log-mode').value;
   const addPerfMode=normalizeRegisterPerfMode(document.getElementById('sched-reg-perf-mode').value);
   body.register_log_mode=addLogMode==='inherit'?null:addLogMode;
@@ -1069,6 +1103,13 @@ async function editSchedule(name){
   document.getElementById('es-reg-perf-mode').value=normalizeRegisterPerfMode(s.register_perf_mode||'inherit');
   document.getElementById('es-push-s2a').checked=s.push_s2a;
   document.getElementById('es-enabled').checked=s.enabled;
+  fillSchedPoolTargetOptions('es');
+  if(s.tokens_pool_name){
+    document.getElementById('es-pool-target').value='tp:'+s.tokens_pool_name;
+  }else{
+    document.getElementById('es-pool-target').value='s2a';
+  }
+  toggleSchedPoolTarget('es');
   // dist rows
   const rows=document.getElementById('es-dist-rows');rows.innerHTML='';
   editDistCount=0;
@@ -1089,6 +1130,8 @@ async function submitEditSchedule(){
   const priorityValue=parseInt(document.getElementById('es-priority').value,10);
   const priority=Number.isNaN(priorityValue)?100:priorityValue;
   if(!newName){toast('名称不能为空','error');return}
+  const poolTarget=document.getElementById('es-pool-target').value;
+  const isTokensTarget=poolTarget.startsWith('tp:');
   const body={
     name:newName,
     start_time:document.getElementById('es-start').value,
@@ -1096,10 +1139,11 @@ async function submitEditSchedule(){
     target_count:parseInt(document.getElementById('es-target').value),
     batch_interval_mins:parseInt(document.getElementById('es-interval').value)||30,
     priority,
-    push_s2a:document.getElementById('es-push-s2a').checked,
+    push_s2a:isTokensTarget?false:document.getElementById('es-push-s2a').checked,
     mail_provider:document.getElementById('es-mail').value,
     free_mode:document.getElementById('es-mode').value==='free',
-    enabled:document.getElementById('es-enabled').checked
+    enabled:document.getElementById('es-enabled').checked,
+    tokens_pool_name:isTokensTarget?poolTarget.slice(3):null
   };
   const editLogMode=document.getElementById('es-reg-log-mode').value;
   const editPerfMode=normalizeRegisterPerfMode(document.getElementById('es-reg-perf-mode').value);
@@ -1107,16 +1151,20 @@ async function submitEditSchedule(){
   body.register_perf_mode=editPerfMode==='inherit'?null:editPerfMode;
   const rw=document.getElementById('es-reg-workers').value,rtw=document.getElementById('es-rt-workers').value,rtr=document.getElementById('es-rt-retries').value;
   if(rw) body.register_workers=parseInt(rw);if(rtw) body.rt_workers=parseInt(rtw);if(rtr) body.rt_retries=parseInt(rtr);
-  const distribution=[];
-  document.querySelectorAll('#es-dist-rows > div').forEach(r=>{const t=r.querySelector('.es-dist-team').value,p=parseInt(r.querySelector('.es-dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
-  const tot=distribution.reduce((s,d)=>s+d.percent,0);
-  if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
-  const isFree=document.getElementById('es-mode').value==='free';
-  if(isFree&&distribution.length>0){
-    const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
-    if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
+  if(!isTokensTarget){
+    const distribution=[];
+    document.querySelectorAll('#es-dist-rows > div').forEach(r=>{const t=r.querySelector('.es-dist-team').value,p=parseInt(r.querySelector('.es-dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
+    const tot=distribution.reduce((s,d)=>s+d.percent,0);
+    if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
+    const isFree=document.getElementById('es-mode').value==='free';
+    if(isFree&&distribution.length>0){
+      const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
+      if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
+    }
+    body.distribution=distribution;
+  }else{
+    body.distribution=[];
   }
-  body.distribution=distribution;
   try{await api(`/api/schedules/${encodeURIComponent(editSchedName)}`,{method:'PUT',body});toast('已更新','success');document.getElementById('edit-schedule-form').classList.add('hidden');loadSchedules()}catch{}
 }
 let schedPollTimer=null;
@@ -1423,6 +1471,10 @@ function connectLogStream(){
     setTimeout(()=>{if(document.getElementById('panel-logs')&&!document.getElementById('panel-logs').classList.contains('hidden'))connectLogStream()},3000);
   };
 }
+function reconnectLogStream(){
+  if(logEs){logEs.close();logEs=null}
+  connectLogStream();
+}
 function toggleLogScroll(){
   logAutoScroll=!logAutoScroll;
   document.getElementById('log-scroll-btn').textContent='自动滚动: '+(logAutoScroll?'开':'关');
@@ -1487,7 +1539,7 @@ function showAddTokensPoolForm(){
   document.getElementById('atp-token').value='';
   document.getElementById('atp-platform').value='codex';
   document.getElementById('atp-plan-type').value='';
-  document.getElementById('atp-concurrency').value='5';
+  document.getElementById('atp-concurrency').value='50';
   document.getElementById('add-tp-modal').classList.remove('hidden');
 }
 function hideAddTpForm(){

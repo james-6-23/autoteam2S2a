@@ -293,7 +293,7 @@ fn default_tokens_platform() -> String {
 }
 
 fn default_tokens_concurrency() -> usize {
-    5
+    50
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -381,6 +381,9 @@ pub struct ScheduleConfig {
     #[serde(default)]
     pub register_perf_mode: Option<RegisterPerfMode>,
     pub distribution: Vec<DistributionEntry>,
+    /// Tokens 号池名称（设置后走 Tokens 入库模式，忽略 push_s2a 和 distribution）
+    #[serde(default)]
+    pub tokens_pool_name: Option<String>,
 }
 
 impl ScheduleConfig {

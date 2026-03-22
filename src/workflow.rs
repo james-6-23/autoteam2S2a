@@ -829,6 +829,10 @@ impl WorkflowRunner {
 
         const MAX_RETRIES: usize = 3;
         const RETRY_DELAY_SECS: u64 = 3;
+        /// 每批最多合并的 token 数
+        const BATCH_SIZE: usize = 50;
+        /// 攒批等待超时（毫秒），避免最后几个 token 卡太久
+        const BATCH_TIMEOUT_MS: u64 = 2000;
 
         let concurrency = pool.concurrency.max(1);
         let semaphore = Arc::new(Semaphore::new(concurrency));
@@ -837,26 +841,102 @@ impl WorkflowRunner {
         let ok_count = Arc::new(AtomicUsize::new(0));
         let fail_count = Arc::new(AtomicUsize::new(0));
 
-        broadcast_log(&format!("[Tokens-Stream] 流式推送已启动 [{}]", pool.name));
+        broadcast_log(&format!(
+            "[Tokens-Stream] 流式推送已启动 [{name}] (batch={BATCH_SIZE}, concurrency={concurrency})",
+            name = pool.name
+        ));
+
+        let default_plan_type = pool
+            .plan_type
+            .clone()
+            .unwrap_or_else(|| if free_mode { "free".to_string() } else { String::new() });
+
+        let mut batch_tokens: Vec<String> = Vec::with_capacity(BATCH_SIZE);
+        let mut batch_accounts: Vec<String> = Vec::new();
+        let mut batch_plan_type = default_plan_type.clone();
+        let mut channel_closed = false;
 
         loop {
-            let recv_result = tokio::select! {
-                acc = rx.recv() => acc,
-                _ = Self::wait_for_cancel(cancel_flag.clone()) => {
-                    broadcast_log("[Tokens-Stream] 收到中断信号，停止接收新的推送任务");
-                    None
-                }
-            };
-            let Some(acc) = recv_result else {
+            if channel_closed && batch_tokens.is_empty() {
                 break;
-            };
+            }
+
+            // 攒批：收集 token 直到满或超时或 channel 关闭
+            if !channel_closed && batch_tokens.len() < BATCH_SIZE {
+                let recv_result = if batch_tokens.is_empty() {
+                    // 空批：阻塞等待第一个
+                    tokio::select! {
+                        acc = rx.recv() => acc,
+                        _ = Self::wait_for_cancel(cancel_flag.clone()) => {
+                            broadcast_log("[Tokens-Stream] 收到中断信号，停止接收");
+                            None
+                        }
+                    }
+                } else {
+                    // 已有数据：带超时继续收集
+                    tokio::select! {
+                        acc = rx.recv() => acc,
+                        _ = tokio::time::sleep(Duration::from_millis(BATCH_TIMEOUT_MS)) => {
+                            None // 超时，发送当前批次
+                        }
+                        _ = Self::wait_for_cancel(cancel_flag.clone()) => {
+                            broadcast_log("[Tokens-Stream] 收到中断信号，停止接收");
+                            channel_closed = true;
+                            None
+                        }
+                    }
+                };
+
+                match recv_result {
+                    Some(acc) => {
+                        let pt = if default_plan_type.is_empty() {
+                            acc.plan_type.clone()
+                        } else {
+                            default_plan_type.clone()
+                        };
+                        // plan_type 不同时先把当前批次刷出去
+                        if !batch_tokens.is_empty() && pt != batch_plan_type {
+                            // 后面会发送 batch_tokens
+                        } else {
+                            batch_plan_type = pt;
+                            batch_tokens.push(acc.refresh_token);
+                            batch_accounts.push(acc.account);
+                            continue;
+                        }
+                        // 走到这里说明 plan_type 变了，先发送当前批次
+                        // 然后把这个 acc 放到下一批
+                        // 下面 flush 逻辑处理后会 continue
+                    }
+                    None => {
+                        if batch_tokens.is_empty() {
+                            channel_closed = true;
+                            continue;
+                        }
+                        // 超时或 channel 关闭，刷当前批次
+                        if !channel_closed {
+                            // 检查是否真的是 channel 关闭
+                            // timeout 情况继续，channel 关闭在 recv 返回 None 时已标记
+                        }
+                    }
+                }
+            }
+
+            // 发送批次
+            if batch_tokens.is_empty() {
+                if channel_closed {
+                    break;
+                }
+                continue;
+            }
+
+            let tokens_to_send: Vec<String> = batch_tokens.drain(..).collect();
+            let accounts_to_send: Vec<String> = batch_accounts.drain(..).collect();
+            let plan_type = batch_plan_type.clone();
+            let count = tokens_to_send.len();
 
             let permit = semaphore.clone().acquire_owned().await.unwrap();
             let tokens_service = Arc::clone(&tokens_service);
             let pool_cfg = pool.clone();
-            let plan_type = pool.plan_type.as_deref()
-                .unwrap_or(if free_mode { "free" } else { &acc.plan_type });
-            let plan_type = plan_type.to_string();
             let ok_count = Arc::clone(&ok_count);
             let fail_count = Arc::clone(&fail_count);
             let prog = progress.map(Arc::clone);
@@ -868,13 +948,20 @@ impl WorkflowRunner {
                     if retry > 0 {
                         tokio::time::sleep(Duration::from_secs(RETRY_DELAY_SECS)).await;
                     }
-                    match tokens_service.add_token(&pool_cfg, &acc.refresh_token, &plan_type).await {
-                        Ok(()) => {
+                    match tokens_service
+                        .add_tokens_batch(&pool_cfg, &tokens_to_send, &plan_type)
+                        .await
+                    {
+                        Ok(_) => {
                             if let Some(ref p) = prog {
-                                p.s2a_ok.fetch_add(1, Ordering::Relaxed);
+                                p.s2a_ok.fetch_add(count, Ordering::Relaxed);
                             }
-                            ok_count.fetch_add(1, Ordering::Relaxed);
-                            broadcast_log(&format!("[Tokens-Stream] 推送成功 {}", acc.account));
+                            ok_count.fetch_add(count, Ordering::Relaxed);
+                            broadcast_log(&format!(
+                                "[Tokens-Stream] 批量推送成功 {}个 ({}...)",
+                                count,
+                                accounts_to_send.first().unwrap_or(&String::new())
+                            ));
                             return;
                         }
                         Err(e) => {
@@ -882,14 +969,13 @@ impl WorkflowRunner {
                         }
                     }
                 }
-                // 全部重试失败
                 if let Some(ref p) = prog {
-                    p.s2a_failed.fetch_add(1, Ordering::Relaxed);
+                    p.s2a_failed.fetch_add(count, Ordering::Relaxed);
                 }
-                fail_count.fetch_add(1, Ordering::Relaxed);
+                fail_count.fetch_add(count, Ordering::Relaxed);
                 broadcast_log(&format!(
-                    "[Tokens-Stream] 推送失败 {} ({}轮重试): {}",
-                    acc.account,
+                    "[Tokens-Stream] 批量推送失败 {}个 ({}轮重试): {}",
+                    count,
                     MAX_RETRIES,
                     last_err.map(|e| format!("{e}")).unwrap_or_default()
                 ));

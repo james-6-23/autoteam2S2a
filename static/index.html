@@ -336,7 +336,7 @@ tailwind.config={theme:{extend:{
         <div id="tp-rt-ok" class="text-lg font-bold text-teal-400 font-mono">0</div>
       </div>
       <div id="tp-s2a-card" class="card-inner p-3 text-center">
-        <div class="text-[.65rem] text-dim mb-1 uppercase tracking-wider">S2A 入库</div>
+        <div id="tp-s2a-label" class="text-[.65rem] text-dim mb-1 uppercase tracking-wider">S2A 入库</div>
         <div id="tp-s2a-ok" class="text-lg font-bold text-teal-400 font-mono">0</div>
       </div>
     </div>
@@ -357,7 +357,7 @@ tailwind.config={theme:{extend:{
       </div>
       <div id="tp-s2a-progress">
         <div class="flex items-center justify-between mb-1.5">
-          <span class="text-xs text-teal-400">S2A 入库</span>
+          <span id="tp-s2a-progress-label" class="text-xs text-teal-400">S2A 入库</span>
           <span class="text-xs font-mono"><span id="tp-s2a-ok2" class="text-teal-400">0</span><span class="text-dim"> 成功 / </span><span id="tp-s2a-fail" class="text-red-400">0</span><span class="text-dim"> 失败</span></span>
         </div>
         <div class="progress-bar h-2"><div id="tp-s2a-bar" class="progress-fill" style="width:0%;background:#14b8a6"></div></div>
@@ -422,8 +422,14 @@ tailwind.config={theme:{extend:{
           <span class="switch-text">启用</span>
         </label>
       </div>
+      <div>
+        <label class="field-label">入库目标</label>
+        <select id="sched-pool-target" class="field-input" onchange="toggleSchedPoolTarget('sched')">
+          <option value="s2a">S2A 分发</option>
+        </select>
+      </div>
     </div>
-    <div class="mt-4">
+    <div id="sched-dist-section" class="mt-4">
       <div class="flex items-center justify-between mb-2">
         <label class="field-label mb-0">分发 (总和=100%)</label>
         <button onclick="addDistRow()" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 号池</button>
@@ -480,8 +486,14 @@ tailwind.config={theme:{extend:{
           <span class="switch-text">启用</span>
         </label>
       </div>
+      <div>
+        <label class="field-label">入库目标</label>
+        <select id="es-pool-target" class="field-input" onchange="toggleSchedPoolTarget('es')">
+          <option value="s2a">S2A 分发</option>
+        </select>
+      </div>
     </div>
-    <div class="mt-4">
+    <div id="es-dist-section" class="mt-4">
       <div class="flex items-center justify-between mb-2">
         <label class="field-label mb-0">分发 (总和=100%)</label>
         <button onclick="addEditDistRow('',100)" class="text-amber-400 hover:text-amber-300 text-xs font-medium">+ 号池</button>
@@ -544,6 +556,7 @@ tailwind.config={theme:{extend:{
         <span id="log-count" class="text-[.65rem] font-mono text-dim">0 条</span>
       </div>
       <div class="flex items-center gap-2">
+        <button onclick="reconnectLogStream()" id="log-reconnect-btn" class="btn btn-ghost text-xs py-1 px-2">重连</button>
         <button onclick="toggleLogScroll()" id="log-scroll-btn" class="btn btn-ghost text-xs py-1 px-2">自动滚动: 开</button>
         <button onclick="clearLogs()" class="btn btn-ghost text-xs py-1 px-2">清空</button>
       </div>
@@ -707,7 +720,7 @@ tailwind.config={theme:{extend:{
           <option value="team">team</option>
         </select>
       </div>
-      <div><label class="field-label">并发数</label><input id="atp-concurrency" type="number" min="1" value="5" class="field-input"></div>
+      <div><label class="field-label">并发数</label><input id="atp-concurrency" type="number" min="1" value="50" class="field-input"></div>
     </div>
     <div class="flex gap-2 mt-4">
       <button onclick="submitAddTp()" class="btn btn-teal">确认</button>

@@ -2414,6 +2414,13 @@ pub trait TokensPoolService: Send + Sync {
         refresh_token: &str,
         plan_type: &str,
     ) -> Result<()>;
+    /// 批量推送多个 token（用 \n 拼接），返回本批 token 数量
+    async fn add_tokens_batch(
+        &self,
+        pool: &TokensPoolConfig,
+        refresh_tokens: &[String],
+        plan_type: &str,
+    ) -> Result<usize>;
 }
 
 pub struct TokensPoolHttpService {
@@ -2505,6 +2512,53 @@ impl TokensPoolService for TokensPoolHttpService {
         let resp_body = resp.text().await.unwrap_or_default();
         bail!(
             "Tokens Pool 推送失败: HTTP {} {}",
+            status,
+            truncate_text(&resp_body, 200)
+        );
+    }
+
+    async fn add_tokens_batch(
+        &self,
+        pool: &TokensPoolConfig,
+        refresh_tokens: &[String],
+        plan_type: &str,
+    ) -> Result<usize> {
+        if refresh_tokens.is_empty() {
+            return Ok(0);
+        }
+        let count = refresh_tokens.len();
+        let joined = refresh_tokens.join("\n");
+        let base = Self::normalized_base(&pool.api_base);
+        let url = format!("{base}/admin-api/tokens");
+        let bearer = Self::bearer(&pool.auth_token);
+
+        let body = serde_json::json!({
+            "token": joined,
+            "plan_type": plan_type,
+            "platform": pool.platform,
+            "remark": "",
+            "proxy": "",
+            "index": 0,
+            "spliter": ""
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", &bearer)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("Tokens Pool 批量推送失败")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(count);
+        }
+        let resp_body = resp.text().await.unwrap_or_default();
+        bail!(
+            "Tokens Pool 批量推送失败: HTTP {} {}",
             status,
             truncate_text(&resp_body, 200)
         );

@@ -2344,6 +2344,8 @@ struct CreateScheduleRequest {
     #[serde(default)]
     register_perf_mode: Option<RegisterPerfMode>,
     distribution: Vec<crate::config::DistributionEntry>,
+    #[serde(default)]
+    tokens_pool_name: Option<String>,
 }
 
 fn default_true_serde() -> bool {
@@ -2377,6 +2379,7 @@ struct UpdateScheduleRequest {
     register_log_mode: Option<Option<RegisterLogMode>>,
     register_perf_mode: Option<Option<RegisterPerfMode>>,
     distribution: Option<Vec<crate::config::DistributionEntry>>,
+    tokens_pool_name: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -2476,10 +2479,21 @@ async fn create_schedule_handler(
         ));
     }
 
-    // 校验分发配置
-    let teams = cfg.effective_s2a_configs();
-    if let Err(e) = crate::distribution::validate_distribution(&req.distribution, &teams) {
-        return Err(error_json(StatusCode::BAD_REQUEST, &e));
+    // 校验分发配置（Tokens 号池模式下跳过）
+    let is_tokens_mode = req.tokens_pool_name.as_ref().map_or(false, |n| !n.is_empty());
+    if is_tokens_mode {
+        let pool_name = req.tokens_pool_name.as_ref().unwrap();
+        if !cfg.tokens_pools.iter().any(|p| p.name == *pool_name) {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                &format!("Tokens 号池不存在: {pool_name}"),
+            ));
+        }
+    } else {
+        let teams = cfg.effective_s2a_configs();
+        if let Err(e) = crate::distribution::validate_distribution(&req.distribution, &teams) {
+            return Err(error_json(StatusCode::BAD_REQUEST, &e));
+        }
     }
 
     let register_workers = req
@@ -2510,6 +2524,7 @@ async fn create_schedule_handler(
         register_log_mode: req.register_log_mode,
         register_perf_mode: req.register_perf_mode,
         distribution: req.distribution,
+        tokens_pool_name: req.tokens_pool_name.filter(|s| !s.is_empty()),
     });
     auto_save(&cfg, &state.config_path);
 
@@ -2628,6 +2643,11 @@ async fn update_schedule_handler(
             .find(|s| s.name == actual)
             .unwrap()
             .distribution = dist;
+    }
+    if let Some(tp_name) = req.tokens_pool_name {
+        let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+        let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
+        sched.tokens_pool_name = tp_name.filter(|s| !s.is_empty());
     }
     auto_save(&cfg, &state.config_path);
 
