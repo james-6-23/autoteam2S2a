@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::config::{
     CodexRuntimeConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig, S2aExtraConfig,
+    TokensPoolConfig,
 };
 use crate::email_service::{EmailService, WaitCodeOptions};
 use crate::fingerprint::{
@@ -2400,6 +2401,114 @@ fn generate_code_verifier() -> String {
 fn generate_code_challenge(code_verifier: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, code_verifier.as_bytes());
     general_purpose::URL_SAFE_NO_PAD.encode(digest.as_ref())
+}
+
+// ─── Tokens Pool Service ────────────────────────────────────────────────────
+
+#[async_trait]
+pub trait TokensPoolService: Send + Sync {
+    async fn test_connection(&self, pool: &TokensPoolConfig) -> Result<()>;
+    async fn add_token(
+        &self,
+        pool: &TokensPoolConfig,
+        refresh_token: &str,
+        plan_type: &str,
+    ) -> Result<()>;
+}
+
+pub struct TokensPoolHttpService {
+    client: rquest::Client,
+}
+
+impl TokensPoolHttpService {
+    pub fn new() -> Self {
+        let client = rquest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| rquest::Client::new());
+        Self { client }
+    }
+
+    fn normalized_base(api_base: &str) -> String {
+        api_base.trim().trim_end_matches('/').to_string()
+    }
+
+    fn bearer(token: &str) -> String {
+        let t = token.trim();
+        if t.to_ascii_lowercase().starts_with("bearer ") {
+            t.to_string()
+        } else {
+            format!("Bearer {t}")
+        }
+    }
+}
+
+#[async_trait]
+impl TokensPoolService for TokensPoolHttpService {
+    async fn test_connection(&self, pool: &TokensPoolConfig) -> Result<()> {
+        let base = Self::normalized_base(&pool.api_base);
+        let url = format!("{base}/admin-api/tokens");
+        let bearer = Self::bearer(&pool.auth_token);
+
+        // 发送一个空 token 来测试连接（或 GET 请求）
+        // 由于该 API 可能不支持 GET，我们用 POST 发送一个测试请求
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", &bearer)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("Tokens Pool 连接失败")?;
+
+        // 任何非 5xx 的响应都视为连接成功（包括 405 Method Not Allowed）
+        if resp.status().is_server_error() {
+            bail!("Tokens Pool 服务端错误: HTTP {}", resp.status());
+        }
+        Ok(())
+    }
+
+    async fn add_token(
+        &self,
+        pool: &TokensPoolConfig,
+        refresh_token: &str,
+        plan_type: &str,
+    ) -> Result<()> {
+        let base = Self::normalized_base(&pool.api_base);
+        let url = format!("{base}/admin-api/tokens");
+        let bearer = Self::bearer(&pool.auth_token);
+
+        let body = serde_json::json!({
+            "token": refresh_token,
+            "plan_type": plan_type,
+            "platform": pool.platform,
+            "remark": "",
+            "proxy": "",
+            "index": 0,
+            "spliter": ""
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", &bearer)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("Tokens Pool 推送失败")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let resp_body = resp.text().await.unwrap_or_default();
+        bail!(
+            "Tokens Pool 推送失败: HTTP {} {}",
+            status,
+            truncate_text(&resp_body, 200)
+        );
+    }
 }
 
 #[cfg(test)]

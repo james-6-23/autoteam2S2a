@@ -146,6 +146,7 @@ pub async fn run_distribution(
         register_perf_mode: schedule
             .register_perf_mode
             .unwrap_or(register_runtime.register_perf_mode),
+        tokens_pool: None,
     };
 
     // 2. 注册 + RT + 流式 S2A 入库

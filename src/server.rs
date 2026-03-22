@@ -20,12 +20,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::cors::CorsLayer;
 
-use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2aExtraConfig};
+use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2aExtraConfig, TokensPoolConfig};
 use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::{AccountWithRt, WorkflowReport};
 use crate::proxy_pool::{ProxyPool, health_check, resolve_proxies};
-use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService};
+use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService, TokensPoolHttpService, TokensPoolService};
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
 
 // ─── Embedded frontend ──────────────────────────────────────────────────────
@@ -270,6 +270,10 @@ pub struct CreateTaskRequest {
     #[serde(default)]
     pub mail_provider: Option<crate::config::MailProvider>,
     pub free_mode: Option<bool>,
+    /// "s2a" (默认) 或 "tokens"
+    pub pool_type: Option<String>,
+    /// Tokens 号池名称（pool_type="tokens" 时使用）
+    pub pool_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -314,6 +318,7 @@ struct CancelResponse {
 #[derive(Serialize)]
 struct FullConfigResponse {
     teams: Vec<S2aConfig>,
+    tokens_pools: Vec<TokensPoolConfig>,
     defaults: DefaultsResp,
     register: RegisterResp,
     proxy_pool: Vec<String>,
@@ -566,6 +571,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
     };
     Json(FullConfigResponse {
         teams,
+        tokens_pools: cfg.tokens_pools.clone(),
         defaults: DefaultsResp {
             target_count: common_target,
             register_workers: common_reg,
@@ -1652,16 +1658,137 @@ async fn save_config_handler(
     }))
 }
 
+// ─── Tokens Pool management ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AddTokensPoolRequest {
+    name: String,
+    api_base: String,
+    auth_token: String,
+    platform: Option<String>,
+    concurrency: Option<usize>,
+}
+
+async fn add_tokens_pool_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AddTokensPoolRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    if cfg.tokens_pools.iter().any(|p| p.name == req.name) {
+        return Err(error_json(StatusCode::CONFLICT, &format!("Tokens 号池已存在: {}", req.name)));
+    }
+    cfg.tokens_pools.push(TokensPoolConfig {
+        name: req.name.clone(),
+        api_base: req.api_base,
+        auth_token: req.auth_token,
+        platform: req.platform.unwrap_or_else(|| "codex".to_string()),
+        concurrency: req.concurrency.unwrap_or(5),
+    });
+    auto_save(&cfg, &state.config_path);
+    Ok((StatusCode::CREATED, Json(MsgResponse { message: format!("Tokens 号池 {} 已添加", req.name) })))
+}
+
+#[derive(Deserialize)]
+struct UpdateTokensPoolRequest {
+    name: Option<String>,
+    api_base: Option<String>,
+    auth_token: Option<String>,
+    platform: Option<String>,
+    concurrency: Option<usize>,
+}
+
+async fn update_tokens_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateTokensPoolRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    let _pool = cfg.tokens_pools.iter_mut().find(|p| p.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到 Tokens 号池: {name}")))?;
+    if let Some(ref v) = req.name {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() && trimmed != name {
+            if cfg.tokens_pools.iter().any(|p| p.name == trimmed && p.name != name) {
+                return Err(error_json(StatusCode::CONFLICT, &format!("Tokens 号池名称 {trimmed} 已存在")));
+            }
+        }
+    }
+    // re-borrow after name conflict check
+    let pool = cfg.tokens_pools.iter_mut().find(|p| p.name == name).unwrap();
+    if let Some(ref v) = req.name { let t = v.trim().to_string(); if !t.is_empty() { pool.name = t; } }
+    if let Some(v) = req.api_base { pool.api_base = v; }
+    if let Some(v) = req.auth_token { pool.auth_token = v; }
+    if let Some(v) = req.platform { pool.platform = v; }
+    if let Some(v) = req.concurrency { pool.concurrency = v; }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse { message: "Tokens 号池已更新".to_string() }))
+}
+
+async fn delete_tokens_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    let before = cfg.tokens_pools.len();
+    cfg.tokens_pools.retain(|p| p.name != name);
+    if cfg.tokens_pools.len() == before {
+        return Err(error_json(StatusCode::NOT_FOUND, &format!("未找到 Tokens 号池: {name}")));
+    }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse { message: format!("Tokens 号池 {name} 已删除") }))
+}
+
+async fn test_tokens_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let pool = cfg.tokens_pools.iter().find(|p| p.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到 Tokens 号池: {name}")))?
+        .clone();
+    drop(cfg);
+    let svc = TokensPoolHttpService::new();
+    svc.test_connection(&pool).await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("连接失败: {e:#}")))?;
+    Ok(Json(MsgResponse { message: "连接成功".to_string() }))
+}
+
 // Task handlers
 async fn create_task_handler(
     State(state): State<AppState>,
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let cfg = state.config.read().await;
+    let pool_type = req.pool_type.as_deref().unwrap_or("s2a");
     let push_s2a = req.push_s2a.unwrap_or(true);
     let teams = cfg.effective_s2a_configs();
 
-    let team = if push_s2a {
+    // 解析 Tokens 号池配置
+    let tokens_pool = if pool_type == "tokens" {
+        let pool_name = req.pool_name.as_deref().unwrap_or_default();
+        let pool = cfg.tokens_pools.iter().find(|p| p.name == pool_name)
+            .ok_or_else(|| error_json(StatusCode::BAD_REQUEST, &format!("未找到 Tokens 号池: {pool_name}")))?;
+        Some(pool.clone())
+    } else {
+        None
+    };
+
+    let team = if tokens_pool.is_some() {
+        // Tokens 号池模式：使用占位 S2aConfig
+        let pool_name = tokens_pool.as_ref().unwrap().name.clone();
+        S2aConfig {
+            name: format!("[Tokens] {pool_name}"),
+            api_base: String::new(),
+            admin_key: String::new(),
+            concurrency: 1,
+            priority: 0,
+            group_ids: Vec::new(),
+            free_group_ids: Vec::new(),
+            free_priority: None,
+            free_concurrency: None,
+            extra: S2aExtraConfig::default(),
+        }
+    } else if push_s2a {
         // push_s2a=true 时必须有可用号池
         if teams.is_empty() {
             return Err(error_json(
@@ -1790,6 +1917,7 @@ async fn create_task_handler(
             mail_provider,
             free_mode,
             proxy_file,
+            tokens_pool,
         )
         .await;
     });
@@ -1965,6 +2093,7 @@ async fn execute_task(
     mail_provider: crate::config::MailProvider,
     free_mode: bool,
     proxy_file: Option<PathBuf>,
+    tokens_pool: Option<TokensPoolConfig>,
 ) {
     task_manager.set_running(&task_id).await;
 
@@ -2128,11 +2257,13 @@ async fn execute_task(
         free_mode,
         register_log_mode: register_runtime.register_log_mode,
         register_perf_mode: register_runtime.register_perf_mode,
+        tokens_pool: tokens_pool.clone(),
     };
 
     let progress = task_manager.get_progress(&task_id).await;
     let started = std::time::Instant::now();
-    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, proxy_pool);
+    let tokens_pool_service: Arc<dyn crate::services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
+    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, tokens_pool_service, proxy_pool);
     match runner
         .run_one_team(&cfg, &team, &options, cancel_flag.clone(), progress)
         .await
@@ -3071,10 +3202,13 @@ pub async fn build_workflow_runner(
 
     let s2a_service: Arc<dyn crate::services::S2aService> = Arc::new(S2aHttpService::new());
 
+    let tokens_pool_service: Arc<dyn crate::services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
+
     Ok(WorkflowRunner::new(
         register_service,
         codex_service,
         s2a_service,
+        tokens_pool_service,
         proxy_pool,
     ))
 }
@@ -3187,6 +3321,10 @@ pub async fn start_server(
         .route("/api/test/tempmail_lol", post(test_tempmail_lol_handler))
         .route("/api/config/save", post(save_config_handler))
         .route("/api/config/site_title", put(update_site_title_handler))
+        // Tokens Pool management
+        .route("/api/config/tokens_pools", post(add_tokens_pool_handler))
+        .route("/api/config/tokens_pools/{name}", put(update_tokens_pool_handler).delete(delete_tokens_pool_handler))
+        .route("/api/config/tokens_pools/{name}/test", post(test_tokens_pool_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
         .route("/api/tasks", get(list_tasks_handler))

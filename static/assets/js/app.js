@@ -71,7 +71,7 @@ async function checkHealth(){
 }
 
 // Config
-async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderConfigForm();applySiteTitle(configData.site_title)}catch{}}
+async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderTokensPools();renderConfigForm();applySiteTitle(configData.site_title)}catch{}}
 function resolveModeDefaults(mode){
   const d=configData?.defaults||{};
   const common={
@@ -109,7 +109,9 @@ function renderDashboard(){
   document.getElementById('stat-proxies').textContent=configData.proxy_pool.length;
   document.getElementById('stat-domains').textContent=configData.email_domains.length;
   const sel=document.getElementById('q-team');
-  sel.innerHTML='<option value="__rt_only__" selected>仅生成RT</option>'+configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('');
+  const tokensPools=(configData.tokens_pools||[]);
+  const tokensOpts=tokensPools.map(p=>`<option value="__tp__${p.name}">[T] ${p.name}</option>`).join('');
+  sel.innerHTML='<option value="__rt_only__" selected>仅生成RT</option>'+configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('')+tokensOpts;
   const modeEl=document.getElementById('q-mode');
   const mode=modeEl?.value==='free'?'free':'team';
   applyQuickDefaultsByMode(mode);
@@ -623,8 +625,10 @@ async function deleteEmailDomain(domain){try{await api('/api/config/email_domain
 async function quickCreateTask(){
   const teamVal=document.getElementById('q-team').value;
   const isRtOnly=teamVal==='__rt_only__';
+  const isTokensPool=teamVal.startsWith('__tp__');
   const body={target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'};
-  if(isRtOnly){body.push_s2a=false}else{body.team=teamVal;body.push_s2a=true}
+  if(isTokensPool){body.pool_type='tokens';body.pool_name=teamVal.slice(6);body.push_s2a=false}
+  else if(isRtOnly){body.push_s2a=false}else{body.team=teamVal;body.push_s2a=true}
   try{const d=await api('/api/tasks',{method:'POST',body});toast(`任务 ${d.task_id} 已创建`,'success');refreshTasks();setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
 }
 function buildTaskRows(tasks){
@@ -1449,3 +1453,65 @@ if(cfgModeEl){
 
 // Init
 checkHealth();loadConfig();setInterval(checkHealth,15000);
+
+// ─── Tokens Pool CRUD ────────────────────────────────────────────────────────
+function renderTokensPools(){
+  const el=document.getElementById('tokens-pool-list');
+  if(!el)return;
+  const pools=configData?.tokens_pools||[];
+  if(pools.length===0){el.innerHTML='<p class="team-grid-empty text-sm text-dim text-center py-6">暂无 Tokens 号池</p>';return}
+  el.innerHTML=pools.map((p,idx)=>`
+  <div class="row-item" id="tp-card-${idx}">
+    <div class="flex items-start justify-between mb-2">
+      <div class="flex-1 grid grid-cols-2 lg:grid-cols-4 gap-2 text-[.8125rem]">
+        <div><span class="field-label">名称</span><div class="font-medium c-heading">${escapeHtml(p.name)}</div></div>
+        <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${escapeHtml(p.api_base)}</div></div>
+        <div><span class="field-label">平台</span><div class="font-mono c-heading">${escapeHtml(p.platform)}</div></div>
+        <div><span class="field-label">并发</span><div class="font-mono c-heading">${p.concurrency}</div></div>
+      </div>
+      <div class="flex items-center gap-1 ml-3 shrink-0">
+        <button onclick="testTokensPool('${escapeHtml(p.name).replace(/'/g,"\\'")}')" class="btn btn-ghost text-xs py-1 px-2" id="tp-test-btn-${idx}">测试</button>
+        <button onclick="editTokensPool(${idx})" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
+        <button onclick="deleteTokensPool('${escapeHtml(p.name).replace(/'/g,"\\'")}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
+      </div>
+    </div>
+  </div>`).join('');
+}
+function showAddTokensPoolForm(){
+  const name=prompt('Tokens 号池名称:');
+  if(!name||!name.trim())return;
+  const apiBase=prompt('API 地址 (如 http://xxx:8000):');
+  if(!apiBase||!apiBase.trim())return;
+  const authToken=prompt('认证 Token (Bearer JWT):');
+  if(!authToken)return;
+  const platform=prompt('平台 (默认 codex):','codex')||'codex';
+  const concurrency=parseInt(prompt('并发数 (默认 5):','5'))||5;
+  addTokensPool({name:name.trim(),api_base:apiBase.trim(),auth_token:authToken.trim(),platform,concurrency});
+}
+async function addTokensPool(body){
+  try{await api('/api/config/tokens_pools',{method:'POST',body});toast(`Tokens 号池 ${body.name} 已添加`,'success');loadConfig()}catch{}
+}
+function editTokensPool(idx){
+  const pool=configData?.tokens_pools?.[idx];
+  if(!pool)return;
+  const name=prompt('名称:',pool.name);
+  if(name===null)return;
+  const apiBase=prompt('API 地址:',pool.api_base);
+  if(apiBase===null)return;
+  const authToken=prompt('认证 Token:',pool.auth_token);
+  if(authToken===null)return;
+  const platform=prompt('平台:',pool.platform);
+  if(platform===null)return;
+  const concurrency=parseInt(prompt('并发数:',pool.concurrency))||pool.concurrency;
+  updateTokensPool(pool.name,{name:name.trim()||pool.name,api_base:apiBase.trim()||pool.api_base,auth_token:authToken.trim()||pool.auth_token,platform:platform.trim()||pool.platform,concurrency});
+}
+async function updateTokensPool(origName,body){
+  try{await api(`/api/config/tokens_pools/${encodeURIComponent(origName)}`,{method:'PUT',body});toast('Tokens 号池已更新','success');loadConfig()}catch{}
+}
+async function deleteTokensPool(name){
+  if(!confirm(`确定删除 Tokens 号池 "${name}"？`))return;
+  try{await api(`/api/config/tokens_pools/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`Tokens 号池 ${name} 已删除`,'success');loadConfig()}catch{}
+}
+async function testTokensPool(name){
+  try{const d=await api(`/api/config/tokens_pools/${encodeURIComponent(name)}/test`,{method:'POST'});toast(`${name}: ${d.message}`,'success')}catch(e){toast(`${name}: 连接失败`,'error')}
+}

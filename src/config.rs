@@ -38,6 +38,8 @@ pub struct AppConfig {
     pub proxy_check_timeout_sec: Option<u64>,
     #[serde(default)]
     pub schedule: Vec<ScheduleConfig>,
+    #[serde(default)]
+    pub tokens_pools: Vec<TokensPoolConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -269,6 +271,25 @@ impl Default for S2aExtraConfig {
             openai_oauth_responses_websockets_v2_enabled: Some(true),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TokensPoolConfig {
+    pub name: String,
+    pub api_base: String,
+    pub auth_token: String,
+    #[serde(default = "default_tokens_platform")]
+    pub platform: String,
+    #[serde(default = "default_tokens_concurrency")]
+    pub concurrency: usize,
+}
+
+fn default_tokens_platform() -> String {
+    "codex".to_string()
+}
+
+fn default_tokens_concurrency() -> usize {
+    5
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

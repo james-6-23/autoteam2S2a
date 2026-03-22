@@ -28,7 +28,7 @@ use config::{AppConfig, S2aConfig};
 use proxy_pool::{ProxyPool, health_check, resolve_proxies};
 use services::{
     DryRunCodexService, DryRunRegisterService, DryRunS2aService, LiveCodexService,
-    LiveRegisterService, S2aHttpService,
+    LiveRegisterService, S2aHttpService, TokensPoolHttpService,
 };
 use workflow::{WorkflowOptions, WorkflowRunner};
 
@@ -419,8 +419,10 @@ async fn run(
         free_mode: !cfg.payment_enabled(),
         register_log_mode: register_runtime.register_log_mode,
         register_perf_mode: register_runtime.register_perf_mode,
+        tokens_pool: None,
     };
-    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, proxy_pool);
+    let tokens_pool_service: Arc<dyn services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
+    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, tokens_pool_service, proxy_pool);
     let report = runner
         .run_one_team(&cfg, &selected_team, &options, cancel_flag.clone(), None)
         .await?;

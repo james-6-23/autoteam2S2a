@@ -6,11 +6,11 @@ use anyhow::Result;
 use futures::{StreamExt, stream};
 use tokio::sync::mpsc;
 
-use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig};
+use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, TokensPoolConfig};
 use crate::log_broadcast::broadcast_log;
 use crate::models::{AccountWithRt, RegisteredAccount, WorkflowReport};
 use crate::proxy_pool::ProxyPool;
-use crate::services::{CodexService, RegisterInput, RegisterService, S2aService};
+use crate::services::{CodexService, RegisterInput, RegisterService, S2aService, TokensPoolService};
 use crate::storage::save_json_records;
 use crate::util::{
     generate_account_seed, log_worker, log_worker_green, mask_proxy, random_delay_ms,
@@ -78,12 +78,15 @@ pub struct WorkflowOptions {
     pub free_mode: bool,
     pub register_log_mode: RegisterLogMode,
     pub register_perf_mode: RegisterPerfMode,
+    /// Tokens 号池配置（与 S2A 互斥）
+    pub tokens_pool: Option<TokensPoolConfig>,
 }
 
 pub struct WorkflowRunner {
     register_service: Arc<dyn RegisterService>,
     codex_service: Arc<dyn CodexService>,
     s2a_service: Arc<dyn S2aService>,
+    tokens_pool_service: Arc<dyn TokensPoolService>,
     proxy_pool: Arc<ProxyPool>,
 }
 
@@ -92,12 +95,14 @@ impl WorkflowRunner {
         register_service: Arc<dyn RegisterService>,
         codex_service: Arc<dyn CodexService>,
         s2a_service: Arc<dyn S2aService>,
+        tokens_pool_service: Arc<dyn TokensPoolService>,
         proxy_pool: Arc<ProxyPool>,
     ) -> Self {
         Self {
             register_service,
             codex_service,
             s2a_service,
+            tokens_pool_service,
             proxy_pool,
         }
     }
@@ -105,6 +110,11 @@ impl WorkflowRunner {
     /// 获取 S2A 服务实例（供分发流式消费者使用）
     pub fn s2a_service(&self) -> Arc<dyn S2aService> {
         Arc::clone(&self.s2a_service)
+    }
+
+    /// 获取 Tokens Pool 服务实例
+    pub fn tokens_pool_service(&self) -> Arc<dyn TokensPoolService> {
+        Arc::clone(&self.tokens_pool_service)
     }
 
     /// 注册 + RT 流水线（不包含 S2A 入库）
@@ -778,6 +788,99 @@ impl WorkflowRunner {
         (total_ok, total_fail, fok, ffail)
     }
 
+    /// Tokens 流式消费者：实时接收 RT 成功的账号并推送到 Tokens Pool
+    ///
+    /// 返回 (ok, fail)
+    async fn tokens_streaming_consumer(
+        mut rx: mpsc::Receiver<AccountWithRt>,
+        tokens_service: Arc<dyn TokensPoolService>,
+        pool: &TokensPoolConfig,
+        free_mode: bool,
+        progress: Option<&Arc<TaskProgress>>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> (usize, usize) {
+        use tokio::sync::Semaphore;
+
+        const MAX_RETRIES: usize = 3;
+        const RETRY_DELAY_SECS: u64 = 3;
+
+        let concurrency = pool.concurrency.max(1);
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let mut join_set = tokio::task::JoinSet::new();
+
+        let ok_count = Arc::new(AtomicUsize::new(0));
+        let fail_count = Arc::new(AtomicUsize::new(0));
+
+        broadcast_log(&format!("[Tokens-Stream] 流式推送已启动 [{}]", pool.name));
+
+        loop {
+            let recv_result = tokio::select! {
+                acc = rx.recv() => acc,
+                _ = Self::wait_for_cancel(cancel_flag.clone()) => {
+                    broadcast_log("[Tokens-Stream] 收到中断信号，停止接收新的推送任务");
+                    None
+                }
+            };
+            let Some(acc) = recv_result else {
+                break;
+            };
+
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let tokens_service = Arc::clone(&tokens_service);
+            let pool_cfg = pool.clone();
+            let plan_type = if free_mode { "free" } else { &acc.plan_type };
+            let plan_type = plan_type.to_string();
+            let ok_count = Arc::clone(&ok_count);
+            let fail_count = Arc::clone(&fail_count);
+            let prog = progress.map(Arc::clone);
+
+            join_set.spawn(async move {
+                let _permit = permit;
+                let mut last_err = None;
+                for retry in 0..MAX_RETRIES {
+                    if retry > 0 {
+                        tokio::time::sleep(Duration::from_secs(RETRY_DELAY_SECS)).await;
+                    }
+                    match tokens_service.add_token(&pool_cfg, &acc.refresh_token, &plan_type).await {
+                        Ok(()) => {
+                            if let Some(ref p) = prog {
+                                p.s2a_ok.fetch_add(1, Ordering::Relaxed);
+                            }
+                            ok_count.fetch_add(1, Ordering::Relaxed);
+                            broadcast_log(&format!("[Tokens-Stream] 推送成功 {}", acc.account));
+                            return;
+                        }
+                        Err(e) => {
+                            last_err = Some(e);
+                        }
+                    }
+                }
+                // 全部重试失败
+                if let Some(ref p) = prog {
+                    p.s2a_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                fail_count.fetch_add(1, Ordering::Relaxed);
+                broadcast_log(&format!(
+                    "[Tokens-Stream] 推送失败 {} ({}轮重试): {}",
+                    acc.account,
+                    MAX_RETRIES,
+                    last_err.map(|e| format!("{e}")).unwrap_or_default()
+                ));
+            });
+        }
+
+        // 等待所有推送任务完成
+        while join_set.join_next().await.is_some() {}
+
+        let ok = ok_count.load(Ordering::Relaxed);
+        let fail = fail_count.load(Ordering::Relaxed);
+        broadcast_log(&format!(
+            "[Tokens-Stream] 流式推送完成: ok={ok} fail={fail}"
+        ));
+
+        (ok, fail)
+    }
+
     /// 原有入口方法：注册 + RT + 单号池 S2A 入库
     pub async fn run_one_team(
         &self,
@@ -799,11 +902,25 @@ impl WorkflowRunner {
         }
 
         if let Some(ref p) = progress {
-            p.set_stage("注册 + RT + S2A");
+            if options.tokens_pool.is_some() {
+                p.set_stage("注册 + RT + Tokens");
+            } else if options.push_s2a {
+                p.set_stage("注册 + RT + S2A");
+            } else {
+                p.set_stage("注册 + RT");
+            }
         }
 
         // S2A 流式入库：创建 channel，RT 成功后立即推送到 S2A
-        let (s2a_tx, s2a_rx) = if options.push_s2a {
+        let (s2a_tx, s2a_rx) = if options.push_s2a && options.tokens_pool.is_none() {
+            let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+        // Tokens 流式推送：创建 channel，RT 成功后立即推送到 Tokens Pool
+        let (tokens_tx, tokens_rx) = if options.tokens_pool.is_some() {
             let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
             (Some(tx), Some(rx))
         } else {
@@ -823,8 +940,25 @@ impl WorkflowRunner {
             None
         };
 
+        // 启动 Tokens 流式消费者（与注册+RT 并行）
+        let tokens_handle = if let Some(rx) = tokens_rx {
+            let tokens_service = Arc::clone(&self.tokens_pool_service);
+            let pool_cfg = options.tokens_pool.clone().unwrap();
+            let prog = progress.clone();
+            let cancel = cancel_flag.clone();
+            let free_mode = options.free_mode;
+            Some(tokio::spawn(async move {
+                Self::tokens_streaming_consumer(rx, tokens_service, &pool_cfg, free_mode, prog.as_ref(), cancel).await
+            }))
+        } else {
+            None
+        };
+
+        // 传给 run_register_and_rt 的 tx：优先 tokens_tx，其次 s2a_tx
+        let stream_tx = tokens_tx.or(s2a_tx);
+
         let reg_result = match self
-            .run_register_and_rt(cfg, options, cancel_flag, progress.as_ref(), s2a_tx)
+            .run_register_and_rt(cfg, options, cancel_flag, progress.as_ref(), stream_tx)
             .await
         {
             Ok(r) => r,
@@ -833,8 +967,11 @@ impl WorkflowRunner {
                     "[SIG-END][ERR] mode={mode_label} stage=register_rt target_rt={} reason={e:#}",
                     options.target_count
                 ));
-                // 如果有 S2A handle，等待它结束
+                // 如果有 S2A 或 Tokens handle，等待它结束
                 if let Some(h) = s2a_handle {
+                    let _ = h.await;
+                }
+                if let Some(h) = tokens_handle {
                     let _ = h.await;
                 }
                 return Err(e);
@@ -850,6 +987,12 @@ impl WorkflowRunner {
             match h.await {
                 Ok(result) => result,
                 Err(_) => (0, 0, 0, 0), // JoinError
+            }
+        } else if let Some(h) = tokens_handle {
+            // Tokens 池结果复用 s2a 字段
+            match h.await {
+                Ok(result) => (result.0, result.1, 0, 0),
+                Err(_) => (0, 0, 0, 0),
             }
         } else {
             (0, 0, 0, 0)
