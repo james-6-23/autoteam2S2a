@@ -1465,10 +1465,11 @@ function renderTokensPools(){
   el.innerHTML=pools.map((p,idx)=>`
   <div class="row-item" id="tp-card-${idx}">
     <div class="flex items-start justify-between mb-2">
-      <div class="flex-1 grid grid-cols-2 lg:grid-cols-4 gap-2 text-[.8125rem]">
+      <div class="flex-1 grid grid-cols-2 lg:grid-cols-5 gap-2 text-[.8125rem]">
         <div><span class="field-label">名称</span><div class="font-medium c-heading">${escapeHtml(p.name)}</div></div>
         <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[200px]">${escapeHtml(p.api_base)}</div></div>
         <div><span class="field-label">平台</span><div class="font-mono c-heading">${escapeHtml(p.platform)}</div></div>
+        <div><span class="field-label">Plan Type</span><div class="font-mono c-heading">${p.plan_type?escapeHtml(p.plan_type):'<span class="text-dim">自动</span>'}</div></div>
         <div><span class="field-label">并发</span><div class="font-mono c-heading">${p.concurrency}</div></div>
       </div>
       <div class="flex items-center gap-1 ml-3 shrink-0">
@@ -1485,6 +1486,7 @@ function showAddTokensPoolForm(){
   document.getElementById('atp-api').value='';
   document.getElementById('atp-token').value='';
   document.getElementById('atp-platform').value='codex';
+  document.getElementById('atp-plan-type').value='';
   document.getElementById('atp-concurrency').value='5';
   document.getElementById('add-tp-modal').classList.remove('hidden');
 }
@@ -1496,9 +1498,12 @@ async function submitAddTp(){
   const apiBase=document.getElementById('atp-api').value.trim();
   const authToken=document.getElementById('atp-token').value.trim();
   const platform=document.getElementById('atp-platform').value.trim()||'codex';
+  const planType=document.getElementById('atp-plan-type').value;
   const concurrency=parseInt(document.getElementById('atp-concurrency').value)||5;
   if(!name||!apiBase||!authToken){toast('请填写必填字段','error');return}
-  try{await api('/api/config/tokens_pools',{method:'POST',body:{name,api_base:apiBase,auth_token:authToken,platform,concurrency}});toast(`Tokens 号池 ${name} 已添加`,'success');hideAddTpForm();loadConfig()}catch{}
+  const body={name,api_base:apiBase,auth_token:authToken,platform,concurrency};
+  if(planType)body.plan_type=planType;
+  try{await api('/api/config/tokens_pools',{method:'POST',body});toast(`Tokens 号池 ${name} 已添加`,'success');hideAddTpForm();loadConfig()}catch{}
 }
 let editTpOrigName=null;
 function editTokensPool(idx){
@@ -1509,6 +1514,7 @@ function editTokensPool(idx){
   document.getElementById('etp-api').value=pool.api_base||'';
   document.getElementById('etp-token').value=pool.auth_token||'';
   document.getElementById('etp-platform').value=pool.platform||'codex';
+  document.getElementById('etp-plan-type').value=pool.plan_type||'';
   document.getElementById('etp-concurrency').value=pool.concurrency||5;
   hideAddTpForm();
   document.getElementById('edit-tp-modal').classList.remove('hidden');
@@ -1523,6 +1529,7 @@ async function submitEditTp(){
   const apiBase=document.getElementById('etp-api').value.trim();
   const authToken=document.getElementById('etp-token').value.trim();
   const platform=document.getElementById('etp-platform').value.trim();
+  const planType=document.getElementById('etp-plan-type').value;
   const concurrency=parseInt(document.getElementById('etp-concurrency').value);
   const body={};
   if(name)body.name=name;
@@ -1530,6 +1537,7 @@ async function submitEditTp(){
   if(authToken)body.auth_token=authToken;
   if(platform)body.platform=platform;
   if(concurrency)body.concurrency=concurrency;
+  body.plan_type=planType||'';
   try{await api(`/api/config/tokens_pools/${encodeURIComponent(editTpOrigName)}`,{method:'PUT',body});toast('Tokens 号池已更新','success');hideEditTpForm();loadConfig()}catch{}
 }
 async function deleteTokensPool(name){

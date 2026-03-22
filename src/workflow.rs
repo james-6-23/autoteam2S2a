@@ -208,6 +208,12 @@ impl WorkflowRunner {
                         .unwrap_or(50)
                         .max(1)
                         .min(deficit.max(1));
+                    // TempmailLol 必须由 provider 创建邮箱才能收信，
+                    // generate_email 失败时回退到域名列表邮箱是无效的。
+                    let requires_provider_email = matches!(
+                        options.mail_provider,
+                        MailProvider::TempmailLol
+                    );
                     stream::iter(0..deficit)
                         .map(move |_| {
                             let email_service = Arc::clone(&email_service);
@@ -218,17 +224,28 @@ impl WorkflowRunner {
                                 let mut seed = generate_account_seed(email_domains.as_ref());
                                 match email_service.generate_email(proxy.as_deref()).await {
                                     Ok(Some(email)) => seed.account = email,
-                                    Ok(None) => {}
+                                    Ok(None) => {
+                                        if requires_provider_email {
+                                            return None;
+                                        }
+                                    }
                                     Err(e) => {
+                                        if requires_provider_email {
+                                            broadcast_log(&format!(
+                                                "[mail-provider] 创建邮箱失败（跳过）: {e}"
+                                            ));
+                                            return None;
+                                        }
                                         broadcast_log(&format!(
                                             "[mail-provider] 生成邮箱失败: {e}，使用域名列表邮箱"
                                         ));
                                     }
                                 }
-                                seed
+                                Some(seed)
                             }
                         })
                         .buffered(seed_mail_concurrency)
+                        .filter_map(|x| async { x })
                         .collect::<Vec<_>>()
                         .await
                 }
@@ -236,6 +253,15 @@ impl WorkflowRunner {
                     .map(|_| generate_account_seed(&cfg.email_domains))
                     .collect::<Vec<_>>(),
             };
+
+            // 如果邮箱创建失败导致实际 seed 数少于目标，输出告警
+            if seeds.len() < deficit {
+                broadcast_log(&format!(
+                    "[mail-provider] 邮箱创建成功 {}/{deficit}（{} 个因 API 失败被跳过）",
+                    seeds.len(),
+                    deficit - seeds.len()
+                ));
+            }
 
             let (reg_tx, rt_rx) = mpsc::channel(reg_queue_cap);
 
@@ -828,7 +854,8 @@ impl WorkflowRunner {
             let permit = semaphore.clone().acquire_owned().await.unwrap();
             let tokens_service = Arc::clone(&tokens_service);
             let pool_cfg = pool.clone();
-            let plan_type = if free_mode { "free" } else { &acc.plan_type };
+            let plan_type = pool.plan_type.as_deref()
+                .unwrap_or(if free_mode { "free" } else { &acc.plan_type });
             let plan_type = plan_type.to_string();
             let ok_count = Arc::clone(&ok_count);
             let fail_count = Arc::clone(&fail_count);

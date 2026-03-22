@@ -700,6 +700,13 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">API 地址 *</label><input id="atp-api" class="field-input" placeholder="http://xxx:8000"></div>
       <div class="md:col-span-2"><label class="field-label">认证 Token *</label><input id="atp-token" class="field-input" placeholder="Bearer eyJhbG..."></div>
       <div><label class="field-label">平台</label><input id="atp-platform" class="field-input" value="codex" placeholder="codex"></div>
+      <div><label class="field-label">Plan Type <span class="text-dim">(可选)</span></label>
+        <select id="atp-plan-type" class="field-input">
+          <option value="">自动（跟随任务模式）</option>
+          <option value="free">free</option>
+          <option value="team">team</option>
+        </select>
+      </div>
       <div><label class="field-label">并发数</label><input id="atp-concurrency" type="number" min="1" value="5" class="field-input"></div>
     </div>
     <div class="flex gap-2 mt-4">
@@ -719,6 +726,13 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">API 地址</label><input id="etp-api" class="field-input"></div>
       <div class="md:col-span-2"><label class="field-label">认证 Token</label><input id="etp-token" class="field-input"></div>
       <div><label class="field-label">平台</label><input id="etp-platform" class="field-input"></div>
+      <div><label class="field-label">Plan Type</label>
+        <select id="etp-plan-type" class="field-input">
+          <option value="">自动（跟随任务模式）</option>
+          <option value="free">free</option>
+          <option value="team">team</option>
+        </select>
+      </div>
       <div><label class="field-label">并发数</label><input id="etp-concurrency" type="number" min="1" class="field-input"></div>
     </div>
     <div class="flex gap-2 mt-4">

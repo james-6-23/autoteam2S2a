@@ -282,6 +282,10 @@ pub struct TokensPoolConfig {
     pub platform: String,
     #[serde(default = "default_tokens_concurrency")]
     pub concurrency: usize,
+    /// 推送 token 时使用的 plan_type，如 "free"/"team"。
+    /// 为空时由任务的 free_mode 自动决定。
+    #[serde(default)]
+    pub plan_type: Option<String>,
 }
 
 fn default_tokens_platform() -> String {

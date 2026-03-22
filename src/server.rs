@@ -1667,6 +1667,7 @@ struct AddTokensPoolRequest {
     auth_token: String,
     platform: Option<String>,
     concurrency: Option<usize>,
+    plan_type: Option<String>,
 }
 
 async fn add_tokens_pool_handler(
@@ -1683,6 +1684,7 @@ async fn add_tokens_pool_handler(
         auth_token: req.auth_token,
         platform: req.platform.unwrap_or_else(|| "codex".to_string()),
         concurrency: req.concurrency.unwrap_or(5),
+        plan_type: req.plan_type.filter(|s| !s.trim().is_empty()),
     });
     auto_save(&cfg, &state.config_path);
     Ok((StatusCode::CREATED, Json(MsgResponse { message: format!("Tokens 号池 {} 已添加", req.name) })))
@@ -1695,6 +1697,7 @@ struct UpdateTokensPoolRequest {
     auth_token: Option<String>,
     platform: Option<String>,
     concurrency: Option<usize>,
+    plan_type: Option<String>,
 }
 
 async fn update_tokens_pool_handler(
@@ -1720,6 +1723,7 @@ async fn update_tokens_pool_handler(
     if let Some(v) = req.auth_token { pool.auth_token = v; }
     if let Some(v) = req.platform { pool.platform = v; }
     if let Some(v) = req.concurrency { pool.concurrency = v; }
+    if let Some(v) = req.plan_type { pool.plan_type = if v.trim().is_empty() { None } else { Some(v) }; }
     auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse { message: "Tokens 号池已更新".to_string() }))
 }
