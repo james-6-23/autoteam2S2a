@@ -172,7 +172,15 @@ pub async fn run_distribution(
     ));
 
     // 创建 S2A 流式 channel
-    let (s2a_tx, s2a_rx) = if options.push_s2a {
+    let (s2a_tx, s2a_rx) = if options.push_s2a && !is_tokens_mode {
+        let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    // 创建 Tokens 流式 channel
+    let (tokens_tx, tokens_rx) = if is_tokens_mode && options.tokens_pool.is_some() {
         let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
         (Some(tx), Some(rx))
     } else {
@@ -195,13 +203,35 @@ pub async fn run_distribution(
         None
     };
 
+    // 启动 Tokens 流式消费者
+    let tokens_handle = if let Some(rx) = tokens_rx {
+        let tokens_service = runner.tokens_pool_service();
+        let pool_cfg = options.tokens_pool.clone().unwrap();
+        let cancel = cancel_flag.clone();
+        let free_mode = options.free_mode;
+        Some(tokio::spawn(async move {
+            WorkflowRunner::tokens_streaming_consumer_static(
+                rx, tokens_service, &pool_cfg, free_mode, None, cancel,
+            )
+            .await
+        }))
+    } else {
+        None
+    };
+
+    // 传给 run_register_and_rt 的 tx：优先 tokens_tx，其次 s2a_tx
+    let stream_tx = tokens_tx.or(s2a_tx);
+
     let reg_result = match runner
-        .run_register_and_rt(cfg, &options, cancel_flag.clone(), None, s2a_tx)
+        .run_register_and_rt(cfg, &options, cancel_flag.clone(), None, stream_tx)
         .await
     {
         Ok(r) => r,
         Err(e) => {
             if let Some(h) = s2a_handle {
+                let _ = h.await;
+            }
+            if let Some(h) = tokens_handle {
                 let _ = h.await;
             }
             let _ = db.enqueue_fail_run(run_id.clone(), format!("{e:#}"));
@@ -217,6 +247,9 @@ pub async fn run_distribution(
         if let Some(h) = s2a_handle {
             let _ = h.await;
         }
+        if let Some(h) = tokens_handle {
+            let _ = h.await;
+        }
         let _ = db.enqueue_fail_run(run_id.clone(), "用户取消".to_string());
         broadcast_log(&format!(
             "[SIG-END][ERR] schedule={} trigger={} mode={} target_rt={} stage=cancel reason=用户取消",
@@ -230,7 +263,7 @@ pub async fn run_distribution(
     let output_files = reg_result.output_files;
 
     // 等待 S2A 流式消费者完成
-    let (total_s2a_ok, total_s2a_failed, team_results) = if let Some(h) = s2a_handle {
+    let (mut total_s2a_ok, mut total_s2a_failed, team_results) = if let Some(h) = s2a_handle {
         match h.await {
             Ok(r) => r,
             Err(_) => (0, 0, Vec::new()),
@@ -238,6 +271,17 @@ pub async fn run_distribution(
     } else {
         (0, 0, Vec::new())
     };
+
+    // 等待 Tokens 流式消费者完成
+    if let Some(h) = tokens_handle {
+        match h.await {
+            Ok((tok_ok, tok_fail)) => {
+                total_s2a_ok += tok_ok;
+                total_s2a_failed += tok_fail;
+            }
+            Err(_) => {}
+        }
+    }
 
     // 更新 SQLite 中每个号池的统计
     for tr in &team_results {

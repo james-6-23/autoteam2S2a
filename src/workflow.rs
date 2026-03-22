@@ -817,6 +817,19 @@ impl WorkflowRunner {
     /// Tokens 流式消费者：实时接收 RT 成功的账号并推送到 Tokens Pool
     ///
     /// 返回 (ok, fail)
+    /// 公开的静态入口，供 distribution.rs 调用
+    pub async fn tokens_streaming_consumer_static(
+        rx: mpsc::Receiver<AccountWithRt>,
+        tokens_service: Arc<dyn TokensPoolService>,
+        pool: &TokensPoolConfig,
+        free_mode: bool,
+        progress: Option<&Arc<TaskProgress>>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> (usize, usize) {
+        Self::tokens_streaming_consumer(rx, tokens_service, pool, free_mode, progress, cancel_flag)
+            .await
+    }
+
     async fn tokens_streaming_consumer(
         mut rx: mpsc::Receiver<AccountWithRt>,
         tokens_service: Arc<dyn TokensPoolService>,
