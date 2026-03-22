@@ -691,6 +691,43 @@ tailwind.config={theme:{extend:{
   </div>
 </div>
 
+<!-- ====== Tokens Pool Modals ====== -->
+<div id="add-tp-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'add-tp-modal','hideAddTpForm')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div class="section-title">新建 Tokens 号池</div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">名称 *</label><input id="atp-name" class="field-input" placeholder="my-tokens-pool"></div>
+      <div><label class="field-label">API 地址 *</label><input id="atp-api" class="field-input" placeholder="http://xxx:8000"></div>
+      <div class="md:col-span-2"><label class="field-label">认证 Token *</label><input id="atp-token" class="field-input" placeholder="Bearer eyJhbG..."></div>
+      <div><label class="field-label">平台</label><input id="atp-platform" class="field-input" value="codex" placeholder="codex"></div>
+      <div><label class="field-label">并发数</label><input id="atp-concurrency" type="number" min="1" value="5" class="field-input"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitAddTp()" class="btn btn-teal">确认</button>
+      <button onclick="hideAddTpForm()" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+<div id="edit-tp-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'edit-tp-modal','hideEditTpForm')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">编辑 Tokens 号池</div>
+      <button onclick="hideEditTpForm()" class="btn btn-ghost text-xs py-1">关闭</button>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">名称</label><input id="etp-name" class="field-input"></div>
+      <div><label class="field-label">API 地址</label><input id="etp-api" class="field-input"></div>
+      <div class="md:col-span-2"><label class="field-label">认证 Token</label><input id="etp-token" class="field-input"></div>
+      <div><label class="field-label">平台</label><input id="etp-platform" class="field-input"></div>
+      <div><label class="field-label">并发数</label><input id="etp-concurrency" type="number" min="1" class="field-input"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitEditTp()" class="btn btn-amber">保存</button>
+      <button onclick="hideEditTpForm()" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+
 <script src="/assets/js/app.js"></script>
 </body>
 </html>

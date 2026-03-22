@@ -186,7 +186,9 @@ function handleTeamModalBackdrop(evt,modalId,closeFnName){
 }
 document.addEventListener('keydown',e=>{
   if(e.key!=='Escape') return;
-  if(!document.getElementById('team-groups-modal')?.classList.contains('hidden')) hideTeamGroupsModal();
+  if(!document.getElementById('edit-tp-modal')?.classList.contains('hidden')) hideEditTpForm();
+  else if(!document.getElementById('add-tp-modal')?.classList.contains('hidden')) hideAddTpForm();
+  else if(!document.getElementById('team-groups-modal')?.classList.contains('hidden')) hideTeamGroupsModal();
   else if(!document.getElementById('edit-team-modal')?.classList.contains('hidden')) hideEditTeamForm();
   else if(!document.getElementById('add-team-modal')?.classList.contains('hidden')) hideAddTeamForm();
 });
@@ -1478,35 +1480,57 @@ function renderTokensPools(){
   </div>`).join('');
 }
 function showAddTokensPoolForm(){
-  const name=prompt('Tokens 号池名称:');
-  if(!name||!name.trim())return;
-  const apiBase=prompt('API 地址 (如 http://xxx:8000):');
-  if(!apiBase||!apiBase.trim())return;
-  const authToken=prompt('认证 Token (Bearer JWT):');
-  if(!authToken)return;
-  const platform=prompt('平台 (默认 codex):','codex')||'codex';
-  const concurrency=parseInt(prompt('并发数 (默认 5):','5'))||5;
-  addTokensPool({name:name.trim(),api_base:apiBase.trim(),auth_token:authToken.trim(),platform,concurrency});
+  hideEditTpForm();
+  document.getElementById('atp-name').value='';
+  document.getElementById('atp-api').value='';
+  document.getElementById('atp-token').value='';
+  document.getElementById('atp-platform').value='codex';
+  document.getElementById('atp-concurrency').value='5';
+  document.getElementById('add-tp-modal').classList.remove('hidden');
 }
-async function addTokensPool(body){
-  try{await api('/api/config/tokens_pools',{method:'POST',body});toast(`Tokens 号池 ${body.name} 已添加`,'success');loadConfig()}catch{}
+function hideAddTpForm(){
+  document.getElementById('add-tp-modal').classList.add('hidden');
 }
+async function submitAddTp(){
+  const name=document.getElementById('atp-name').value.trim();
+  const apiBase=document.getElementById('atp-api').value.trim();
+  const authToken=document.getElementById('atp-token').value.trim();
+  const platform=document.getElementById('atp-platform').value.trim()||'codex';
+  const concurrency=parseInt(document.getElementById('atp-concurrency').value)||5;
+  if(!name||!apiBase||!authToken){toast('请填写必填字段','error');return}
+  try{await api('/api/config/tokens_pools',{method:'POST',body:{name,api_base:apiBase,auth_token:authToken,platform,concurrency}});toast(`Tokens 号池 ${name} 已添加`,'success');hideAddTpForm();loadConfig()}catch{}
+}
+let editTpOrigName=null;
 function editTokensPool(idx){
   const pool=configData?.tokens_pools?.[idx];
   if(!pool)return;
-  const name=prompt('名称:',pool.name);
-  if(name===null)return;
-  const apiBase=prompt('API 地址:',pool.api_base);
-  if(apiBase===null)return;
-  const authToken=prompt('认证 Token:',pool.auth_token);
-  if(authToken===null)return;
-  const platform=prompt('平台:',pool.platform);
-  if(platform===null)return;
-  const concurrency=parseInt(prompt('并发数:',pool.concurrency))||pool.concurrency;
-  updateTokensPool(pool.name,{name:name.trim()||pool.name,api_base:apiBase.trim()||pool.api_base,auth_token:authToken.trim()||pool.auth_token,platform:platform.trim()||pool.platform,concurrency});
+  editTpOrigName=pool.name;
+  document.getElementById('etp-name').value=pool.name||'';
+  document.getElementById('etp-api').value=pool.api_base||'';
+  document.getElementById('etp-token').value=pool.auth_token||'';
+  document.getElementById('etp-platform').value=pool.platform||'codex';
+  document.getElementById('etp-concurrency').value=pool.concurrency||5;
+  hideAddTpForm();
+  document.getElementById('edit-tp-modal').classList.remove('hidden');
 }
-async function updateTokensPool(origName,body){
-  try{await api(`/api/config/tokens_pools/${encodeURIComponent(origName)}`,{method:'PUT',body});toast('Tokens 号池已更新','success');loadConfig()}catch{}
+function hideEditTpForm(){
+  document.getElementById('edit-tp-modal').classList.add('hidden');
+  editTpOrigName=null;
+}
+async function submitEditTp(){
+  if(!editTpOrigName)return;
+  const name=document.getElementById('etp-name').value.trim();
+  const apiBase=document.getElementById('etp-api').value.trim();
+  const authToken=document.getElementById('etp-token').value.trim();
+  const platform=document.getElementById('etp-platform').value.trim();
+  const concurrency=parseInt(document.getElementById('etp-concurrency').value);
+  const body={};
+  if(name)body.name=name;
+  if(apiBase)body.api_base=apiBase;
+  if(authToken)body.auth_token=authToken;
+  if(platform)body.platform=platform;
+  if(concurrency)body.concurrency=concurrency;
+  try{await api(`/api/config/tokens_pools/${encodeURIComponent(editTpOrigName)}`,{method:'PUT',body});toast('Tokens 号池已更新','success');hideEditTpForm();loadConfig()}catch{}
 }
 async function deleteTokensPool(name){
   if(!confirm(`确定删除 Tokens 号池 "${name}"？`))return;

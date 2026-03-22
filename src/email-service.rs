@@ -858,8 +858,9 @@ impl TempmailLolProvider {
     fn cached_token(&self, email: &str) -> Option<String> {
         self.token_cache
             .lock()
-            .ok()
-            .and_then(|c| c.get(&Self::normalize_email(email)).cloned())
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&Self::normalize_email(email))
+            .cloned()
     }
 
     async fn create_inbox(
