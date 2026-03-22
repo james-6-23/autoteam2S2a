@@ -2408,6 +2408,8 @@ fn generate_code_challenge(code_verifier: &str) -> String {
 #[async_trait]
 pub trait TokensPoolService: Send + Sync {
     async fn test_connection(&self, pool: &TokensPoolConfig) -> Result<()>;
+    /// 入库前清理失效 token
+    async fn delete_deactivated(&self, pool: &TokensPoolConfig) -> Result<usize>;
     async fn add_token(
         &self,
         pool: &TokensPoolConfig,
@@ -2473,6 +2475,38 @@ impl TokensPoolService for TokensPoolHttpService {
             bail!("Tokens Pool 服务端错误: HTTP {}", resp.status());
         }
         Ok(())
+    }
+
+    async fn delete_deactivated(&self, pool: &TokensPoolConfig) -> Result<usize> {
+        let base = Self::normalized_base(&pool.api_base);
+        let url = format!("{base}/admin-api/tokens/delete_deactivate");
+        let bearer = Self::bearer(&pool.auth_token);
+
+        let resp = self
+            .client
+            .delete(&url)
+            .header("Authorization", &bearer)
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .context("Tokens Pool 清理失效 token 请求失败")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            bail!(
+                "Tokens Pool 清理失效 token 失败: HTTP {} {}",
+                status,
+                truncate_text(&body, 200)
+            );
+        }
+        let json: serde_json::Value = resp.json().await.unwrap_or_default();
+        let count = json
+            .get("count")
+            .or_else(|| json.get("deleted"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        Ok(count)
     }
 
     async fn add_token(

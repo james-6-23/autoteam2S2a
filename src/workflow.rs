@@ -854,6 +854,23 @@ impl WorkflowRunner {
         let ok_count = Arc::new(AtomicUsize::new(0));
         let fail_count = Arc::new(AtomicUsize::new(0));
 
+        // 入库前清理失效 token
+        match tokens_service.delete_deactivated(pool).await {
+            Ok(n) => {
+                if n > 0 {
+                    broadcast_log(&format!(
+                        "[Tokens-Stream] 已清理 {n} 个失效 token [{}]",
+                        pool.name
+                    ));
+                }
+            }
+            Err(e) => {
+                broadcast_log(&format!(
+                    "[Tokens-Stream] 清理失效 token 失败（继续推送）: {e}"
+                ));
+            }
+        }
+
         broadcast_log(&format!(
             "[Tokens-Stream] 流式推送已启动 [{name}] (batch={BATCH_SIZE}, concurrency={concurrency})",
             name = pool.name
