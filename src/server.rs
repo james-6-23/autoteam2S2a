@@ -1658,22 +1658,40 @@ async fn create_task_handler(
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let cfg = state.config.read().await;
+    let push_s2a = req.push_s2a.unwrap_or(true);
     let teams = cfg.effective_s2a_configs();
-    if teams.is_empty() {
-        return Err(error_json(
-            StatusCode::BAD_REQUEST,
-            "配置中没有可用的 S2A 号池",
-        ));
-    }
 
-    let team = if let Some(ref name) = req.team {
-        teams
-            .iter()
-            .find(|t| t.name == *name)
-            .ok_or_else(|| error_json(StatusCode::BAD_REQUEST, &format!("未找到号池: {name}")))?
-            .clone()
+    let team = if push_s2a {
+        // push_s2a=true 时必须有可用号池
+        if teams.is_empty() {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                "配置中没有可用的 S2A 号池",
+            ));
+        }
+        if let Some(ref name) = req.team {
+            teams
+                .iter()
+                .find(|t| t.name == *name)
+                .ok_or_else(|| error_json(StatusCode::BAD_REQUEST, &format!("未找到号池: {name}")))?
+                .clone()
+        } else {
+            teams[0].clone()
+        }
     } else {
-        teams[0].clone()
+        // push_s2a=false（仅生成RT），使用占位配置
+        S2aConfig {
+            name: "(仅RT)".to_string(),
+            api_base: String::new(),
+            admin_key: String::new(),
+            concurrency: 1,
+            priority: 0,
+            group_ids: Vec::new(),
+            free_group_ids: Vec::new(),
+            free_priority: None,
+            free_concurrency: None,
+            extra: S2aExtraConfig::default(),
+        }
     };
 
     let free_mode = req.free_mode.unwrap_or(false);
@@ -1735,7 +1753,7 @@ async fn create_task_handler(
         .rt_retries
         .unwrap_or(default_rt_retries)
         .clamp(1, MAX_RT_RETRIES);
-    let push_s2a = req.push_s2a.unwrap_or(true);
+    // push_s2a 已在上方解析
     let mail_provider = req.mail_provider.unwrap_or_else(|| {
         if req.use_chatgpt_mail.unwrap_or(false) {
             crate::config::MailProvider::Chatgpt

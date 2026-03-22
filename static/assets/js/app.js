@@ -109,7 +109,7 @@ function renderDashboard(){
   document.getElementById('stat-proxies').textContent=configData.proxy_pool.length;
   document.getElementById('stat-domains').textContent=configData.email_domains.length;
   const sel=document.getElementById('q-team');
-  sel.innerHTML=configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('');
+  sel.innerHTML='<option value="__rt_only__" selected>仅生成RT</option>'+configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('');
   const modeEl=document.getElementById('q-mode');
   const mode=modeEl?.value==='free'?'free':'team';
   applyQuickDefaultsByMode(mode);
@@ -621,8 +621,11 @@ async function deleteEmailDomain(domain){try{await api('/api/config/email_domain
 
 // Tasks
 async function quickCreateTask(){
-  const team=document.getElementById('q-team').value;if(!team){toast('请先配置号池','error');return}
-  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'}});toast(`任务 ${d.task_id} 已创建`,'success');refreshTasks();setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
+  const teamVal=document.getElementById('q-team').value;
+  const isRtOnly=teamVal==='__rt_only__';
+  const body={target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'};
+  if(isRtOnly){body.push_s2a=false}else{body.team=teamVal;body.push_s2a=true}
+  try{const d=await api('/api/tasks',{method:'POST',body});toast(`任务 ${d.task_id} 已创建`,'success');refreshTasks();setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
 }
 function buildTaskRows(tasks){
   return tasks.map(t=>{
@@ -710,6 +713,7 @@ async function exportTaskRt(taskId){
 let _tpTimer=null;
 let _tpTaskId=null;
 let _tpElapsedTick=null;
+let _tpIsRtOnly=false;
 let _tpStartedAtMs=0;
 let _tpFinalElapsedSec=null;
 function formatElapsedSec(sec){
@@ -736,6 +740,7 @@ function showTaskDetail(taskId){
   _tpTaskId=taskId;
   _tpStartedAtMs=Date.now();
   _tpFinalElapsedSec=null;
+  _tpIsRtOnly=false;
   const panel=document.getElementById('task-progress-panel');
   panel.classList.remove('hidden');
   // reset
@@ -761,6 +766,16 @@ function showTaskDetail(taskId){
       const started=Date.parse(t.created_at);
       if(!Number.isNaN(started)) _tpStartedAtMs=started;
     }
+    // 检测是否为仅RT任务，隐藏S2A相关UI
+    if(t&&t.team==='(仅RT)'){
+      _tpIsRtOnly=true;
+      document.getElementById('tp-s2a-card').classList.add('hidden');
+      document.getElementById('tp-s2a-progress').classList.add('hidden');
+    }else{
+      _tpIsRtOnly=false;
+      document.getElementById('tp-s2a-card').classList.remove('hidden');
+      document.getElementById('tp-s2a-progress').classList.remove('hidden');
+    }
     if(t&&t.report&&typeof t.report.elapsed_secs==='number'){
       _tpFinalElapsedSec=t.report.elapsed_secs;
       if((Number(t.report.rt_ok)||0)>0){
@@ -780,8 +795,12 @@ function closeTaskProgress(){
   _tpTaskId=null;
   _tpStartedAtMs=0;
   _tpFinalElapsedSec=null;
+  _tpIsRtOnly=false;
   const elapsedEl=document.getElementById('tp-elapsed');
   if(elapsedEl) elapsedEl.textContent='耗时 0.0s';
+  // 恢复 S2A 区域可见性
+  document.getElementById('tp-s2a-card').classList.remove('hidden');
+  document.getElementById('tp-s2a-progress').classList.remove('hidden');
   document.getElementById('task-progress-panel').classList.add('hidden');
 }
 async function pollTaskProgress(){
