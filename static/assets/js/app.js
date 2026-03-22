@@ -52,7 +52,7 @@ function switchTab(name){
     const b=document.getElementById('tab-'+t);
     b.classList.toggle('tab-active',t===name);
   });
-  if(name==='tasks'){refreshTasks();startTaskPoll()}else{stopTaskPoll();closeTaskProgress()}
+  if(name==='tasks'||name==='dashboard'){refreshTasks();startTaskPoll()}else{stopTaskPoll();closeTaskProgress()}
   if(name==='dashboard'||name==='teams'||name==='config'||name==='email') loadConfig();
   if(name==='schedules'){loadSchedules();startSchedulePoll()}else{stopSchedulePoll()}
   if(name==='runs'){loadRunStats();loadRunsFilter();loadRuns(1)}
@@ -622,12 +622,35 @@ async function deleteEmailDomain(domain){try{await api('/api/config/email_domain
 // Tasks
 async function quickCreateTask(){
   const team=document.getElementById('q-team').value;if(!team){toast('请先配置号池','error');return}
-  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'}});toast(`任务 ${d.task_id} 已创建`,'success');switchTab('tasks');setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
+  try{const d=await api('/api/tasks',{method:'POST',body:{team,target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),push_s2a:true,mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'}});toast(`任务 ${d.task_id} 已创建`,'success');refreshTasks();setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
+}
+function buildTaskRows(tasks){
+  return tasks.map(t=>{
+    const bc={pending:'badge-warn',running:'badge-run',completed:'badge-ok',failed:'badge-err',cancelled:'badge-off'};
+    const lb={pending:'等待',running:'运行',completed:'完成',failed:'失败',cancelled:'取消'};
+    const cc=t.status==='pending'||t.status==='running';
+    const exportable=t.status==='completed';
+    const tm=new Date(t.created_at).toLocaleTimeString('zh-CN');
+    return `<div class="row-item flex items-center justify-between cursor-pointer" onclick="showTaskDetail('${t.task_id}')">
+      <div class="flex items-center gap-3 flex-1 min-w-0">
+        <span class="badge ${bc[t.status]||'badge-off'}">${lb[t.status]||t.status}</span>
+        <span class="text-xs font-mono text-dim">${t.task_id}</span>
+        <span class="text-xs text-dim-1">${t.team}</span>
+        <span class="text-xs text-dim">x${t.target}</span>
+        <span class="text-xs text-dim">${tm}</span>
+      </div>
+      <div class="flex items-center gap-2">
+        ${exportable?`<button onclick="event.stopPropagation();exportTaskRt('${t.task_id}')" class="btn btn-teal text-xs py-1 px-2">导出RT</button>`:''}
+        ${cc?`<button onclick="event.stopPropagation();cancelTask('${t.task_id}')" class="btn btn-danger text-xs py-1 px-2">取消</button>`:''}
+      </div>
+    </div>`;
+  }).join('');
 }
 async function refreshTasks(){
   try{
     const [d, sd]=await Promise.all([api('/api/tasks'), api('/api/schedules').catch(()=>({schedules:[]}))]);
     const el=document.getElementById('task-list');
+    const dashboardEl=document.getElementById('dashboard-task-list');
     const runningTasks=d.tasks.filter(t=>t.status==='running'||t.status==='pending').length;
     const runningScheds=(sd.schedules||[]).filter(s=>s.running);
     document.getElementById('stat-running').textContent=runningTasks+runningScheds.length;
@@ -647,27 +670,13 @@ async function refreshTasks(){
       </div>`).join('');
     }
     // manual tasks
-    html+=d.tasks.map(t=>{
-      const bc={pending:'badge-warn',running:'badge-run',completed:'badge-ok',failed:'badge-err',cancelled:'badge-off'};
-      const lb={pending:'等待',running:'运行',completed:'完成',failed:'失败',cancelled:'取消'};
-      const cc=t.status==='pending'||t.status==='running';
-      const exportable=t.status==='completed';
-      const tm=new Date(t.created_at).toLocaleTimeString('zh-CN');
-      return `<div class="row-item flex items-center justify-between cursor-pointer" onclick="showTaskDetail('${t.task_id}')">
-        <div class="flex items-center gap-3 flex-1 min-w-0">
-          <span class="badge ${bc[t.status]||'badge-off'}">${lb[t.status]||t.status}</span>
-          <span class="text-xs font-mono text-dim">${t.task_id}</span>
-          <span class="text-xs text-dim-1">${t.team}</span>
-          <span class="text-xs text-dim">x${t.target}</span>
-          <span class="text-xs text-dim">${tm}</span>
-        </div>
-        <div class="flex items-center gap-2">
-          ${exportable?`<button onclick="event.stopPropagation();exportTaskRt('${t.task_id}')" class="btn btn-teal text-xs py-1 px-2">导出RT</button>`:''}
-          ${cc?`<button onclick="event.stopPropagation();cancelTask('${t.task_id}')" class="btn btn-danger text-xs py-1 px-2">取消</button>`:''}
-        </div>
-      </div>`}).join('');
+    html+=buildTaskRows(d.tasks);
     if(!html) html='<p class="text-sm text-dim text-center py-8">暂无任务</p>';
     el.innerHTML=html;
+    if(dashboardEl){
+      const dashboardTasks=d.tasks.slice(0,6);
+      dashboardEl.innerHTML=dashboardTasks.length?buildTaskRows(dashboardTasks):'<p class="text-sm text-dim text-center py-6">暂无任务</p>';
+    }
   }catch{}
 }
 async function exportTaskRt(taskId){
