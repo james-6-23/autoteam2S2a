@@ -784,7 +784,7 @@ function showTaskDetail(taskId){
     }
     // Tokens 号池任务：切换标签
     const isTokensTask=t&&t.team&&t.team.startsWith('[Tokens]');
-    const pushLabel=isTokensTask?'Tokens 入库':'S2A 入库';
+    const pushLabel=isTokensTask?'Tokens 入库':'入库';
     document.getElementById('tp-s2a-label').textContent=pushLabel;
     document.getElementById('tp-s2a-progress-label').textContent=pushLabel;
     if(t&&t.report&&typeof t.report.elapsed_secs==='number'){
@@ -812,8 +812,8 @@ function closeTaskProgress(){
   // 恢复 S2A 区域可见性和标签
   document.getElementById('tp-s2a-card').classList.remove('hidden');
   document.getElementById('tp-s2a-progress').classList.remove('hidden');
-  document.getElementById('tp-s2a-label').textContent='S2A 入库';
-  document.getElementById('tp-s2a-progress-label').textContent='S2A 入库';
+  document.getElementById('tp-s2a-label').textContent='入库';
+  document.getElementById('tp-s2a-progress-label').textContent='入库';
   document.getElementById('task-progress-panel').classList.add('hidden');
 }
 async function pollTaskProgress(){
@@ -885,9 +885,9 @@ async function pollTaskProgress(){
             `RT: ${r.rt_ok} 成功 / ${r.rt_failed} 失败`,
           ];
           if(r.s2a_ok!==undefined){
-            lines.push(`S2A 总计: ${totalS2aOk} 成功 / ${totalS2aFailed} 失败`);
-            lines.push(`S2A Team分组: ${teamS2aOk} 成功 / ${teamS2aFailed} 失败`);
-            lines.push(`S2A Free分组: ${freeS2aOk} 成功 / ${freeS2aFailed} 失败`);
+            lines.push(`入库总计: ${totalS2aOk} 成功 / ${totalS2aFailed} 失败`);
+            lines.push(`Team分组: ${teamS2aOk} 成功 / ${teamS2aFailed} 失败`);
+            lines.push(`Free分组: ${freeS2aOk} 成功 / ${freeS2aFailed} 失败`);
           }
           if(r.output_files?.length) lines.push(`文件: ${r.output_files.join(', ')}`);
           document.getElementById('tp-report-content').innerHTML=lines.map(l=>`<div>${l}</div>`).join('');
@@ -1066,12 +1066,12 @@ async function submitAddSchedule(){
 }
 async function toggleSchedule(n){try{const d=await api(`/api/schedules/${encodeURIComponent(n)}/toggle`,{method:'POST'});toast(d.message,'success');loadSchedules()}catch{}}
 async function runOnceSchedule(n){
-  if(!confirm(`运行一次 "${n}"？将执行单个批次（注册+RT+S2A），完成后自动结束。`))return;
+  if(!confirm(`运行一次 "${n}"？将执行单个批次（注册+RT+入库），完成后自动结束。`))return;
   const btn=document.getElementById(`run-once-${n}`);
   if(btn){btn.disabled=true;btn.textContent='执行中...';}
   try{
     const d=await api(`/api/schedules/${encodeURIComponent(n)}/run-once`,{method:'POST'});
-    toast(`运行一次完成 | RT: ${d.rt_ok} | S2A: ${d.total_s2a_ok} | 耗时: ${d.elapsed_secs.toFixed(1)}s`,'success');
+    toast(`运行一次完成 | RT: ${d.rt_ok} | 入库: ${d.total_s2a_ok} | 耗时: ${d.elapsed_secs.toFixed(1)}s`,'success');
   }catch{}finally{
     if(btn){btn.disabled=false;btn.textContent='运行一次';}
     loadSchedules();
@@ -1297,7 +1297,7 @@ async function loadRuns(page){
           <span class="text-[.7rem] font-mono min-w-[56px] text-right"><span class="c-heading">${r.rt_ok}</span><span class="text-dim">/${rtTotal}</span></span>
         </div>
         <div class="flex items-center gap-2">
-          <span class="text-[.7rem] text-teal-400 w-8">S2A</span>
+          <span class="text-[.7rem] text-teal-400 w-8">入库</span>
           <div class="progress-bar flex-1"><div class="progress-fill" style="width:${s2aPct}%;background:#14b8a6"></div></div>
           <span class="text-[.7rem] font-mono min-w-[56px] text-right"><span class="text-teal-400">${r.total_s2a_ok}</span><span class="text-dim">/${s2aTotal}</span></span>
         </div>
@@ -1338,7 +1338,7 @@ async function showRunDetail(runId){
   <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
     <div class="card-inner p-3"><div class="field-label">注册成功</div><div class="stat-num text-lg c-heading">${r.registered_ok}</div></div>
     <div class="card-inner p-3"><div class="field-label">RT 成功</div><div class="stat-num text-lg c-heading">${r.rt_ok}</div></div>
-    <div class="card-inner p-3"><div class="field-label">S2A 成功</div><div class="stat-num text-lg text-teal-400">${r.total_s2a_ok}</div></div>
+    <div class="card-inner p-3"><div class="field-label">入库成功</div><div class="stat-num text-lg text-teal-400">${r.total_s2a_ok}</div></div>
     <div class="card-inner p-3"><div class="field-label">总耗时</div><div class="stat-num text-lg c-heading">${r.elapsed_secs?r.elapsed_secs.toFixed(1)+'s':'-'}</div></div>
     <div class="card-inner p-3"><div class="field-label">平均耗时</div><div class="stat-num text-lg text-amber-400">${detailAvg}<span class="text-xs text-dim">/个</span></div></div>
   </div>
@@ -1352,7 +1352,7 @@ async function showRunDetail(runId){
     <span>注册成功 <span class="text-teal-400">${r.registered_ok}</span></span>
     <span>注册成功率 <span class="text-amber-400">${detailRegRate}%</span></span>
     <span>RT成功率 <span class="text-amber-400">${detailRtRate}%</span></span>
-    <span>S2A成功率 <span class="text-amber-400">${detailS2aRate}%</span></span>
+    <span>入库成功率 <span class="text-amber-400">${detailS2aRate}%</span></span>
   </div>`;
   if(r.error) html+=`<div class="card-inner p-3 mb-4 text-xs text-red-400" style="border-color:rgba(248,113,113,.15)">${r.error}</div>`;
   if(d.distributions&&d.distributions.length){
