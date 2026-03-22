@@ -1527,18 +1527,20 @@ function renderTokensPools(){
         <div><span class="field-label">并发</span><div class="font-mono c-heading">${p.concurrency}</div></div>
       </div>
       <div class="flex items-center gap-1 ml-3 shrink-0">
-        <button onclick="fetchTokensPoolStats('${esc}',${idx})" class="btn btn-ghost text-xs py-1 px-2" id="tp-stats-btn-${idx}">状态</button>
+        <button onclick="fetchTokensPoolStats('${esc}',${idx})" class="btn btn-ghost text-xs py-1 px-2" id="tp-stats-btn-${idx}">刷新</button>
         <button onclick="testTokensPool('${esc}')" class="btn btn-ghost text-xs py-1 px-2" id="tp-test-btn-${idx}">测试</button>
         <button onclick="editTokensPool(${idx})" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
         <button onclick="deleteTokensPool('${esc}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
       </div>
     </div>
-    <div id="tp-stats-row-${idx}" class="hidden grid grid-cols-3 gap-2 mt-2 text-xs">
+    <div id="tp-stats-row-${idx}" class="grid grid-cols-3 gap-2 mt-2 text-xs">
       <div class="card-inner p-2 text-center"><span class="text-teal-400 font-mono" id="tp-stat-normal-${idx}">-</span><div class="text-dim">正常</div></div>
       <div class="card-inner p-2 text-center"><span class="text-amber-400 font-mono" id="tp-stat-limit-${idx}">-</span><div class="text-dim">限流</div></div>
       <div class="card-inner p-2 text-center"><span class="text-red-400 font-mono" id="tp-stat-deactivate-${idx}">-</span><div class="text-dim">异常</div></div>
     </div>
   </div>`}).join('');
+  // 自动加载所有号池状态
+  pools.forEach((p,idx)=>fetchTokensPoolStats(p.name,idx));
 }
 async function fetchTokensPoolStats(name,idx){
   const btn=document.getElementById('tp-stats-btn-'+idx);
