@@ -282,8 +282,9 @@ function renderConfigForm(){
   document.getElementById('cfg-reg-perf-mode').value=r.register_perf_mode||'baseline';
   document.getElementById('cfg-gptmail-key').value=r.chatgpt_mail_api_key||'';
   document.getElementById('cfg-tempmail-key').value=r.tempmail_api_key||'';
+  document.getElementById('cfg-tempmail-lol-key').value=r.tempmail_lol_api_key||'';
   document.getElementById('cfg-site-title').value=configData.site_title||'';
-  renderEmailDomains();renderGptMailDomains();renderTempMailDomains();renderD1Cleanup();
+  renderEmailDomains();renderGptMailDomains();renderTempMailDomains();renderTempMailLolDomains();renderD1Cleanup();
 }
 function applySiteTitle(title){
   const t=title||'AutoTeam2S2A';
@@ -582,6 +583,31 @@ async function testTempMail(){
   }catch(e){st.textContent='连接失败';st.className='text-xs text-red-400'}
 }
 
+// TempMail.lol
+async function saveTempMailLol(){const key=document.getElementById('cfg-tempmail-lol-key').value.trim();try{await api('/api/config/register',{method:'PUT',body:{tempmail_lol_api_key:key}});toast('TempMail.lol 配置已保存','success');loadConfig()}catch{}}
+function renderTempMailLolDomains(){
+  if(!configData)return;const doms=configData.tempmail_lol_domains||[];
+  document.getElementById('tempmail-lol-domain-count').textContent=doms.length;
+  const el=document.getElementById('tempmail-lol-domain-list');
+  if(!doms.length){el.innerHTML='<p class="text-xs text-dim">未配置（使用随机域名）</p>';return}
+  el.innerHTML=doms.map(d=>`<span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md font-mono" style="background:var(--domain-bg);border:1px solid var(--domain-border);color:var(--text-dim2)">${d}<button onclick="deleteTempMailLolDomain('${d.replace(/'/g,"\\\'")}')" class="text-red-400 hover:text-red-300 ml-1">&times;</button></span>`).join('');
+}
+async function addTempMailLolDomain(){const v=document.getElementById('new-tempmail-lol-domain').value.trim();if(!v){toast('请输入域名','error');return}try{await api('/api/config/tempmail_lol_domains',{method:'POST',body:{domain:v}});document.getElementById('new-tempmail-lol-domain').value='';toast('域名已添加','success');loadConfig()}catch{}}
+async function deleteTempMailLolDomain(d){try{await api('/api/config/tempmail_lol_domains',{method:'DELETE',body:{domain:d}});toast('域名已删除','success');loadConfig()}catch{}}
+async function testTempMailLol(){
+  const key=document.getElementById('cfg-tempmail-lol-key').value.trim();
+  const st=document.getElementById('tempmail-lol-status');const info=document.getElementById('tempmail-lol-info');
+  st.textContent='测试中…';st.className='text-xs text-amber-400';info.classList.add('hidden');
+  try{
+    await api('/api/config/register',{method:'PUT',body:{tempmail_lol_api_key:key}});
+    const json=await api('/api/test/tempmail_lol',{method:'POST'});
+    const d=json.data;
+    st.textContent='连接成功';st.className='text-xs text-teal-400';
+    info.classList.remove('hidden');
+    info.innerHTML=`<span>邮箱地址 <span class="c-heading font-mono">${d.address||'-'}</span></span><span>当前邮件数 <span class="c-heading font-mono">${d.email_count||0}</span></span><span>认证方式 <span class="c-heading font-mono">${d.using_api_key?'API Key':'Free'}</span></span>`;
+  }catch(e){st.textContent='连接失败';st.className='text-xs text-red-400'}
+}
+
 // Domains
 function renderEmailDomains(){
   if(!configData)return;const doms=configData.email_domains||[];
@@ -625,6 +651,7 @@ async function refreshTasks(){
       const bc={pending:'badge-warn',running:'badge-run',completed:'badge-ok',failed:'badge-err',cancelled:'badge-off'};
       const lb={pending:'等待',running:'运行',completed:'完成',failed:'失败',cancelled:'取消'};
       const cc=t.status==='pending'||t.status==='running';
+      const exportable=t.status==='completed';
       const tm=new Date(t.created_at).toLocaleTimeString('zh-CN');
       return `<div class="row-item flex items-center justify-between cursor-pointer" onclick="showTaskDetail('${t.task_id}')">
         <div class="flex items-center gap-3 flex-1 min-w-0">
@@ -634,11 +661,42 @@ async function refreshTasks(){
           <span class="text-xs text-dim">x${t.target}</span>
           <span class="text-xs text-dim">${tm}</span>
         </div>
-        ${cc?`<button onclick="event.stopPropagation();cancelTask('${t.task_id}')" class="btn btn-danger text-xs py-1 px-2">取消</button>`:''}
+        <div class="flex items-center gap-2">
+          ${exportable?`<button onclick="event.stopPropagation();exportTaskRt('${t.task_id}')" class="btn btn-teal text-xs py-1 px-2">导出RT</button>`:''}
+          ${cc?`<button onclick="event.stopPropagation();cancelTask('${t.task_id}')" class="btn btn-danger text-xs py-1 px-2">取消</button>`:''}
+        </div>
       </div>`}).join('');
     if(!html) html='<p class="text-sm text-dim text-center py-8">暂无任务</p>';
     el.innerHTML=html;
   }catch{}
+}
+async function exportTaskRt(taskId){
+  const id=taskId||_tpTaskId;
+  if(!id){toast('未找到任务ID','error');return}
+  try{
+    const res=await fetch(`${API}/api/tasks/${id}/export-rt`);
+    if(!res.ok){
+      let msg=`HTTP ${res.status}`;
+      try{
+        const data=await res.json();
+        msg=data.error||msg;
+      }catch{}
+      throw new Error(msg);
+    }
+    const blob=await res.blob();
+    const cd=res.headers.get('content-disposition')||'';
+    const m=cd.match(/filename="?([^"]+)"?/i);
+    const name=(m&&m[1])?m[1]:`task-${id}-rt.txt`;
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast('RT 已导出','success');
+  }catch(e){toast(e.message||'导出失败','error')}
 }
 let _tpTimer=null;
 let _tpTaskId=null;
@@ -680,6 +738,7 @@ function showTaskDetail(taskId){
   });
   document.getElementById('tp-id').textContent=taskId;
   document.getElementById('tp-stage').textContent='';
+  document.getElementById('tp-export-rt-btn').classList.add('hidden');
   renderTaskElapsed();
   document.getElementById('tp-error').classList.add('hidden');
   document.getElementById('tp-report').classList.add('hidden');
@@ -695,6 +754,9 @@ function showTaskDetail(taskId){
     }
     if(t&&t.report&&typeof t.report.elapsed_secs==='number'){
       _tpFinalElapsedSec=t.report.elapsed_secs;
+      if((Number(t.report.rt_ok)||0)>0){
+        document.getElementById('tp-export-rt-btn').classList.remove('hidden');
+      }
     }
     renderTaskElapsed();
   }).catch(()=>{});
@@ -763,6 +825,9 @@ async function pollTaskProgress(){
           const r=t.report;
           const rp=document.getElementById('tp-report');
           rp.classList.remove('hidden');
+          if((Number(r.rt_ok)||0)>0){
+            document.getElementById('tp-export-rt-btn').classList.remove('hidden');
+          }
           if(typeof r.elapsed_secs==='number'){
             _tpFinalElapsedSec=r.elapsed_secs;
             renderTaskElapsed();

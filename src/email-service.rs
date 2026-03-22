@@ -536,10 +536,16 @@ impl TempMailProvider {
         let client = self.get_client(proxy)?;
         let mut body = serde_json::Map::new();
         if let Some(addr) = address {
-            body.insert("address".to_string(), serde_json::Value::String(addr.to_string()));
+            body.insert(
+                "address".to_string(),
+                serde_json::Value::String(addr.to_string()),
+            );
         }
         if let Some(dom) = domain {
-            body.insert("domain".to_string(), serde_json::Value::String(dom.to_string()));
+            body.insert(
+                "domain".to_string(),
+                serde_json::Value::String(dom.to_string()),
+            );
         }
 
         let resp = client
@@ -554,7 +560,11 @@ impl TempMailProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            bail!("TempMail 创建邮箱失败: HTTP {} {}", status, truncate_text(&text, 200));
+            bail!(
+                "TempMail 创建邮箱失败: HTTP {} {}",
+                status,
+                truncate_text(&text, 200)
+            );
         }
 
         let json: serde_json::Value = resp.json().await.context("TempMail 创建邮箱响应解析失败")?;
@@ -582,7 +592,10 @@ impl TempMailProvider {
     ) -> Result<Vec<EmailMessage>> {
         let client = self.get_client(proxy)?;
         let resp = client
-            .get(format!("{}/api/mailboxes/{}/emails?page=1&size=20", self.api_base, mailbox_id))
+            .get(format!(
+                "{}/api/mailboxes/{}/emails?page=1&size=20",
+                self.api_base, mailbox_id
+            ))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await
@@ -599,10 +612,7 @@ impl TempMailProvider {
 
         if let Some(items) = items {
             for item in items {
-                let email_id_str = item
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
+                let email_id_str = item.get("id").and_then(|v| v.as_str()).unwrap_or_default();
                 // 将 UUID 的前 8 字节 hash 作为 i64 email_id
                 let email_id = Self::uuid_to_i64(email_id_str);
 
@@ -698,11 +708,7 @@ impl TempMailProvider {
     }
 
     /// 查找已创建的邮箱 ID（先查缓存，再列表查询）
-    async fn resolve_mailbox_id(
-        &self,
-        target_email: &str,
-        proxy: Option<&str>,
-    ) -> Result<String> {
+    async fn resolve_mailbox_id(&self, target_email: &str, proxy: Option<&str>) -> Result<String> {
         // 先查缓存
         if let Some(id) = self.cached_mailbox_id(target_email) {
             return Ok(id);
@@ -728,10 +734,7 @@ impl TempMailProvider {
                     .get("full_address")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                let id = item
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
+                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or_default();
                 if !addr.is_empty() && !id.is_empty() {
                     self.cache_mailbox(addr, id);
                     if addr == target_email {
@@ -767,11 +770,266 @@ impl EmailProvider for TempMailProvider {
             Some(self.domains[idx].trim_start_matches('@').to_string())
         };
 
-        let (email, _mailbox_id) = self
-            .create_mailbox(proxy, None, domain.as_deref())
-            .await?;
+        let (email, _mailbox_id) = self.create_mailbox(proxy, None, domain.as_deref()).await?;
         Ok(Some(email))
     }
+}
+
+// ==================== TempMail.lol Provider ====================
+
+/// TempMail.lol 临时邮箱提供商（https://tempmail.lol）
+///
+/// TempMail.lol 通过创建邮箱时返回的 token 轮询收信，无法像 mailbox_id
+/// 那样事后枚举恢复，因此注册阶段与后续 RT 阶段必须复用同一 provider 实例。
+pub struct TempmailLolProvider {
+    api_base: String,
+    api_key: Option<String>,
+    domains: Vec<String>,
+    /// email_address(lowercase) → inbox_token 缓存
+    token_cache: Mutex<HashMap<String, String>>,
+    clients: Mutex<HashMap<String, rquest::Client>>,
+}
+
+impl std::fmt::Debug for TempmailLolProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TempmailLolProvider")
+            .field("api_base", &self.api_base)
+            .field("has_api_key", &self.api_key.is_some())
+            .finish()
+    }
+}
+
+impl TempmailLolProvider {
+    pub fn new(api_key: String, domains: Vec<String>) -> Self {
+        let api_key = api_key.trim().to_string();
+        Self {
+            api_base: "https://api.tempmail.lol".to_string(),
+            api_key: (!api_key.is_empty()).then_some(api_key),
+            domains,
+            token_cache: Mutex::new(HashMap::new()),
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn build_client(&self, proxy: Option<&str>) -> Result<rquest::Client> {
+        let mut builder = rquest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(8))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .pool_idle_timeout(Some(Duration::from_secs(90)))
+            .pool_max_idle_per_host(8)
+            .no_proxy();
+        if let Some(p) = proxy {
+            builder = builder.proxy(rquest::Proxy::all(p)?);
+        }
+        Ok(builder.build()?)
+    }
+
+    fn get_client(&self, proxy: Option<&str>) -> Result<rquest::Client> {
+        let key = proxy.unwrap_or_default().to_string();
+        {
+            let cache = self.clients.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(c) = cache.get(&key) {
+                return Ok(c.clone());
+            }
+        }
+        let client = self.build_client(proxy)?;
+        let mut cache = self.clients.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(cache.entry(key).or_insert_with(|| client.clone()).clone())
+    }
+
+    fn with_auth(&self, req: rquest::RequestBuilder) -> rquest::RequestBuilder {
+        if let Some(key) = self.api_key.as_deref() {
+            req.header("Authorization", format!("Bearer {key}"))
+        } else {
+            req
+        }
+    }
+
+    fn normalize_email(email: &str) -> String {
+        email.trim().to_ascii_lowercase()
+    }
+
+    fn cache_token(&self, email: &str, token: &str) {
+        let mut cache = self.token_cache.lock().unwrap_or_else(|p| p.into_inner());
+        cache.insert(Self::normalize_email(email), token.to_string());
+    }
+
+    fn cached_token(&self, email: &str) -> Option<String> {
+        self.token_cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&Self::normalize_email(email)).cloned())
+    }
+
+    async fn create_inbox(
+        &self,
+        proxy: Option<&str>,
+        domain: Option<&str>,
+    ) -> Result<(String, String)> {
+        let client = self.get_client(proxy)?;
+        let mut body = serde_json::Map::new();
+        if let Some(domain) = domain {
+            body.insert(
+                "domain".to_string(),
+                serde_json::Value::String(domain.trim_start_matches('@').to_string()),
+            );
+        }
+
+        let req = client
+            .post(format!("{}/v2/inbox/create", self.api_base))
+            .header("Content-Type", "application/json")
+            .body(serde_json::Value::Object(body).to_string());
+        let resp = self
+            .with_auth(req)
+            .send()
+            .await
+            .context("Tempmail.lol POST /v2/inbox/create 失败")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            bail!(
+                "Tempmail.lol 创建邮箱失败: HTTP {} {}",
+                status,
+                truncate_text(&body, 200)
+            );
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .context("Tempmail.lol 创建邮箱响应解析失败")?;
+        let address = json
+            .get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Tempmail.lol 响应缺少 address"))?;
+        let token = json
+            .get("token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Tempmail.lol 响应缺少 token"))?;
+        self.cache_token(address, token);
+        Ok((address.to_string(), token.to_string()))
+    }
+
+    fn item_email_id(item: &serde_json::Value, fallback_index: usize) -> i64 {
+        if let Some(id) = item.get("date").and_then(|v| v.as_i64()) {
+            return id.max(1);
+        }
+
+        let raw = item.to_string();
+        stable_hash_to_i64(&raw).max(fallback_index as i64 + 1)
+    }
+
+    fn resolve_content(item: &serde_json::Value) -> (String, String) {
+        let text = item
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let html = item
+            .get("html")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let content = if html.is_empty() { text.clone() } else { html };
+        (content, text)
+    }
+
+    async fn fetch_inbox_emails(
+        &self,
+        token: &str,
+        proxy: Option<&str>,
+    ) -> Result<Vec<EmailMessage>> {
+        let client = self.get_client(proxy)?;
+        let req = client.get(format!(
+            "{}/v2/inbox?token={}",
+            self.api_base,
+            urlencoding::encode(token)
+        ));
+        let resp = self
+            .with_auth(req)
+            .send()
+            .await
+            .context("Tempmail.lol GET /v2/inbox 失败")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            bail!(
+                "Tempmail.lol 邮件列表异常: HTTP {} {}",
+                status,
+                truncate_text(&body, 200)
+            );
+        }
+
+        let json: serde_json::Value = resp.json().await.context("Tempmail.lol 邮件列表解析失败")?;
+        if json.get("expired").and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        if let Some(items) = json.get("emails").and_then(|v| v.as_array()) {
+            out.reserve(items.len());
+            for (idx, item) in items.iter().enumerate() {
+                let (content, text) = Self::resolve_content(item);
+                out.push(EmailMessage {
+                    email_id: Self::item_email_id(item, idx),
+                    subject: item
+                        .get("subject")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    content,
+                    text,
+                });
+            }
+            out.sort_by(|a, b| b.email_id.cmp(&a.email_id));
+        }
+
+        Ok(out)
+    }
+
+    fn resolve_token(&self, target_email: &str) -> Result<String> {
+        self.cached_token(target_email).ok_or_else(|| {
+            anyhow!(
+                "Tempmail.lol 未找到收信 token: {target_email}（该 provider 需要复用创建邮箱时的同一实例）"
+            )
+        })
+    }
+}
+
+#[async_trait]
+impl EmailProvider for TempmailLolProvider {
+    async fn fetch_emails(
+        &self,
+        target_email: &str,
+        _size: usize,
+        proxy: Option<&str>,
+    ) -> Result<Vec<EmailMessage>> {
+        let token = self.resolve_token(target_email)?;
+        self.fetch_inbox_emails(&token, proxy).await
+    }
+
+    async fn generate_email(&self, proxy: Option<&str>) -> Result<Option<String>> {
+        let domain = if self.domains.is_empty() {
+            None
+        } else {
+            use rand::Rng;
+            let idx = rand::rng().random_range(0..self.domains.len());
+            Some(self.domains[idx].trim_start_matches('@').to_string())
+        };
+        let (email, _token) = self.create_inbox(proxy, domain.as_deref()).await?;
+        Ok(Some(email))
+    }
+}
+
+fn stable_hash_to_i64(value: &str) -> i64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    (hasher.finish() as i64).abs()
 }
 
 pub struct EmailService {
@@ -803,13 +1061,16 @@ impl EmailService {
         )
     }
 
-    pub fn new_tempmail(
-        api_key: String,
-        domains: Vec<String>,
-        max_concurrency: usize,
-    ) -> Self {
+    pub fn new_tempmail(api_key: String, domains: Vec<String>, max_concurrency: usize) -> Self {
         Self::with_concurrency(
             Arc::new(TempMailProvider::new(api_key, domains)),
+            max_concurrency,
+        )
+    }
+
+    pub fn new_tempmail_lol(api_key: String, domains: Vec<String>, max_concurrency: usize) -> Self {
+        Self::with_concurrency(
+            Arc::new(TempmailLolProvider::new(api_key, domains)),
             max_concurrency,
         )
     }

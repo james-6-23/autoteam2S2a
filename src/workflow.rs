@@ -185,7 +185,10 @@ impl WorkflowRunner {
             // 根据邮箱系统选择生成 seeds
             use crate::config::MailProvider;
             let seeds = match options.mail_provider {
-                MailProvider::Chatgpt | MailProvider::Duckmail | MailProvider::Tempmail => {
+                MailProvider::Chatgpt
+                | MailProvider::Duckmail
+                | MailProvider::Tempmail
+                | MailProvider::TempmailLol => {
                     let email_service = Arc::clone(&self.register_service);
                     let proxy_pool = Arc::clone(&self.proxy_pool);
                     let email_domains = Arc::new(cfg.email_domains.clone());
@@ -219,11 +222,9 @@ impl WorkflowRunner {
                         .collect::<Vec<_>>()
                         .await
                 }
-                MailProvider::Kyx => {
-                    (0..deficit)
-                        .map(|_| generate_account_seed(&cfg.email_domains))
-                        .collect::<Vec<_>>()
-                }
+                MailProvider::Kyx => (0..deficit)
+                    .map(|_| generate_account_seed(&cfg.email_domains))
+                    .collect::<Vec<_>>(),
             };
 
             let (reg_tx, rt_rx) = mpsc::channel(reg_queue_cap);

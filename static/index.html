@@ -85,7 +85,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">目标数量</label><input id="q-target" type="number" min="1" step="25" value="4" class="field-input"></div>
       <div><label class="field-label">注册并发</label><input id="q-reg-workers" type="number" min="1" max="512" step="25" value="4" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="q-rt-workers" type="number" min="1" max="512" step="25" value="4" class="field-input"></div>
-      <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="kyx">cloud-mail</option><option value="chatgpt">chatgpt.org.uk</option><option value="tempmail">TempMail</option></select></div>
+      <div><label class="field-label">邮箱系统</label><select id="q-mail" class="field-input"><option value="kyx">cloud-mail</option><option value="chatgpt">chatgpt.org.uk</option><option value="tempmail">TempMail</option><option value="tempmail_lol">TempMail.lol</option></select></div>
       <div><label class="field-label">模式</label><select id="q-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div class="flex items-end"><button onclick="quickCreateTask()" class="btn btn-amber w-full justify-center">执行</button></div>
     </div>
@@ -257,6 +257,31 @@ tailwind.config={theme:{extend:{
       </div>
     </div>
   </div>
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">TempMail.lol</div>
+      <span id="tempmail-lol-status" class="text-xs text-dim"></span>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">API Key <span class="text-dim">(可选)</span></label><input id="cfg-tempmail-lol-key" class="field-input font-mono" placeholder="tm.xxxxx（免费层可留空）"></div>
+      <div class="flex items-end gap-2">
+        <button onclick="testTempMailLol()" class="btn btn-ghost text-xs py-1.5">测试连接</button>
+        <button onclick="saveTempMailLol()" class="btn btn-amber text-xs py-1.5">保存</button>
+      </div>
+    </div>
+    <div id="tempmail-lol-info" class="hidden mt-3 card-inner p-3 text-xs grid grid-cols-2 md:grid-cols-3 gap-2"></div>
+    <div class="mt-3">
+      <div class="flex items-center justify-between mb-2">
+        <label class="field-label mb-0">指定域名 <span class="text-dim">(留空则随机)</span></label>
+        <span id="tempmail-lol-domain-count" class="text-xs font-mono text-dim">0</span>
+      </div>
+      <div id="tempmail-lol-domain-list" class="flex flex-wrap gap-2 mb-2"></div>
+      <div class="flex gap-2">
+        <input id="new-tempmail-lol-domain" class="field-input flex-1" placeholder="example.com">
+        <button onclick="addTempMailLolDomain()" class="btn btn-teal text-xs py-1.5">添加</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Tasks -->
@@ -277,6 +302,7 @@ tailwind.config={theme:{extend:{
         <span id="tp-badge" class="badge badge-run">运行</span>
       </div>
       <div class="flex items-center gap-2">
+        <button id="tp-export-rt-btn" onclick="exportTaskRt()" class="hidden btn btn-teal text-xs py-1.5 px-3">导出RT</button>
         <span id="tp-elapsed" class="text-xs font-mono text-dim text-right" style="min-width:92px">耗时 0.0s</span>
         <span id="tp-id" class="text-xs font-mono text-dim"></span>
         <span id="tp-stage" class="text-xs text-amber-400 font-medium"></span>
@@ -352,7 +378,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">注册并发</label><input id="sched-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="sched-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="sched-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
-      <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="kyx">kyx-cloud</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option></select></div>
+      <div><label class="field-label">邮箱系统</label><select id="sched-mail" class="field-input"><option value="kyx">kyx-cloud</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option><option value="tempmail_lol">TempMail.lol</option></select></div>
       <div><label class="field-label">模式</label><select id="sched-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div>
         <label class="field-label">日志输出</label>
@@ -410,7 +436,7 @@ tailwind.config={theme:{extend:{
       <div><label class="field-label">注册并发</label><input id="es-reg-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 并发</label><input id="es-rt-workers" type="number" min="1" max="512" step="25" placeholder="默认" class="field-input"></div>
       <div><label class="field-label">RT 重试</label><input id="es-rt-retries" type="number" min="1" placeholder="默认" class="field-input"></div>
-      <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="kyx">kyx-cloud</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option></select></div>
+      <div><label class="field-label">邮箱系统</label><select id="es-mail" class="field-input"><option value="kyx">kyx-cloud</option><option value="chatgpt">chatgpt.org.uk</option><option value="duckmail">DuckMail</option><option value="tempmail">TempMail</option><option value="tempmail_lol">TempMail.lol</option></select></div>
       <div><label class="field-label">模式</label><select id="es-mode" class="field-input"><option value="team">Team（支付）</option><option value="free">Free（免费）</option></select></div>
       <div>
         <label class="field-label">日志输出</label>

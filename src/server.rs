@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path as StdPath, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::{
+    HeaderMap, HeaderValue, StatusCode,
+    header::{self, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE},
+};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post, put};
@@ -20,7 +23,7 @@ use tower_http::cors::CorsLayer;
 use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2aExtraConfig};
 use crate::db::RunHistoryDb;
 use crate::email_service;
-use crate::models::WorkflowReport;
+use crate::models::{AccountWithRt, WorkflowReport};
 use crate::proxy_pool::{ProxyPool, health_check, resolve_proxies};
 use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService};
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
@@ -317,6 +320,7 @@ struct FullConfigResponse {
     email_domains: Vec<String>,
     chatgpt_mail_domains: Vec<String>,
     tempmail_domains: Vec<String>,
+    tempmail_lol_domains: Vec<String>,
     d1_cleanup: D1CleanupResp,
     site_title: String,
 }
@@ -360,6 +364,7 @@ struct RegisterResp {
     request_timeout_sec: u64,
     chatgpt_mail_api_key: String,
     tempmail_api_key: String,
+    tempmail_lol_api_key: String,
     mail_max_concurrency: usize,
     register_log_mode: RegisterLogMode,
     register_perf_mode: RegisterPerfMode,
@@ -418,6 +423,7 @@ struct UpdateRegisterRequest {
     request_timeout_sec: Option<u64>,
     chatgpt_mail_api_key: Option<String>,
     tempmail_api_key: Option<String>,
+    tempmail_lol_api_key: Option<String>,
     mail_max_concurrency: Option<usize>,
     register_log_mode: Option<RegisterLogMode>,
     register_perf_mode: Option<RegisterPerfMode>,
@@ -445,6 +451,37 @@ fn error_json(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>
             error: msg.to_string(),
         }),
     )
+}
+
+fn find_task_rt_json_file(report: &WorkflowReport) -> Option<PathBuf> {
+    report.output_files.iter().find_map(|path| {
+        let candidate = PathBuf::from(path);
+        let file_name = candidate.file_name()?.to_string_lossy();
+        if file_name.contains("with-rt") && candidate.extension().is_some_and(|ext| ext == "json") {
+            Some(candidate)
+        } else {
+            None
+        }
+    })
+}
+
+fn task_rt_download_name(task_id: &str) -> String {
+    format!("task-{task_id}-rt.txt")
+}
+
+fn parse_rt_lines_from_file(path: &StdPath) -> Result<String, String> {
+    let raw = std::fs::read(path).map_err(|e| format!("读取任务结果文件失败: {e}"))?;
+    let accounts: Vec<AccountWithRt> =
+        serde_json::from_slice(&raw).map_err(|e| format!("解析任务结果文件失败: {e}"))?;
+    let lines: Vec<&str> = accounts
+        .iter()
+        .map(|acc| acc.refresh_token.trim())
+        .filter(|rt| !rt.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return Err("该任务没有可导出的 RT".to_string());
+    }
+    Ok(format!("{}\n", lines.join("\n")))
 }
 
 fn shared_http_client_10s() -> &'static rquest::Client {
@@ -553,6 +590,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
             request_timeout_sec: reg.request_timeout_sec.unwrap_or(20),
             chatgpt_mail_api_key: reg.chatgpt_mail_api_key.clone().unwrap_or_default(),
             tempmail_api_key: reg.tempmail_api_key.clone().unwrap_or_default(),
+            tempmail_lol_api_key: reg.tempmail_lol_api_key.clone().unwrap_or_default(),
             mail_max_concurrency: reg.mail_max_concurrency.unwrap_or(50),
             register_log_mode: reg.register_log_mode.unwrap_or_default(),
             register_perf_mode: reg.register_perf_mode.unwrap_or_default(),
@@ -561,6 +599,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
         email_domains: cfg.email_domains.clone(),
         chatgpt_mail_domains: cfg.chatgpt_mail_domains.clone(),
         tempmail_domains: cfg.tempmail_domains.clone(),
+        tempmail_lol_domains: cfg.tempmail_lol_domains.clone(),
         d1_cleanup: D1CleanupResp {
             enabled: cfg.d1_cleanup.enabled.unwrap_or(false),
             account_id: cfg.d1_cleanup.account_id.clone().unwrap_or_default(),
@@ -628,7 +667,10 @@ async fn update_s2a_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let mut cfg = state.config.write().await;
     if !cfg.s2a.iter().any(|t| t.name == name) {
-        return Err(error_json(StatusCode::NOT_FOUND, &format!("未找到号池: {name}")));
+        return Err(error_json(
+            StatusCode::NOT_FOUND,
+            &format!("未找到号池: {name}"),
+        ));
     }
 
     // 支持改名：检查新名称是否冲突
@@ -704,7 +746,11 @@ async fn update_s2a_by_index_handler(
     if let Some(ref v) = req.name {
         let trimmed = v.trim().to_string();
         if !trimmed.is_empty() {
-            let conflict = cfg.s2a.iter().enumerate().any(|(i, t)| i != idx && t.name == trimmed);
+            let conflict = cfg
+                .s2a
+                .iter()
+                .enumerate()
+                .any(|(i, t)| i != idx && t.name == trimmed);
             if conflict {
                 return Err(error_json(
                     StatusCode::CONFLICT,
@@ -1160,6 +1206,9 @@ async fn update_register_handler(
     if let Some(v) = req.tempmail_api_key {
         cfg.register.tempmail_api_key = Some(v);
     }
+    if let Some(v) = req.tempmail_lol_api_key {
+        cfg.register.tempmail_lol_api_key = Some(v);
+    }
     if let Some(v) = req.mail_max_concurrency {
         cfg.register.mail_max_concurrency = Some(v);
     }
@@ -1310,15 +1359,56 @@ async fn delete_tempmail_domain_handler(
     }))
 }
 
+async fn add_tempmail_lol_domain_handler(
+    State(state): State<AppState>,
+    Json(req): Json<EmailDomainRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let domain = req.domain.trim().to_string();
+    if domain.is_empty() {
+        return Err(error_json(StatusCode::BAD_REQUEST, "域名不能为空"));
+    }
+    let mut cfg = state.config.write().await;
+    if cfg.tempmail_lol_domains.contains(&domain) {
+        return Err(error_json(
+            StatusCode::CONFLICT,
+            &format!("域名已存在: {domain}"),
+        ));
+    }
+    cfg.tempmail_lol_domains.push(domain.clone());
+    auto_save(&cfg, &state.config_path);
+    Ok((
+        StatusCode::CREATED,
+        Json(MsgResponse {
+            message: format!("TempMail.lol 域名 {domain} 已添加"),
+        }),
+    ))
+}
+
+async fn delete_tempmail_lol_domain_handler(
+    State(state): State<AppState>,
+    Json(req): Json<EmailDomainRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let domain = req.domain.trim().to_string();
+    let mut cfg = state.config.write().await;
+    let before = cfg.tempmail_lol_domains.len();
+    cfg.tempmail_lol_domains.retain(|d| d != &domain);
+    if cfg.tempmail_lol_domains.len() == before {
+        return Err(error_json(
+            StatusCode::NOT_FOUND,
+            &format!("未找到域名: {domain}"),
+        ));
+    }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse {
+        message: format!("TempMail.lol 域名 {domain} 已删除"),
+    }))
+}
+
 async fn test_tempmail_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     let cfg = state.config.read().await;
-    let key = cfg
-        .register
-        .tempmail_api_key
-        .clone()
-        .unwrap_or_default();
+    let key = cfg.register.tempmail_api_key.clone().unwrap_or_default();
     drop(cfg);
 
     if key.is_empty() {
@@ -1349,15 +1439,100 @@ async fn test_tempmail_handler(
         .await
         .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("解析失败: {e}")))?;
 
-    let mailbox_count = json
-        .get("total")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let mailbox_count = json.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
 
     Ok(Json(serde_json::json!({
         "success": true,
         "data": {
             "mailbox_count": mailbox_count
+        }
+    })))
+}
+
+async fn test_tempmail_lol_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let key = cfg
+        .register
+        .tempmail_lol_api_key
+        .clone()
+        .unwrap_or_default();
+    drop(cfg);
+
+    let client = shared_http_client_10s();
+    let mut req = client
+        .post("https://api.tempmail.lol/v2/inbox/create")
+        .header("Content-Type", "application/json")
+        .body("{}");
+    if !key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", key.trim()));
+    }
+
+    let create_resp = req
+        .send()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("创建邮箱失败: {e}")))?;
+    let create_status = create_resp.status();
+    if !create_status.is_success() {
+        let body = create_resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(160).collect();
+        return Err(error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("创建邮箱 HTTP {create_status} {preview}"),
+        ));
+    }
+
+    let created: serde_json::Value = create_resp
+        .json()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("创建邮箱解析失败: {e}")))?;
+    let address = created
+        .get("address")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| error_json(StatusCode::BAD_GATEWAY, "创建邮箱响应缺少 address"))?;
+    let token = created
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| error_json(StatusCode::BAD_GATEWAY, "创建邮箱响应缺少 token"))?;
+
+    let mut inbox_req = client.get(format!(
+        "https://api.tempmail.lol/v2/inbox?token={}",
+        urlencoding::encode(token)
+    ));
+    if !key.trim().is_empty() {
+        inbox_req = inbox_req.header("Authorization", format!("Bearer {}", key.trim()));
+    }
+    let inbox_resp = inbox_req
+        .send()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("查询邮箱失败: {e}")))?;
+    let inbox_status = inbox_resp.status();
+    if !inbox_status.is_success() {
+        let body = inbox_resp.text().await.unwrap_or_default();
+        let preview: String = body.chars().take(160).collect();
+        return Err(error_json(
+            StatusCode::BAD_GATEWAY,
+            &format!("查询邮箱 HTTP {inbox_status} {preview}"),
+        ));
+    }
+
+    let inbox_json: serde_json::Value = inbox_resp
+        .json()
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("查询邮箱解析失败: {e}")))?;
+    let email_count = inbox_json
+        .get("emails")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "data": {
+            "address": address,
+            "email_count": email_count,
+            "using_api_key": !key.trim().is_empty()
         }
     })))
 }
@@ -1401,8 +1576,13 @@ async fn trigger_d1_cleanup_handler(
     let d1_cfg = cfg.d1_cleanup.clone();
     drop(cfg);
     match crate::d1_cleanup::run_cleanup(&d1_cfg).await {
-        Ok(()) => Ok(Json(MsgResponse { message: "D1 邮件清理完成".into() })),
-        Err(e) => Err(error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("清理失败: {e}"))),
+        Ok(()) => Ok(Json(MsgResponse {
+            message: "D1 邮件清理完成".into(),
+        })),
+        Err(e) => Err(error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("清理失败: {e}"),
+        )),
     }
 }
 
@@ -1417,10 +1597,17 @@ async fn update_site_title_handler(
 ) -> impl IntoResponse {
     let mut cfg = state.config.write().await;
     let title = req.site_title.trim().to_string();
-    cfg.server.site_title = if title.is_empty() { None } else { Some(title.clone()) };
+    cfg.server.site_title = if title.is_empty() {
+        None
+    } else {
+        Some(title.clone())
+    };
     auto_save(&cfg, &state.config_path);
     Json(MsgResponse {
-        message: format!("站点标题已更新: {}", if title.is_empty() { "(默认)" } else { &title }),
+        message: format!(
+            "站点标题已更新: {}",
+            if title.is_empty() { "(默认)" } else { &title }
+        ),
     })
 }
 
@@ -1625,6 +1812,60 @@ async fn get_task_handler(
     }))
 }
 
+async fn export_task_rt_handler(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let task = state
+        .task_manager
+        .get(&task_id)
+        .await
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("任务不存在: {task_id}")))?;
+
+    let report = task
+        .report
+        .ok_or_else(|| error_json(StatusCode::CONFLICT, "任务尚未完成，暂时无法导出 RT"))?;
+
+    let rt_json = find_task_rt_json_file(&report).ok_or_else(|| {
+        error_json(
+            StatusCode::NOT_FOUND,
+            "未找到该任务的 RT 结果文件，请确认该任务已成功产出 RT",
+        )
+    })?;
+
+    if !rt_json.exists() {
+        return Err(error_json(
+            StatusCode::NOT_FOUND,
+            &format!("RT 结果文件不存在: {}", rt_json.display()),
+        ));
+    }
+
+    let body = parse_rt_lines_from_file(&rt_json)
+        .map_err(|msg| error_json(StatusCode::BAD_GATEWAY, &msg))?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!(
+            "attachment; filename=\"{}\"",
+            task_rt_download_name(&task_id)
+        ))
+        .map_err(|e| {
+            error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("构造下载文件名失败: {e}"),
+            )
+        })?,
+    );
+
+    Ok((headers, body))
+}
+
 #[derive(Serialize)]
 struct TaskProgressResponse {
     task_id: String,
@@ -1809,6 +2050,22 @@ async fn execute_task(
                     reg_email,
                 )) as Arc<dyn crate::services::RegisterService>,
                 Arc::new(LiveCodexService::new(codex_runtime.clone(), rt_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
+        crate::config::MailProvider::TempmailLol => {
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let shared_email = Arc::new(email_service::EmailService::new_tempmail_lol(
+                register_runtime.tempmail_lol_api_key.clone(),
+                cfg.tempmail_lol_domains.clone(),
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    Arc::clone(&shared_email),
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), shared_email))
                     as Arc<dyn crate::services::CodexService>,
             )
         }
@@ -2751,6 +3008,22 @@ pub async fn build_workflow_runner(
                     as Arc<dyn crate::services::CodexService>,
             )
         }
+        crate::config::MailProvider::TempmailLol => {
+            let mail_concurrency = register_runtime.mail_max_concurrency;
+            let shared_email = Arc::new(crate::email_service::EmailService::new_tempmail_lol(
+                register_runtime.tempmail_lol_api_key.clone(),
+                cfg.tempmail_lol_domains.clone(),
+                mail_concurrency,
+            ));
+            (
+                Arc::new(LiveRegisterService::new(
+                    register_runtime.clone(),
+                    Arc::clone(&shared_email),
+                )) as Arc<dyn crate::services::RegisterService>,
+                Arc::new(LiveCodexService::new(codex_runtime.clone(), shared_email))
+                    as Arc<dyn crate::services::CodexService>,
+            )
+        }
         crate::config::MailProvider::Kyx => {
             let email_cfg = crate::email_service::EmailServiceConfig {
                 mail_api_base: register_runtime.mail_api_base.clone(),
@@ -2888,13 +3161,22 @@ pub async fn start_server(
             "/api/config/tempmail_domains",
             post(add_tempmail_domain_handler).delete(delete_tempmail_domain_handler),
         )
+        .route(
+            "/api/config/tempmail_lol_domains",
+            post(add_tempmail_lol_domain_handler).delete(delete_tempmail_lol_domain_handler),
+        )
         .route("/api/test/tempmail", post(test_tempmail_handler))
+        .route("/api/test/tempmail_lol", post(test_tempmail_lol_handler))
         .route("/api/config/save", post(save_config_handler))
         .route("/api/config/site_title", put(update_site_title_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
         .route("/api/tasks", get(list_tasks_handler))
         .route("/api/tasks/{task_id}", get(get_task_handler))
+        .route(
+            "/api/tasks/{task_id}/export-rt",
+            get(export_task_rt_handler),
+        )
         .route("/api/tasks/{task_id}/progress", get(task_progress_handler))
         .route("/api/tasks/{task_id}/cancel", post(cancel_task_handler))
         // Schedule management

@@ -322,6 +322,31 @@ async fn run(
                         as Arc<dyn services::CodexService>,
                 )
             }
+            MailProvider::TempmailLol => {
+                let tm_domains = cfg.tempmail_lol_domains.clone();
+                println!(
+                    "邮箱系统: tempmail.lol (域名: {})",
+                    if tm_domains.is_empty() {
+                        "随机".to_string()
+                    } else {
+                        format!("{}", tm_domains.len())
+                    }
+                );
+                let mail_concurrency = register_runtime.mail_max_concurrency;
+                let shared_email = Arc::new(email_service::EmailService::new_tempmail_lol(
+                    register_runtime.tempmail_lol_api_key.clone(),
+                    tm_domains,
+                    mail_concurrency,
+                ));
+                (
+                    Arc::new(LiveRegisterService::new(
+                        register_runtime.clone(),
+                        Arc::clone(&shared_email),
+                    )) as Arc<dyn services::RegisterService>,
+                    Arc::new(LiveCodexService::new(codex_runtime.clone(), shared_email))
+                        as Arc<dyn services::CodexService>,
+                )
+            }
             MailProvider::Kyx => {
                 let email_cfg = email_service::EmailServiceConfig {
                     mail_api_base: register_runtime.mail_api_base.clone(),
@@ -481,10 +506,12 @@ async fn run_interactive() -> Result<()> {
     println!("  [1] cloud-mail (自定义域名)");
     println!("  [2] chatgpt.org.uk (自动生成邮箱)");
     println!("  [3] tempmail (mail.123nhh.de)");
-    let mail_choice = prompt_usize("邮箱系统", 1, 1, 3)?;
+    println!("  [4] tempmail.lol");
+    let mail_choice = prompt_usize("邮箱系统", 1, 1, 4)?;
     let mail_provider = match mail_choice {
         2 => config::MailProvider::Chatgpt,
         3 => config::MailProvider::Tempmail,
+        4 => config::MailProvider::TempmailLol,
         _ => config::MailProvider::Kyx,
     };
 

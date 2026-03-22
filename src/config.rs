@@ -24,6 +24,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub tempmail_domains: Vec<String>,
     #[serde(default)]
+    pub tempmail_lol_domains: Vec<String>,
+    #[serde(default)]
     pub d1_cleanup: D1CleanupConfig,
     #[serde(default)]
     pub server: ServerConfig,
@@ -86,6 +88,7 @@ pub enum MailProvider {
     /// ← 已废弃，保留仅为旧配置反序列化兼容，运行时映射为 Kyx
     Duckmail,
     Tempmail,
+    TempmailLol,
 }
 
 impl std::fmt::Display for MailProvider {
@@ -95,6 +98,7 @@ impl std::fmt::Display for MailProvider {
             MailProvider::Chatgpt => write!(f, "chatgpt"),
             MailProvider::Duckmail => write!(f, "duckmail"),
             MailProvider::Tempmail => write!(f, "tempmail"),
+            MailProvider::TempmailLol => write!(f, "tempmail_lol"),
         }
     }
 }
@@ -115,6 +119,8 @@ pub struct RegisterConfig {
     pub chatgpt_mail_api_key: Option<String>,
     /// TempMail API Key（tm_xxx 格式，用于 mail.123nhh.de）
     pub tempmail_api_key: Option<String>,
+    /// TempMail.lol API Key（可选，免费层可留空）
+    pub tempmail_lol_api_key: Option<String>,
     /// 邮件 API 最大并发数（默认 50）
     pub mail_max_concurrency: Option<usize>,
     /// 支付后 plan 激活轮询最大次数
@@ -185,6 +191,7 @@ pub struct RegisterRuntimeConfig {
     pub tls_emulation: String,
     pub chatgpt_mail_api_key: String,
     pub tempmail_api_key: String,
+    pub tempmail_lol_api_key: String,
     pub mail_max_concurrency: usize,
     pub plan_poll_max_attempts: usize,
     pub plan_poll_initial_delay_ms: u64,
@@ -518,9 +525,10 @@ impl AppConfig {
                 .chatgpt_mail_api_key
                 .clone()
                 .unwrap_or_else(|| "sk-HQ5kHZao".to_string()),
-            tempmail_api_key: self
+            tempmail_api_key: self.register.tempmail_api_key.clone().unwrap_or_default(),
+            tempmail_lol_api_key: self
                 .register
-                .tempmail_api_key
+                .tempmail_lol_api_key
                 .clone()
                 .unwrap_or_default(),
             mail_max_concurrency: self.register.mail_max_concurrency.unwrap_or(50).max(1),
