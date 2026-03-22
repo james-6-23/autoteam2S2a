@@ -856,13 +856,11 @@ impl WorkflowRunner {
 
         // 入库前清理失效 token
         match tokens_service.delete_deactivated(pool).await {
-            Ok(n) => {
-                if n > 0 {
-                    broadcast_log(&format!(
-                        "[Tokens-Stream] 已清理 {n} 个失效 token [{}]",
-                        pool.name
-                    ));
-                }
+            Ok(_) => {
+                broadcast_log(&format!(
+                    "[Tokens-Stream] 已清理失效 token [{}]",
+                    pool.name
+                ));
             }
             Err(e) => {
                 broadcast_log(&format!(

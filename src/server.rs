@@ -1757,6 +1757,60 @@ async fn test_tokens_pool_handler(
     Ok(Json(MsgResponse { message: "连接成功".to_string() }))
 }
 
+async fn tokens_pool_stats_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let pool = cfg
+        .tokens_pools
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到 Tokens 号池: {name}")))?
+        .clone();
+    drop(cfg);
+
+    let base = pool.api_base.trim().trim_end_matches('/').to_string();
+    let auth_token = pool.auth_token.trim();
+    let bearer = if auth_token.to_ascii_lowercase().starts_with("bearer ") {
+        auth_token.to_string()
+    } else {
+        format!("Bearer {auth_token}")
+    };
+    let url = format!("{base}/admin-api/tokens/page");
+    let client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let mut stats = serde_json::Map::new();
+    for status in &["NORMAL", "LIMIT", "DEACTIVATE"] {
+        let body = serde_json::json!({
+            "limit": 1,
+            "offset": 0,
+            "status": status,
+            "order": {"updated_at": "desc"}
+        });
+        let total = match client
+            .post(&url)
+            .header("Authorization", &bearer)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let json: serde_json::Value = resp.json().await.unwrap_or_default();
+                json.get("total").and_then(|v| v.as_u64()).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        stats.insert(status.to_lowercase(), serde_json::Value::Number(total.into()));
+    }
+
+    Ok(Json(serde_json::Value::Object(stats)))
+}
+
 // Task handlers
 async fn create_task_handler(
     State(state): State<AppState>,
@@ -3349,6 +3403,7 @@ pub async fn start_server(
         .route("/api/config/tokens_pools", post(add_tokens_pool_handler))
         .route("/api/config/tokens_pools/{name}", put(update_tokens_pool_handler).delete(delete_tokens_pool_handler))
         .route("/api/config/tokens_pools/{name}/test", post(test_tokens_pool_handler))
+        .route("/api/config/tokens_pools/{name}/stats", get(tokens_pool_stats_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
         .route("/api/tasks", get(list_tasks_handler))

@@ -1514,7 +1514,9 @@ function renderTokensPools(){
   if(!el)return;
   const pools=configData?.tokens_pools||[];
   if(pools.length===0){el.innerHTML='<p class="team-grid-empty text-sm text-dim text-center py-6">暂无 Tokens 号池</p>';return}
-  el.innerHTML=pools.map((p,idx)=>`
+  el.innerHTML=pools.map((p,idx)=>{
+    const esc=escapeHtml(p.name).replace(/'/g,"\\'");
+    return `
   <div class="row-item" id="tp-card-${idx}">
     <div class="flex items-start justify-between mb-2">
       <div class="flex-1 grid grid-cols-2 lg:grid-cols-5 gap-2 text-[.8125rem]">
@@ -1525,12 +1527,31 @@ function renderTokensPools(){
         <div><span class="field-label">并发</span><div class="font-mono c-heading">${p.concurrency}</div></div>
       </div>
       <div class="flex items-center gap-1 ml-3 shrink-0">
-        <button onclick="testTokensPool('${escapeHtml(p.name).replace(/'/g,"\\'")}')" class="btn btn-ghost text-xs py-1 px-2" id="tp-test-btn-${idx}">测试</button>
+        <button onclick="fetchTokensPoolStats('${esc}',${idx})" class="btn btn-ghost text-xs py-1 px-2" id="tp-stats-btn-${idx}">状态</button>
+        <button onclick="testTokensPool('${esc}')" class="btn btn-ghost text-xs py-1 px-2" id="tp-test-btn-${idx}">测试</button>
         <button onclick="editTokensPool(${idx})" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
-        <button onclick="deleteTokensPool('${escapeHtml(p.name).replace(/'/g,"\\'")}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
+        <button onclick="deleteTokensPool('${esc}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
       </div>
     </div>
-  </div>`).join('');
+    <div id="tp-stats-row-${idx}" class="hidden grid grid-cols-3 gap-2 mt-2 text-xs">
+      <div class="card-inner p-2 text-center"><span class="text-teal-400 font-mono" id="tp-stat-normal-${idx}">-</span><div class="text-dim">正常</div></div>
+      <div class="card-inner p-2 text-center"><span class="text-amber-400 font-mono" id="tp-stat-limit-${idx}">-</span><div class="text-dim">限流</div></div>
+      <div class="card-inner p-2 text-center"><span class="text-red-400 font-mono" id="tp-stat-deactivate-${idx}">-</span><div class="text-dim">异常</div></div>
+    </div>
+  </div>`}).join('');
+}
+async function fetchTokensPoolStats(name,idx){
+  const btn=document.getElementById('tp-stats-btn-'+idx);
+  const row=document.getElementById('tp-stats-row-'+idx);
+  if(btn)btn.textContent='加载...';
+  try{
+    const d=await api(`/api/config/tokens_pools/${encodeURIComponent(name)}/stats`);
+    document.getElementById('tp-stat-normal-'+idx).textContent=d.normal??0;
+    document.getElementById('tp-stat-limit-'+idx).textContent=d.limit??0;
+    document.getElementById('tp-stat-deactivate-'+idx).textContent=d.deactivate??0;
+    if(row)row.classList.remove('hidden');
+  }catch{toast('获取状态失败','error')}
+  finally{if(btn)btn.textContent='状态'}
 }
 function showAddTokensPoolForm(){
   hideEditTpForm();
