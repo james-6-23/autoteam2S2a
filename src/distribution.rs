@@ -310,8 +310,9 @@ pub async fn run_distribution(
         },
     );
 
-    // D1 清理
-    if cfg.d1_cleanup.enabled.unwrap_or(false) {
+    // D1 清理（仅 cloud-mail/Kyx 邮箱使用 D1 数据库）
+    let uses_d1 = matches!(options.mail_provider, crate::config::MailProvider::Kyx);
+    if uses_d1 && cfg.d1_cleanup.enabled.unwrap_or(false) {
         broadcast_log("[分发] D1 邮件清理");
         if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
             broadcast_log(&format!("[分发] D1 清理失败: {e}"));

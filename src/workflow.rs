@@ -1034,8 +1034,9 @@ impl WorkflowRunner {
         let workflow_started = Instant::now();
         let mode_label = if options.free_mode { "free" } else { "team" };
 
-        // 注册前 D1 预清理，避免高并发时邮件服务过载
-        if cfg.d1_cleanup.enabled.unwrap_or(false) {
+        // 注册前 D1 预清理（仅 cloud-mail/Kyx 使用 D1）
+        let uses_d1 = matches!(options.mail_provider, crate::config::MailProvider::Kyx);
+        if uses_d1 && cfg.d1_cleanup.enabled.unwrap_or(false) {
             broadcast_log("阶01: 注册前 D1 邮件预清理");
             if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
                 broadcast_log(&format!("D1 预清理失败（继续执行）: {e}"));
@@ -1139,8 +1140,8 @@ impl WorkflowRunner {
             (0, 0, 0, 0)
         };
 
-        // D1 清理
-        if cfg.d1_cleanup.enabled.unwrap_or(false) {
+        // D1 清理（仅 cloud-mail/Kyx 使用 D1）
+        if uses_d1 && cfg.d1_cleanup.enabled.unwrap_or(false) {
             broadcast_log("阶段4: D1 邮件清理");
             if let Err(e) = crate::d1_cleanup::run_cleanup(&cfg.d1_cleanup).await {
                 broadcast_log(&format!("D1 清理失败（不影响入库结果）: {e}"));
