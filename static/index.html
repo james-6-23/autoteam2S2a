@@ -58,7 +58,8 @@ tailwind.config={theme:{extend:{
 <!-- ====== Nav ====== -->
 <nav class="flex gap-0.5 px-5 pt-3 pb-0 overflow-x-auto" style="border-bottom:1px solid var(--nav-border)">
   <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-btn tab-active px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">概览</button>
-  <button onclick="switchTab('teams')" id="tab-teams" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">号池</button>
+  <button onclick="switchTab('teams')" id="tab-teams" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">S2A与Tokens</button>
+  <button onclick="switchTab('cpa')" id="tab-cpa" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">CPA</button>
   <button onclick="switchTab('config')" id="tab-config" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">配置</button>
   <button onclick="switchTab('email')" id="tab-email" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">邮箱</button>
   <button onclick="switchTab('tasks')" id="tab-tasks" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">任务</button>
@@ -115,9 +116,11 @@ tailwind.config={theme:{extend:{
     </div>
     <div id="tokens-pool-list" class="team-grid"></div>
   </div>
+</div>
 
-  <!-- CPA 号池 -->
-  <div class="card p-4">
+<!-- CPA 号池（独立面板） -->
+<div id="panel-cpa" class="hidden animate-enter space-y-4">
+  <div class="card p-5">
     <div class="flex items-center justify-between mb-4">
       <div class="section-title mb-0">CPA 号池</div>
       <button onclick="showAddCpaPoolForm()" class="btn btn-teal text-xs py-1.5">+ 添加</button>
@@ -775,8 +778,12 @@ tailwind.config={theme:{extend:{
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
       <div><label class="field-label">名称 *</label><input id="acpa-name" class="field-input" placeholder="my-cpa-pool"></div>
       <div><label class="field-label">并发数</label><input id="acpa-concurrency" type="number" min="1" value="5" class="field-input"></div>
-      <div class="md:col-span-2"><label class="field-label">上传 API 地址 *</label><input id="acpa-url" class="field-input" placeholder="https://cpa.example.com/upload"></div>
+      <div class="md:col-span-2"><label class="field-label">平台基础地址 *</label><input id="acpa-url" class="field-input" placeholder="https://cpa.example.com"></div>
       <div class="md:col-span-2"><label class="field-label">认证 Token *</label><input id="acpa-token" class="field-input" placeholder="Bearer eyJ..."></div>
+      <div><label class="field-label">上传方式</label><select id="acpa-upload-method" class="field-input"><option value="multipart">Multipart</option><option value="json">JSON</option></select></div>
+      <div><label class="field-label">最小有效账号</label><input id="acpa-min-valid" type="number" min="0" class="field-input" placeholder="可选 (低于此值告警)"></div>
+      <div class="flex items-center gap-2 pt-5"><input type="checkbox" id="acpa-auto-cleanup"><label for="acpa-auto-cleanup" class="field-label mb-0 cursor-pointer">自动清理失效</label></div>
+      <div><label class="field-label">清理间隔(分钟)</label><input id="acpa-cleanup-interval" type="number" min="1" value="60" class="field-input"></div>
     </div>
     <div class="flex gap-2 mt-4">
       <button onclick="submitAddCpa()" class="btn btn-teal">确认</button>
@@ -792,8 +799,12 @@ tailwind.config={theme:{extend:{
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
       <div><label class="field-label">名称</label><input id="ecpa-name" class="field-input"></div>
       <div><label class="field-label">并发数</label><input id="ecpa-concurrency" type="number" min="1" class="field-input"></div>
-      <div class="md:col-span-2"><label class="field-label">上传 API 地址</label><input id="ecpa-url" class="field-input"></div>
+      <div class="md:col-span-2"><label class="field-label">平台基础地址</label><input id="ecpa-url" class="field-input"></div>
       <div class="md:col-span-2"><label class="field-label">认证 Token</label><input id="ecpa-token" class="field-input"></div>
+      <div><label class="field-label">上传方式</label><select id="ecpa-upload-method" class="field-input"><option value="multipart">Multipart</option><option value="json">JSON</option></select></div>
+      <div><label class="field-label">最小有效账号</label><input id="ecpa-min-valid" type="number" min="0" class="field-input" placeholder="可选"></div>
+      <div class="flex items-center gap-2 pt-5"><input type="checkbox" id="ecpa-auto-cleanup"><label for="ecpa-auto-cleanup" class="field-label mb-0 cursor-pointer">自动清理失效</label></div>
+      <div><label class="field-label">清理间隔(分钟)</label><input id="ecpa-cleanup-interval" type="number" min="1" class="field-input"></div>
     </div>
     <div class="flex gap-2 mt-4">
       <button onclick="submitEditCpa()" class="btn btn-amber">保存</button>

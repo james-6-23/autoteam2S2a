@@ -45,7 +45,7 @@ async function api(path,opts={}){
 }
 
 // Tabs
-const ALL_TABS=['dashboard','teams','config','email','tasks','schedules','runs','logs'];
+const ALL_TABS=['dashboard','teams','cpa','config','email','tasks','schedules','runs','logs'];
 function switchTab(name){
   ALL_TABS.forEach(t=>{
     document.getElementById('panel-'+t).classList.toggle('hidden',t!==name);
@@ -53,7 +53,7 @@ function switchTab(name){
     b.classList.toggle('tab-active',t===name);
   });
   if(name==='tasks'||name==='dashboard'){refreshTasks();startTaskPoll()}else{stopTaskPoll();closeTaskProgress()}
-  if(name==='dashboard'||name==='teams'||name==='config'||name==='email') loadConfig();
+  if(name==='dashboard'||name==='teams'||name==='cpa'||name==='config'||name==='email') loadConfig();
   if(name==='schedules'){loadSchedules();startSchedulePoll()}else{stopSchedulePoll()}
   if(name==='runs'){loadRunStats();loadRunsFilter();loadRuns(1)}
   if(name==='logs') connectLogStream();
@@ -1666,21 +1666,78 @@ function renderCpaPools(){
   if(pools.length===0){el.innerHTML='<p class="team-grid-empty text-sm text-dim text-center py-6">暂无 CPA 号池</p>';return}
   el.innerHTML=pools.map((p,idx)=>{
     const esc=escapeHtml(p.name).replace(/'/g,"\\'");
+    const methodLabel=p.upload_method==='json'?'JSON':'Multipart';
+    const baseUrl=p.base_url||p.upload_api_url||'';
     return `
   <div class="row-item" id="cpa-card-${idx}">
     <div class="flex items-start justify-between mb-2">
-      <div class="flex-1 grid grid-cols-2 lg:grid-cols-3 gap-2 text-[.8125rem]">
+      <div class="flex-1 grid grid-cols-2 lg:grid-cols-4 gap-2 text-[.8125rem]">
         <div><span class="field-label">名称</span><div class="font-medium c-heading">${escapeHtml(p.name)}</div></div>
-        <div><span class="field-label">上传 API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[300px]">${escapeHtml(p.upload_api_url)}</div></div>
+        <div><span class="field-label">平台地址</span><div class="font-mono text-xs text-dim-2 truncate max-w-[250px]">${escapeHtml(baseUrl)}</div></div>
         <div><span class="field-label">并发</span><div class="font-mono c-heading">${p.concurrency}</div></div>
+        <div><span class="field-label">上传方式</span><div class="font-mono c-heading">${methodLabel}</div></div>
       </div>
       <div class="flex items-center gap-1 ml-3 shrink-0">
+        <button onclick="scanCpaPool('${esc}',${idx})" class="btn btn-ghost text-xs py-1 px-2" id="cpa-scan-btn-${idx}">扫描</button>
         <button onclick="testCpaPool('${esc}')" class="btn btn-ghost text-xs py-1 px-2">测试</button>
         <button onclick="editCpaPool(${idx})" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
         <button onclick="deleteCpaPool('${esc}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
       </div>
     </div>
+    <div id="cpa-stats-row-${idx}" class="grid grid-cols-5 gap-2 mt-2 text-xs">
+      <div class="card-inner p-2 text-center"><span class="text-teal-400 font-mono" id="cpa-stat-valid-${idx}">-</span><div class="text-dim">有效</div></div>
+      <div class="card-inner p-2 text-center"><span class="text-red-400 font-mono" id="cpa-stat-401-${idx}">-</span><div class="text-dim">401失效</div></div>
+      <div class="card-inner p-2 text-center"><span class="text-amber-400 font-mono" id="cpa-stat-quota-${idx}">-</span><div class="text-dim">配额耗尽</div></div>
+      <div class="card-inner p-2 text-center"><span class="text-dim font-mono" id="cpa-stat-disabled-${idx}">-</span><div class="text-dim">禁用</div></div>
+      <div class="card-inner p-2 text-center"><span class="text-dim font-mono" id="cpa-stat-total-${idx}">-</span><div class="text-dim">总计</div></div>
+    </div>
+    <div id="cpa-alert-row-${idx}" class="hidden mt-2 text-xs text-amber-400 font-medium"></div>
+    <div class="flex items-center gap-2 mt-2">
+      <button onclick="cleanupCpaPool('${esc}',${idx})" class="btn btn-danger text-xs py-1 px-2" id="cpa-cleanup-btn-${idx}">清理失效</button>
+      <span class="text-xs text-dim">${p.auto_cleanup
+        ?'<span class="text-teal-400">自动清理: 每 '+(p.auto_cleanup_interval_mins||60)+' 分钟</span>'
+        :'<span class="text-dim-2">自动清理: 关闭</span>'}</span>
+      ${p.min_valid_accounts!=null
+        ?`<span class="text-xs text-dim ml-2">阈值: ${p.min_valid_accounts}</span>`
+        :''}
+    </div>
   </div>`}).join('');
+  // 自动扫描所有号池状态
+  pools.forEach((p,idx)=>scanCpaPool(p.name,idx));
+}
+async function scanCpaPool(name,idx){
+  const btn=document.getElementById('cpa-scan-btn-'+idx);
+  if(btn)btn.textContent='扫描中...';
+  try{
+    const d=await api(`/api/config/cpa_pools/${encodeURIComponent(name)}/scan`);
+    const v=el=>document.getElementById(el);
+    v('cpa-stat-valid-'+idx).textContent=d.valid??0;
+    v('cpa-stat-401-'+idx).textContent=d.invalid_401??0;
+    v('cpa-stat-quota-'+idx).textContent=d.quota_exhausted??0;
+    v('cpa-stat-disabled-'+idx).textContent=d.disabled??0;
+    v('cpa-stat-total-'+idx).textContent=d.total??0;
+    // 阈值告警
+    const pool=(configData?.cpa_pools||[])[idx];
+    const alertRow=document.getElementById('cpa-alert-row-'+idx);
+    if(pool?.min_valid_accounts!=null && (d.valid??0)<pool.min_valid_accounts){
+      alertRow.textContent=`⚠ 有效账号(${d.valid})低于阈值(${pool.min_valid_accounts})，请补充！`;
+      alertRow.classList.remove('hidden');
+    }else if(alertRow){
+      alertRow.classList.add('hidden');
+    }
+  }catch(e){
+    // 扫描失败时静默处理（可能 CPA 平台不可达）
+  }finally{if(btn)btn.textContent='扫描'}
+}
+async function cleanupCpaPool(name,idx){
+  const btn=document.getElementById('cpa-cleanup-btn-'+idx);
+  if(btn){btn.disabled=true;btn.textContent='清理中...';}
+  try{
+    const d=await api(`/api/config/cpa_pools/${encodeURIComponent(name)}/cleanup`,{method:'POST'});
+    toast(d.message,'success');
+    scanCpaPool(name,idx);
+  }catch{toast('清理失败','error')}
+  finally{if(btn){btn.disabled=false;btn.textContent='清理失效';}}
 }
 function showAddCpaPoolForm(){
   hideEditCpaForm();
@@ -1688,6 +1745,10 @@ function showAddCpaPoolForm(){
   document.getElementById('acpa-url').value='';
   document.getElementById('acpa-token').value='';
   document.getElementById('acpa-concurrency').value='5';
+  document.getElementById('acpa-upload-method').value='multipart';
+  document.getElementById('acpa-min-valid').value='';
+  document.getElementById('acpa-auto-cleanup').checked=false;
+  document.getElementById('acpa-cleanup-interval').value='60';
   document.getElementById('add-cpa-modal').classList.remove('hidden');
 }
 function hideAddCpaForm(){document.getElementById('add-cpa-modal').classList.add('hidden')}
@@ -1696,8 +1757,14 @@ async function submitAddCpa(){
   const url=document.getElementById('acpa-url').value.trim();
   const token=document.getElementById('acpa-token').value.trim();
   const concurrency=parseInt(document.getElementById('acpa-concurrency').value)||5;
+  const uploadMethod=document.getElementById('acpa-upload-method').value||'multipart';
+  const minValid=document.getElementById('acpa-min-valid').value;
+  const autoCleanup=document.getElementById('acpa-auto-cleanup').checked;
+  const cleanupInterval=parseInt(document.getElementById('acpa-cleanup-interval').value)||60;
   if(!name||!url||!token){toast('请填写必填字段','error');return}
-  const body={name,upload_api_url:url,upload_api_token:token,concurrency};
+  const body={name,base_url:url,auth_token:token,concurrency,upload_method:uploadMethod,
+    auto_cleanup:autoCleanup,auto_cleanup_interval_mins:cleanupInterval};
+  if(minValid)body.min_valid_accounts=parseInt(minValid);
   try{await api('/api/config/cpa_pools',{method:'POST',body});toast(`CPA 号池 ${name} 已添加`,'success');hideAddCpaForm();loadConfig()}catch{}
 }
 let editCpaOrigName='';
@@ -1705,9 +1772,13 @@ function editCpaPool(idx){
   const p=(configData?.cpa_pools||[])[idx];if(!p)return;
   editCpaOrigName=p.name;
   document.getElementById('ecpa-name').value=p.name;
-  document.getElementById('ecpa-url').value=p.upload_api_url;
-  document.getElementById('ecpa-token').value=p.upload_api_token;
+  document.getElementById('ecpa-url').value=p.base_url||p.upload_api_url||'';
+  document.getElementById('ecpa-token').value=p.auth_token||p.upload_api_token||'';
   document.getElementById('ecpa-concurrency').value=p.concurrency;
+  document.getElementById('ecpa-upload-method').value=p.upload_method||'multipart';
+  document.getElementById('ecpa-min-valid').value=p.min_valid_accounts!=null?p.min_valid_accounts:'';
+  document.getElementById('ecpa-auto-cleanup').checked=!!p.auto_cleanup;
+  document.getElementById('ecpa-cleanup-interval').value=p.auto_cleanup_interval_mins||60;
   document.getElementById('edit-cpa-modal').classList.remove('hidden');
 }
 function hideEditCpaForm(){document.getElementById('edit-cpa-modal').classList.add('hidden')}
@@ -1715,9 +1786,14 @@ async function submitEditCpa(){
   const body={};
   const name=document.getElementById('ecpa-name').value.trim();
   if(name&&name!==editCpaOrigName)body.name=name;
-  const url=document.getElementById('ecpa-url').value.trim();if(url)body.upload_api_url=url;
-  const token=document.getElementById('ecpa-token').value.trim();if(token)body.upload_api_token=token;
+  const url=document.getElementById('ecpa-url').value.trim();if(url)body.base_url=url;
+  const token=document.getElementById('ecpa-token').value.trim();if(token)body.auth_token=token;
   const c=parseInt(document.getElementById('ecpa-concurrency').value);if(c)body.concurrency=c;
+  const method=document.getElementById('ecpa-upload-method').value;if(method)body.upload_method=method;
+  const minValid=document.getElementById('ecpa-min-valid').value;
+  body.min_valid_accounts=minValid?parseInt(minValid):null;
+  body.auto_cleanup=document.getElementById('ecpa-auto-cleanup').checked;
+  const ci=parseInt(document.getElementById('ecpa-cleanup-interval').value);if(ci)body.auto_cleanup_interval_mins=ci;
   try{await api(`/api/config/cpa_pools/${encodeURIComponent(editCpaOrigName)}`,{method:'PUT',body});toast('CPA 号池已更新','success');hideEditCpaForm();loadConfig()}catch{}
 }
 async function deleteCpaPool(name){

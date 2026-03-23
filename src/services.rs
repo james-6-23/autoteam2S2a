@@ -2658,8 +2658,31 @@ impl CpaTokenJson {
 pub trait CpaPoolService: Send + Sync {
     /// 测试 CPA 平台连接
     async fn test_connection(&self, pool: &CpaPoolConfig) -> Result<()>;
-    /// 上传 Token JSON 到 CPA 平台（multipart 文件上传）
+    /// 上传 Token JSON 到 CPA 平台（根据 upload_method 选择方式）
     async fn upload_token(&self, pool: &CpaPoolConfig, token_json: &CpaTokenJson) -> Result<()>;
+    /// 扫描号池健康状况：拉取库存 + 并发探测使用量
+    async fn scan_health(&self, pool: &CpaPoolConfig) -> Result<CpaHealthReport>;
+    /// 删除指定账号
+    async fn delete_account(&self, pool: &CpaPoolConfig, name: &str) -> Result<()>;
+    /// 设置账号启用/禁用状态
+    async fn set_account_disabled(&self, pool: &CpaPoolConfig, name: &str, disabled: bool) -> Result<()>;
+}
+
+/// CPA 号池健康扫描报告
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpaHealthReport {
+    pub total: usize,
+    pub valid: usize,
+    pub invalid_401: usize,
+    pub quota_exhausted: usize,
+    pub disabled: usize,
+    pub probe_errors: usize,
+    /// 401 账号名称列表（用于清理）
+    #[serde(skip_serializing)]
+    pub invalid_401_names: Vec<String>,
+    /// 配额耗尽账号名称列表（用于清理）
+    #[serde(skip_serializing)]
+    pub quota_exhausted_names: Vec<String>,
 }
 
 pub struct CpaPoolHttpService {
@@ -2683,54 +2706,123 @@ impl CpaPoolHttpService {
             format!("Bearer {t}")
         }
     }
+
+    /// 拉取 auth-files 列表
+    async fn fetch_auth_files(&self, pool: &CpaPoolConfig) -> Result<Vec<serde_json::Value>> {
+        let url = pool.auth_files_url();
+        let bearer = Self::bearer(&pool.auth_token);
+        let resp = self.client
+            .get(&url)
+            .header("Authorization", &bearer)
+            .send()
+            .await
+            .context("CPA 拉取 auth-files 失败")?;
+        if !resp.status().is_success() {
+            bail!("CPA 拉取 auth-files: HTTP {}", resp.status());
+        }
+        let body: serde_json::Value = resp.json().await.context("解析 auth-files 响应失败")?;
+        let files = body.get("files")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(files)
+    }
+
+    /// 通过 api-call 探测单个账号的 wham/usage
+    async fn probe_account_usage(&self, pool: &CpaPoolConfig, auth_index: &str, chatgpt_account_id: &str) -> Result<serde_json::Value> {
+        let url = pool.api_call_url();
+        let bearer = Self::bearer(&pool.auth_token);
+
+        let mut header_map = serde_json::Map::new();
+        header_map.insert("Authorization".into(), serde_json::Value::String("Bearer $TOKEN$".into()));
+        header_map.insert("Content-Type".into(), serde_json::Value::String("application/json".into()));
+        header_map.insert("User-Agent".into(), serde_json::Value::String("codex_cli_rs/0.76.0".into()));
+        if !chatgpt_account_id.is_empty() {
+            header_map.insert("Chatgpt-Account-Id".into(), serde_json::Value::String(chatgpt_account_id.into()));
+        }
+
+        let payload = serde_json::json!({
+            "authIndex": auth_index,
+            "method": "GET",
+            "url": "https://chatgpt.com/backend-api/wham/usage",
+            "header": header_map,
+        });
+
+        let resp = self.client
+            .post(&url)
+            .header("Authorization", &bearer)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .context("CPA api-call 请求失败")?;
+
+        if !resp.status().is_success() {
+            bail!("CPA api-call: HTTP {}", resp.status());
+        }
+        let body: serde_json::Value = resp.json().await.context("解析 api-call 响应失败")?;
+        Ok(body)
+    }
 }
 
 #[async_trait]
 impl CpaPoolService for CpaPoolHttpService {
     async fn test_connection(&self, pool: &CpaPoolConfig) -> Result<()> {
-        let url = pool.upload_api_url.trim().trim_end_matches('/');
-        let bearer = Self::bearer(&pool.upload_api_token);
+        let url = pool.auth_files_url();
+        let bearer = Self::bearer(&pool.auth_token);
 
-        // 用 JSON POST 发送一个测试请求（空 body），验证连接和认证
+        // 用 GET auth-files 验证连接和认证
         let resp = self
             .client
-            .post(url)
+            .get(&url)
             .header("Authorization", &bearer)
-            .header("Content-Type", "application/json")
-            .body("{}")
             .send()
             .await
             .context("CPA 平台连接失败")?;
 
-        // 5xx 视为服务端错误
         if resp.status().is_server_error() {
             bail!("CPA 平台服务端错误: HTTP {}", resp.status());
+        }
+        if resp.status() == rquest::StatusCode::UNAUTHORIZED {
+            bail!("CPA 平台认证失败: HTTP 401");
         }
         Ok(())
     }
 
     async fn upload_token(&self, pool: &CpaPoolConfig, token_json: &CpaTokenJson) -> Result<()> {
-        let url = pool.upload_api_url.trim().trim_end_matches('/');
-        let bearer = Self::bearer(&pool.upload_api_token);
+        let base_url = pool.auth_files_url();
+        let bearer = Self::bearer(&pool.auth_token);
 
         let json_bytes = serde_json::to_vec(token_json)
             .context("序列化 CPA Token JSON 失败")?;
         let filename = format!("{}.json", token_json.email);
 
-        // multipart 文件上传（与 protocol_keygen.py 一致）
-        let part = rquest::multipart::Part::bytes(json_bytes)
-            .file_name(filename)
-            .mime_str("application/json")?;
-        let form = rquest::multipart::Form::new().part("file", part);
-
-        let resp = self
-            .client
-            .post(url)
-            .header("Authorization", &bearer)
-            .multipart(form)
-            .send()
-            .await
-            .context("CPA 上传失败")?;
+        let resp = if pool.upload_method == "json" {
+            // JSON 上传方式: POST {base}/v0/management/auth-files?name={filename}
+            let encoded_name = urlencoding::encode(&filename);
+            let url = format!("{}?name={}", base_url, encoded_name);
+            self.client
+                .post(&url)
+                .header("Authorization", &bearer)
+                .header("Content-Type", "application/json")
+                .body(json_bytes)
+                .send()
+                .await
+                .context("CPA JSON 上传失败")?
+        } else {
+            // multipart 上传方式（默认，与 protocol_keygen.py 一致）
+            let part = rquest::multipart::Part::bytes(json_bytes)
+                .file_name(filename)
+                .mime_str("application/json")?;
+            let form = rquest::multipart::Form::new().part("file", part);
+            self.client
+                .post(&base_url)
+                .header("Authorization", &bearer)
+                .multipart(form)
+                .send()
+                .await
+                .context("CPA multipart 上传失败")?
+        };
 
         let status = resp.status();
         if status.is_success() {
@@ -2742,6 +2834,181 @@ impl CpaPoolService for CpaPoolHttpService {
             status,
             truncate_text(&resp_body, 200)
         );
+    }
+
+    async fn scan_health(&self, pool: &CpaPoolConfig) -> Result<CpaHealthReport> {
+        // 1. 拉取 auth-files 列表
+        let files = self.fetch_auth_files(pool).await?;
+
+        let total;
+        let mut valid = 0usize;
+        let mut invalid_401 = 0usize;
+        let mut quota_exhausted = 0usize;
+        let mut disabled_count = 0usize;
+        let mut probe_errors = 0usize;
+        let mut invalid_401_names = Vec::new();
+        let mut quota_exhausted_names = Vec::new();
+
+        // 过滤 codex 类型的账号
+        let accounts: Vec<_> = files.iter().filter(|f| {
+            f.get("type").and_then(|v| v.as_str()).unwrap_or_default() == "codex"
+        }).collect();
+        total = accounts.len();
+
+        // 2. 按状态分类：先处理 unavailable 和 disabled
+        let mut need_probe: Vec<(&serde_json::Value, String, String)> = Vec::new();
+
+        for acc in &accounts {
+            let name = acc.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let is_unavailable = acc.get("unavailable").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_disabled = acc.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            if is_unavailable {
+                invalid_401 += 1;
+                invalid_401_names.push(name);
+                continue;
+            }
+            if is_disabled {
+                disabled_count += 1;
+                continue;
+            }
+
+            let auth_index = acc.get("auth_index")
+                .or_else(|| acc.get("authIndex"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let chatgpt_account_id = acc.get("chatgpt_account_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            need_probe.push((acc, auth_index, chatgpt_account_id));
+        }
+
+        // 3. 并发探测使用量
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(pool.concurrency.max(1).min(50)));
+        let mut handles = Vec::new();
+
+        for (_acc, auth_index, chatgpt_account_id) in &need_probe {
+            let sem = Arc::clone(&semaphore);
+            let pool_clone = pool.clone();
+            let ai = auth_index.clone();
+            let cai = chatgpt_account_id.clone();
+            // 为每个探测创建独立的 service（复用 client 配置）
+            let client = self.client.clone();
+
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await;
+                let svc = CpaPoolHttpService { client };
+                let result = svc.probe_account_usage(&pool_clone, &ai, &cai).await;
+                result
+            }));
+        }
+
+        let probe_results = futures::future::join_all(handles).await;
+
+        for (i, result) in probe_results.into_iter().enumerate() {
+            let name = need_probe[i].0.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+
+            match result {
+                Ok(Ok(body)) => {
+                    let status_code = body.get("status_code").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if status_code == 401 {
+                        invalid_401 += 1;
+                        invalid_401_names.push(name);
+                        continue;
+                    }
+
+                    // 解析 body 中的 wham/usage 响应
+                    let usage_body = if let Some(b) = body.get("body") {
+                        if b.is_string() {
+                            serde_json::from_str(b.as_str().unwrap_or("{}")).unwrap_or_default()
+                        } else {
+                            b.clone()
+                        }
+                    } else {
+                        serde_json::Value::Null
+                    };
+
+                    if status_code == 200 {
+                        // 检查是否配额耗尽
+                        let limit_reached = usage_body
+                            .get("rate_limit")
+                            .and_then(|rl| rl.get("limit_reached"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        if limit_reached {
+                            quota_exhausted += 1;
+                            quota_exhausted_names.push(name);
+                        } else {
+                            valid += 1;
+                        }
+                    } else {
+                        probe_errors += 1;
+                    }
+                }
+                Ok(Err(_)) | Err(_) => {
+                    probe_errors += 1;
+                }
+            }
+        }
+
+        Ok(CpaHealthReport {
+            total,
+            valid,
+            invalid_401,
+            quota_exhausted,
+            disabled: disabled_count,
+            probe_errors,
+            invalid_401_names,
+            quota_exhausted_names,
+        })
+    }
+
+    async fn delete_account(&self, pool: &CpaPoolConfig, name: &str) -> Result<()> {
+        let encoded = urlencoding::encode(name);
+        let url = format!("{}?name={}", pool.auth_files_url(), encoded);
+        let bearer = Self::bearer(&pool.auth_token);
+
+        let resp = self.client
+            .delete(&url)
+            .header("Authorization", &bearer)
+            .send()
+            .await
+            .context("CPA 删除账号失败")?;
+
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        bail!("CPA 删除账号失败: HTTP {}", truncate_text(&body, 200));
+    }
+
+    async fn set_account_disabled(&self, pool: &CpaPoolConfig, name: &str, disabled: bool) -> Result<()> {
+        let url = pool.auth_status_url();
+        let bearer = Self::bearer(&pool.auth_token);
+
+        let payload = serde_json::json!({
+            "name": name,
+            "disabled": disabled,
+        });
+
+        let resp = self.client
+            .patch(&url)
+            .header("Authorization", &bearer)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .context("CPA 设置账号状态失败")?;
+
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        bail!("CPA 设置账号状态失败: HTTP {}", truncate_text(&body, 200));
     }
 }
 

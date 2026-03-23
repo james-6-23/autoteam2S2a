@@ -1859,9 +1859,16 @@ async fn cleanup_tokens_pool_handler(
 #[derive(Deserialize)]
 struct AddCpaPoolRequest {
     name: String,
-    upload_api_url: String,
-    upload_api_token: String,
+    base_url: String,
+    auth_token: String,
     concurrency: Option<usize>,
+    upload_method: Option<String>,
+    auto_cleanup: Option<bool>,
+    auto_cleanup_interval_mins: Option<u64>,
+    delete_401: Option<bool>,
+    quota_action: Option<String>,
+    min_valid_accounts: Option<usize>,
+    auto_refill: Option<bool>,
 }
 
 async fn add_cpa_pool_handler(
@@ -1874,9 +1881,16 @@ async fn add_cpa_pool_handler(
     }
     cfg.cpa_pools.push(CpaPoolConfig {
         name: req.name.clone(),
-        upload_api_url: req.upload_api_url,
-        upload_api_token: req.upload_api_token,
+        base_url: req.base_url,
+        auth_token: req.auth_token,
         concurrency: req.concurrency.unwrap_or(5),
+        upload_method: req.upload_method.unwrap_or_else(|| "multipart".to_string()),
+        auto_cleanup: req.auto_cleanup.unwrap_or(false),
+        auto_cleanup_interval_mins: req.auto_cleanup_interval_mins.unwrap_or(60),
+        delete_401: req.delete_401.unwrap_or(true),
+        quota_action: req.quota_action.unwrap_or_else(|| "disable".to_string()),
+        min_valid_accounts: req.min_valid_accounts,
+        auto_refill: req.auto_refill.unwrap_or(false),
     });
     auto_save(&cfg, &state.config_path);
     Ok((StatusCode::CREATED, Json(MsgResponse { message: format!("CPA 号池 {} 已添加", req.name) })))
@@ -1885,9 +1899,16 @@ async fn add_cpa_pool_handler(
 #[derive(Deserialize)]
 struct UpdateCpaPoolRequest {
     name: Option<String>,
-    upload_api_url: Option<String>,
-    upload_api_token: Option<String>,
+    base_url: Option<String>,
+    auth_token: Option<String>,
     concurrency: Option<usize>,
+    upload_method: Option<String>,
+    auto_cleanup: Option<bool>,
+    auto_cleanup_interval_mins: Option<u64>,
+    delete_401: Option<bool>,
+    quota_action: Option<String>,
+    min_valid_accounts: Option<usize>,
+    auto_refill: Option<bool>,
 }
 
 async fn update_cpa_pool_handler(
@@ -1908,9 +1929,16 @@ async fn update_cpa_pool_handler(
     }
     let pool = cfg.cpa_pools.iter_mut().find(|p| p.name == name).unwrap();
     if let Some(ref v) = req.name { let t = v.trim().to_string(); if !t.is_empty() { pool.name = t; } }
-    if let Some(v) = req.upload_api_url { pool.upload_api_url = v; }
-    if let Some(v) = req.upload_api_token { pool.upload_api_token = v; }
+    if let Some(v) = req.base_url { pool.base_url = v; }
+    if let Some(v) = req.auth_token { pool.auth_token = v; }
     if let Some(v) = req.concurrency { pool.concurrency = v.max(1); }
+    if let Some(v) = req.upload_method { pool.upload_method = v; }
+    if let Some(v) = req.auto_cleanup { pool.auto_cleanup = v; }
+    if let Some(v) = req.auto_cleanup_interval_mins { pool.auto_cleanup_interval_mins = v; }
+    if let Some(v) = req.delete_401 { pool.delete_401 = v; }
+    if let Some(v) = req.quota_action { pool.quota_action = v; }
+    if req.min_valid_accounts.is_some() { pool.min_valid_accounts = req.min_valid_accounts; }
+    if let Some(v) = req.auto_refill { pool.auto_refill = v; }
     auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse { message: "CPA 号池已更新".to_string() }))
 }
@@ -1945,6 +1973,73 @@ async fn test_cpa_pool_handler(
         Ok(_) => Ok(Json(MsgResponse { message: "CPA 平台连接成功".to_string() })),
         Err(e) => Err(error_json(StatusCode::BAD_GATEWAY, &format!("CPA 平台连接失败: {e}"))),
     }
+}
+
+async fn scan_cpa_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let pool = cfg.cpa_pools.iter().find(|p| p.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到 CPA 号池: {name}")))?
+        .clone();
+    drop(cfg);
+
+    let service = crate::services::CpaPoolHttpService::new();
+    use crate::services::CpaPoolService;
+    match service.scan_health(&pool).await {
+        Ok(report) => Ok(Json(serde_json::to_value(&report).unwrap_or_default())),
+        Err(e) => Err(error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("扫描失败: {e}"))),
+    }
+}
+
+async fn cleanup_cpa_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let pool = cfg.cpa_pools.iter().find(|p| p.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到 CPA 号池: {name}")))?
+        .clone();
+    drop(cfg);
+
+    let service = crate::services::CpaPoolHttpService::new();
+    use crate::services::CpaPoolService;
+    // 先扫描获取失效账号列表
+    let report = service.scan_health(&pool).await
+        .map_err(|e| error_json(StatusCode::INTERNAL_SERVER_ERROR, &format!("扫描失败: {e}")))?;
+
+    let mut deleted = 0usize;
+    let mut disabled = 0usize;
+
+    // 删除 401 账号
+    if pool.delete_401 {
+        for acct_name in &report.invalid_401_names {
+            if service.delete_account(&pool, acct_name).await.is_ok() {
+                deleted += 1;
+            }
+        }
+    }
+
+    // 处理配额耗尽账号
+    for acct_name in &report.quota_exhausted_names {
+        if pool.quota_action == "delete" {
+            if service.delete_account(&pool, acct_name).await.is_ok() { deleted += 1; }
+        } else {
+            if service.set_account_disabled(&pool, acct_name, true).await.is_ok() { disabled += 1; }
+        }
+    }
+
+    crate::log_broadcast::broadcast_log(&format!(
+        "[CPA-Cleanup] 号池 {} 清理完成: 删除 {} 个, 禁用 {} 个",
+        pool.name, deleted, disabled
+    ));
+
+    Ok(Json(serde_json::json!({
+        "message": format!("清理完成: 删除 {} 个, 禁用 {} 个", deleted, disabled),
+        "deleted": deleted,
+        "disabled": disabled,
+    })))
 }
 
 // Task handlers
@@ -3564,6 +3659,82 @@ fn start_tokens_auto_cleanup(state: AppState) {
     });
 }
 
+fn start_cpa_auto_cleanup(state: AppState) {
+    tokio::spawn(async move {
+        use std::collections::HashMap;
+        use tokio::time::Instant;
+
+        const TICK_SECS: u64 = 60;
+        let svc = crate::services::CpaPoolHttpService::new();
+        let mut last_cleanup: HashMap<String, Instant> = HashMap::new();
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;
+
+            let cfg = state.config.read().await;
+            let pools: Vec<_> = cfg
+                .cpa_pools
+                .iter()
+                .filter(|p| p.auto_cleanup)
+                .cloned()
+                .collect();
+            drop(cfg);
+
+            let now = Instant::now();
+            for pool in &pools {
+                let interval = std::time::Duration::from_secs(pool.auto_cleanup_interval_mins * 60);
+                let should_run = last_cleanup
+                    .get(&pool.name)
+                    .map(|last| now.duration_since(*last) >= interval)
+                    .unwrap_or(true);
+
+                if !should_run {
+                    continue;
+                }
+
+                use crate::services::CpaPoolService;
+                match svc.scan_health(&pool).await {
+                    Ok(report) => {
+                        let mut deleted = 0usize;
+                        let mut disabled = 0usize;
+                        if pool.delete_401 {
+                            for name in &report.invalid_401_names {
+                                if svc.delete_account(&pool, name).await.is_ok() {
+                                    deleted += 1;
+                                }
+                            }
+                        }
+                        for name in &report.quota_exhausted_names {
+                            if pool.quota_action == "delete" {
+                                if svc.delete_account(&pool, name).await.is_ok() {
+                                    deleted += 1;
+                                }
+                            } else if svc.set_account_disabled(&pool, name, true).await.is_ok() {
+                                disabled += 1;
+                            }
+                        }
+                        if deleted > 0 || disabled > 0 {
+                            crate::log_broadcast::broadcast_log(&format!(
+                                "[CPA-AutoCleanup] 号池 {} 清理完成: 删除 {} 个, 禁用 {} 个",
+                                pool.name, deleted, disabled
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        crate::log_broadcast::broadcast_log(&format!(
+                            "[CPA-AutoCleanup] 号池 {} 扫描失败: {e}",
+                            pool.name
+                        ));
+                    }
+                }
+                last_cleanup.insert(pool.name.clone(), now);
+            }
+
+            last_cleanup.retain(|name, _| pools.iter().any(|p| &p.name == name));
+        }
+    });
+}
+
 // ─── Server entry point ─────────────────────────────────────────────────────
 
 pub async fn start_server(
@@ -3602,6 +3773,9 @@ pub async fn start_server(
 
     // 启动 Tokens 号池自动清理后台任务
     start_tokens_auto_cleanup(state.clone());
+
+    // 启动 CPA 号池自动清理后台任务
+    start_cpa_auto_cleanup(state.clone());
 
     let app = Router::new()
         // Frontend
@@ -3660,6 +3834,8 @@ pub async fn start_server(
         .route("/api/config/cpa_pools", post(add_cpa_pool_handler))
         .route("/api/config/cpa_pools/{name}", put(update_cpa_pool_handler).delete(delete_cpa_pool_handler))
         .route("/api/config/cpa_pools/{name}/test", post(test_cpa_pool_handler))
+        .route("/api/config/cpa_pools/{name}/scan", get(scan_cpa_pool_handler))
+        .route("/api/config/cpa_pools/{name}/cleanup", post(cleanup_cpa_pool_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
         .route("/api/tasks", get(list_tasks_handler))

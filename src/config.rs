@@ -311,17 +311,82 @@ fn default_cleanup_interval() -> u64 {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CpaPoolConfig {
     pub name: String,
-    /// CPA 上传 API 地址
-    pub upload_api_url: String,
+    /// CPA 管理平台基础地址（如 https://cpa.example.com）
+    /// 向后兼容：也接受旧的 upload_api_url 字段
+    #[serde(alias = "upload_api_url")]
+    pub base_url: String,
     /// Bearer Token 认证
-    pub upload_api_token: String,
+    #[serde(alias = "upload_api_token")]
+    pub auth_token: String,
     /// 上传并发数，默认 5
     #[serde(default = "default_cpa_concurrency")]
     pub concurrency: usize,
+    /// 上传方式: "multipart" 或 "json"，默认 "multipart"
+    #[serde(default = "default_cpa_upload_method")]
+    pub upload_method: String,
+    /// 是否自动清理失效账号
+    #[serde(default)]
+    pub auto_cleanup: bool,
+    /// 自动清理间隔（分钟），默认 60
+    #[serde(default = "default_cpa_cleanup_interval")]
+    pub auto_cleanup_interval_mins: u64,
+    /// 是否删除 401 账号，默认 true
+    #[serde(default = "default_true")]
+    pub delete_401: bool,
+    /// 配额耗尽账号处理: "disable" 或 "delete"，默认 "disable"
+    #[serde(default = "default_cpa_quota_action")]
+    pub quota_action: String,
+    /// 最小有效账号阈值（低于此值触发告警）
+    #[serde(default)]
+    pub min_valid_accounts: Option<usize>,
+    /// 是否自动补充（预留）
+    #[serde(default)]
+    pub auto_refill: bool,
+}
+
+impl CpaPoolConfig {
+    /// 规范化 base_url：如果旧配置包含 /v0/management/auth-files 路径，自动剥离
+    pub fn effective_base_url(&self) -> String {
+        let url = self.base_url.trim().trim_end_matches('/');
+        if url.ends_with("/v0/management/auth-files") {
+            url.trim_end_matches("/v0/management/auth-files").to_string()
+        } else if url.ends_with("/v0/management") {
+            url.trim_end_matches("/v0/management").to_string()
+        } else {
+            url.to_string()
+        }
+    }
+
+    /// auth-files 管理 API 路径
+    pub fn auth_files_url(&self) -> String {
+        format!("{}/v0/management/auth-files", self.effective_base_url())
+    }
+
+    /// api-call 代理路径
+    pub fn api_call_url(&self) -> String {
+        format!("{}/v0/management/api-call", self.effective_base_url())
+    }
+
+    /// auth-files/status 路径
+    pub fn auth_status_url(&self) -> String {
+        format!("{}/v0/management/auth-files/status", self.effective_base_url())
+    }
 }
 
 fn default_cpa_concurrency() -> usize {
     5
+}
+
+fn default_cpa_upload_method() -> String {
+    "multipart".to_string()
+}
+
+fn default_cpa_cleanup_interval() -> u64 {
+    60
+}
+
+fn default_cpa_quota_action() -> String {
+    "disable".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
