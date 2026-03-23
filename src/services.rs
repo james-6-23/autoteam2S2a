@@ -46,12 +46,13 @@ pub trait RegisterService: Send + Sync {
 
 #[async_trait]
 pub trait CodexService: Send + Sync {
+    /// 返回 (refresh_token, id_token)
     async fn fetch_refresh_token(
         &self,
         account: &RegisteredAccount,
         proxy: Option<String>,
         worker_id: usize,
-    ) -> Result<String>;
+    ) -> Result<(String, String)>;
 }
 
 #[async_trait]
@@ -946,13 +947,13 @@ impl LiveRegisterService {
 
     // ========== PKCE OAuth: 注册阶段直接获取 refresh_token ==========
 
-    /// 尝试在已认证的注册会话中获取 refresh_token。
+    /// 尝试在已认证的注册会话中获取 (refresh_token, id_token)。
     /// 失败不影响注册结果，返回 None 由 RT 阶段补获。
     async fn try_get_refresh_token(
         &self,
         client: &rquest::Client,
         worker_id: usize,
-    ) -> Option<String> {
+    ) -> Option<(String, String)> {
         // 15s 超时保护，避免 PKCE 流程卡住影响注册速度
         match tokio::time::timeout(
             Duration::from_secs(15),
@@ -960,7 +961,7 @@ impl LiveRegisterService {
         )
         .await
         {
-            Ok(Ok(rt)) => Some(rt),
+            Ok(Ok(pair)) => Some(pair),
             Ok(Err(e)) => {
                 log_worker(
                     worker_id,
@@ -976,7 +977,7 @@ impl LiveRegisterService {
         }
     }
 
-    /// PKCE OAuth 流程：利用注册会话 Cookie 获取 refresh_token
+    /// PKCE OAuth 流程：利用注册会话 Cookie 获取 (refresh_token, id_token)
     ///
     /// 注意：注册客户端使用 `Policy::limited(10)` 自动跟随重定向。
     /// 当重定向链命中 localhost:1455 回调时，会触发连接错误，
@@ -985,7 +986,7 @@ impl LiveRegisterService {
         &self,
         client: &rquest::Client,
         worker_id: usize,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         // 1. 生成 PKCE 参数
         let code_verifier = generate_code_verifier();
         let code_challenge = generate_code_challenge(&code_verifier);
@@ -1228,16 +1229,16 @@ impl LiveRegisterService {
             .ok_or_else(|| anyhow!("URL 中未找到 code 参数"))
     }
 
-    /// 用 authorization_code + code_verifier 换取 refresh_token
+    /// 用 authorization_code + code_verifier 换取 (refresh_token, id_token)
     async fn exchange_code_for_refresh_token(
         &self,
         client: &rquest::Client,
         code: &str,
         code_verifier: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         // 第一次尝试
         match self.do_exchange_code(client, code, code_verifier).await {
-            Ok(rt) => return Ok(rt),
+            Ok(pair) => return Ok(pair),
             Err(first_err) => {
                 // 重试一次
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1248,12 +1249,13 @@ impl LiveRegisterService {
         }
     }
 
+    /// 返回 (refresh_token, id_token)
     async fn do_exchange_code(
         &self,
         client: &rquest::Client,
         code: &str,
         code_verifier: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         let resp = client
             .post("https://auth.openai.com/oauth/token")
             .header("Content-Type", "application/x-www-form-urlencoded")
@@ -1287,7 +1289,11 @@ impl LiveRegisterService {
             .and_then(|v| v.as_str())
             .filter(|v| !v.is_empty())
             .ok_or_else(|| anyhow!("PKCE: token 响应中缺少 refresh_token"))?;
-        Ok(rt.to_string())
+        let id_token = body
+            .get("id_token")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        Ok((rt.to_string(), id_token.to_string()))
     }
 }
 
@@ -1353,10 +1359,10 @@ impl CodexService for DryRunCodexService {
         _account: &RegisteredAccount,
         _proxy: Option<String>,
         _worker_id: usize,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         let wait_ms = random_delay_ms(80, 220);
         sleep(Duration::from_millis(wait_ms)).await;
-        Ok(format!("rt_{}", random_hex(48)))
+        Ok((format!("rt_{}", random_hex(48)), String::new()))
     }
 }
 
@@ -1802,12 +1808,13 @@ impl LiveCodexService {
         bail!("授权重定向次数超过限制")
     }
 
+    /// 返回 (refresh_token, id_token)
     async fn exchange_code_for_token(
         &self,
         client: &rquest::Client,
         code: &str,
         code_verifier: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         let resp = client
             .post("https://auth.openai.com/oauth/token")
             .header("Content-Type", "application/x-www-form-urlencoded")
@@ -1835,7 +1842,11 @@ impl LiveCodexService {
             .and_then(|v| v.as_str())
             .filter(|v| !v.is_empty())
             .ok_or_else(|| anyhow!("token 响应缺少 refresh_token"))?;
-        Ok(rt.to_string())
+        let id_token = body
+            .get("id_token")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        Ok((rt.to_string(), id_token.to_string()))
     }
 
     async fn call_sentinel_req(
@@ -1865,7 +1876,7 @@ impl CodexService for LiveCodexService {
         account: &RegisteredAccount,
         proxy: Option<String>,
         worker_id: usize,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         let rt_started = Instant::now();
         let retry_salt = rand::rng().random_range(0..1024usize);
         let attempt = fingerprint_salt(proxy.as_deref(), retry_salt, worker_id);
@@ -1902,7 +1913,7 @@ impl CodexService for LiveCodexService {
         );
 
         let token_started = Instant::now();
-        let rt = self
+        let (rt, id_token) = self
             .exchange_code_for_token(&client, &code, &code_verifier)
             .await?;
         log_worker(
@@ -1921,7 +1932,7 @@ impl CodexService for LiveCodexService {
                 rt_started.elapsed().as_secs_f32()
             ),
         );
-        Ok(rt)
+        Ok((rt, id_token))
     }
 }
 
@@ -2628,7 +2639,7 @@ impl CpaTokenJson {
             r#type: "codex".to_string(),
             email: acc.account.clone(),
             expired,
-            id_token: String::new(),
+            id_token: acc.id_token.clone(),
             account_id: acc.account_id.clone(),
             access_token: acc.token.clone(),
             last_refresh,

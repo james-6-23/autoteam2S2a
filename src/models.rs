@@ -29,6 +29,9 @@ pub struct AccountWithRt {
     pub account_id: String,
     pub plan_type: String,
     pub refresh_token: String,
+    /// OAuth token 交换返回的 id_token（JWT，含 chatgpt_account_id 等 claims）
+    #[serde(default)]
+    pub id_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

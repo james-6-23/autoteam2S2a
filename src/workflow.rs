@@ -1368,6 +1368,7 @@ impl WorkflowRunner {
                         account_id: acc.account_id,
                         plan_type: acc.plan_type,
                         refresh_token: rt,
+                        id_token: String::new(),
                     };
                     // RT 成功后立即推送到流式入库 channel
                     if let Some(ref tx) = stream_tx {
@@ -1393,7 +1394,7 @@ impl WorkflowRunner {
                         }
                     };
                     match fetch_result {
-                        Ok(rt) => {
+                        Ok((rt, id_token)) => {
                             if let Some(ref p) = prog { p.rt_ok.fetch_add(1, Ordering::Relaxed); }
                             let elapsed_sec = started.elapsed().as_secs_f32();
                             log_worker_green(
@@ -1408,6 +1409,7 @@ impl WorkflowRunner {
                                 account_id: acc.account_id,
                                 plan_type: acc.plan_type,
                                 refresh_token: rt,
+                                id_token,
                             };
                             // RT 成功后立即推送到流式入库 channel
                             if let Some(ref tx) = stream_tx {
@@ -1527,6 +1529,7 @@ mod tests {
             account_id: format!("acc-{account}"),
             plan_type: plan_type.to_string(),
             refresh_token: format!("rt-{account}"),
+            id_token: String::new(),
         }
     }
 
