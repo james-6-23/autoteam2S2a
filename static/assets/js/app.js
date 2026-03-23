@@ -1538,6 +1538,10 @@ function renderTokensPools(){
       <div class="card-inner p-2 text-center"><span class="text-amber-400 font-mono" id="tp-stat-limit-${idx}">-</span><div class="text-dim">限流</div></div>
       <div class="card-inner p-2 text-center"><span class="text-red-400 font-mono" id="tp-stat-deactivate-${idx}">-</span><div class="text-dim">异常</div></div>
     </div>
+    <div class="flex items-center gap-2 mt-2">
+      <button onclick="cleanupTokensPool('${esc}',${idx})" class="btn btn-danger text-xs py-1 px-2" id="tp-cleanup-btn-${idx}">清理异常</button>
+      <span class="text-xs text-dim">${p.auto_cleanup?'<span class="text-teal-400">自动清理: 每 '+p.auto_cleanup_interval_mins+' 分钟</span>':'<span class="text-dim-2">自动清理: 关闭</span>'}</span>
+    </div>
   </div>`}).join('');
   // 自动加载所有号池状态
   pools.forEach((p,idx)=>fetchTokensPoolStats(p.name,idx));
@@ -1555,6 +1559,16 @@ async function fetchTokensPoolStats(name,idx){
   }catch{toast('获取状态失败','error')}
   finally{if(btn)btn.textContent='状态'}
 }
+async function cleanupTokensPool(name,idx){
+  const btn=document.getElementById('tp-cleanup-btn-'+idx);
+  if(btn){btn.disabled=true;btn.textContent='清理中...';}
+  try{
+    const d=await api(`/api/config/tokens_pools/${encodeURIComponent(name)}/cleanup`,{method:'POST'});
+    toast(d.message,'success');
+    fetchTokensPoolStats(name,idx);
+  }catch{toast('清理失败','error')}
+  finally{if(btn){btn.disabled=false;btn.textContent='清理异常';}}
+}
 function showAddTokensPoolForm(){
   hideEditTpForm();
   document.getElementById('atp-name').value='';
@@ -1563,6 +1577,8 @@ function showAddTokensPoolForm(){
   document.getElementById('atp-platform').value='codex';
   document.getElementById('atp-plan-type').value='';
   document.getElementById('atp-concurrency').value='50';
+  document.getElementById('atp-auto-cleanup').checked=false;
+  document.getElementById('atp-cleanup-interval').value='60';
   document.getElementById('add-tp-modal').classList.remove('hidden');
 }
 function hideAddTpForm(){
@@ -1578,6 +1594,8 @@ async function submitAddTp(){
   if(!name||!apiBase||!authToken){toast('请填写必填字段','error');return}
   const body={name,api_base:apiBase,auth_token:authToken,platform,concurrency};
   if(planType)body.plan_type=planType;
+  body.auto_cleanup=document.getElementById('atp-auto-cleanup').checked;
+  body.auto_cleanup_interval_mins=parseInt(document.getElementById('atp-cleanup-interval').value)||60;
   try{await api('/api/config/tokens_pools',{method:'POST',body});toast(`Tokens 号池 ${name} 已添加`,'success');hideAddTpForm();loadConfig()}catch{}
 }
 let editTpOrigName=null;
@@ -1591,6 +1609,8 @@ function editTokensPool(idx){
   document.getElementById('etp-platform').value=pool.platform||'codex';
   document.getElementById('etp-plan-type').value=pool.plan_type||'';
   document.getElementById('etp-concurrency').value=pool.concurrency||5;
+  document.getElementById('etp-auto-cleanup').checked=!!pool.auto_cleanup;
+  document.getElementById('etp-cleanup-interval').value=pool.auto_cleanup_interval_mins||60;
   hideAddTpForm();
   document.getElementById('edit-tp-modal').classList.remove('hidden');
 }
@@ -1613,6 +1633,8 @@ async function submitEditTp(){
   if(platform)body.platform=platform;
   if(concurrency)body.concurrency=concurrency;
   body.plan_type=planType||'';
+  body.auto_cleanup=document.getElementById('etp-auto-cleanup').checked;
+  body.auto_cleanup_interval_mins=parseInt(document.getElementById('etp-cleanup-interval').value)||60;
   try{await api(`/api/config/tokens_pools/${encodeURIComponent(editTpOrigName)}`,{method:'PUT',body});toast('Tokens 号池已更新','success');hideEditTpForm();loadConfig()}catch{}
 }
 async function deleteTokensPool(name){

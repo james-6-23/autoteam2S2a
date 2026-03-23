@@ -1668,6 +1668,8 @@ struct AddTokensPoolRequest {
     platform: Option<String>,
     concurrency: Option<usize>,
     plan_type: Option<String>,
+    auto_cleanup: Option<bool>,
+    auto_cleanup_interval_mins: Option<u64>,
 }
 
 async fn add_tokens_pool_handler(
@@ -1685,6 +1687,8 @@ async fn add_tokens_pool_handler(
         platform: req.platform.unwrap_or_else(|| "codex".to_string()),
         concurrency: req.concurrency.unwrap_or(5),
         plan_type: req.plan_type.filter(|s| !s.trim().is_empty()),
+        auto_cleanup: req.auto_cleanup.unwrap_or(false),
+        auto_cleanup_interval_mins: req.auto_cleanup_interval_mins.unwrap_or(60),
     });
     auto_save(&cfg, &state.config_path);
     Ok((StatusCode::CREATED, Json(MsgResponse { message: format!("Tokens 号池 {} 已添加", req.name) })))
@@ -1698,6 +1702,8 @@ struct UpdateTokensPoolRequest {
     platform: Option<String>,
     concurrency: Option<usize>,
     plan_type: Option<String>,
+    auto_cleanup: Option<bool>,
+    auto_cleanup_interval_mins: Option<u64>,
 }
 
 async fn update_tokens_pool_handler(
@@ -1724,6 +1730,8 @@ async fn update_tokens_pool_handler(
     if let Some(v) = req.platform { pool.platform = v; }
     if let Some(v) = req.concurrency { pool.concurrency = v; }
     if let Some(v) = req.plan_type { pool.plan_type = if v.trim().is_empty() { None } else { Some(v) }; }
+    if let Some(v) = req.auto_cleanup { pool.auto_cleanup = v; }
+    if let Some(v) = req.auto_cleanup_interval_mins { pool.auto_cleanup_interval_mins = v.max(1); }
     auto_save(&cfg, &state.config_path);
     Ok(Json(MsgResponse { message: "Tokens 号池已更新".to_string() }))
 }
@@ -1809,6 +1817,39 @@ async fn tokens_pool_stats_handler(
     }
 
     Ok(Json(serde_json::Value::Object(stats)))
+}
+
+/// 一键清理异常 token
+async fn cleanup_tokens_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let pool = cfg
+        .tokens_pools
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到 Tokens 号池: {name}")))?
+        .clone();
+    drop(cfg);
+
+    let svc = crate::services::TokensPoolHttpService::new();
+    match svc.delete_deactivated(&pool).await {
+        Ok(count) => {
+            crate::log_broadcast::broadcast_log(&format!(
+                "[Tokens-Cleanup] 号池 {} 清理完成，删除 {} 个异常 token",
+                name, count
+            ));
+            Ok(Json(serde_json::json!({
+                "message": format!("清理完成，删除 {} 个异常 token", count),
+                "deleted": count
+            })))
+        }
+        Err(e) => Err(error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("清理失败: {e}"),
+        )),
+    }
 }
 
 // Task handlers
@@ -2685,23 +2726,37 @@ async fn update_schedule_handler(
     if let Some(perf_mode) = req.register_perf_mode {
         sched.register_perf_mode = perf_mode;
     }
-    if let Some(dist) = req.distribution {
-        let teams = cfg.effective_s2a_configs();
-        if let Err(e) = crate::distribution::validate_distribution(&dist, &teams) {
-            return Err(error_json(StatusCode::BAD_REQUEST, &e));
-        }
-        // re-borrow since we used cfg above
-        let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
-        cfg.schedule
-            .iter_mut()
-            .find(|s| s.name == actual)
-            .unwrap()
-            .distribution = dist;
-    }
+    // 判断是否为 Tokens 号池模式（与 create 保持一致）
+    let is_tokens_mode = req.tokens_pool_name.as_ref().map_or(false, |tp| {
+        tp.as_ref().map_or(false, |n| !n.is_empty())
+    });
     if let Some(tp_name) = req.tokens_pool_name {
         let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
         let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
         sched.tokens_pool_name = tp_name.filter(|s| !s.is_empty());
+    }
+    if let Some(dist) = req.distribution {
+        if is_tokens_mode {
+            // Tokens 号池模式下清空分发配置，跳过验证
+            let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+            cfg.schedule
+                .iter_mut()
+                .find(|s| s.name == actual)
+                .unwrap()
+                .distribution = vec![];
+        } else {
+            let teams = cfg.effective_s2a_configs();
+            if let Err(e) = crate::distribution::validate_distribution(&dist, &teams) {
+                return Err(error_json(StatusCode::BAD_REQUEST, &e));
+            }
+            // re-borrow since we used cfg above
+            let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+            cfg.schedule
+                .iter_mut()
+                .find(|s| s.name == actual)
+                .unwrap()
+                .distribution = dist;
+        }
     }
     auto_save(&cfg, &state.config_path);
 
@@ -3316,6 +3371,66 @@ async fn log_stream_handler(
     )
 }
 
+// ─── Tokens 号池自动清理 ────────────────────────────────────────────────────
+
+fn start_tokens_auto_cleanup(state: AppState) {
+    tokio::spawn(async move {
+        use std::collections::HashMap;
+        use tokio::time::Instant;
+
+        const TICK_SECS: u64 = 60;
+        let svc = crate::services::TokensPoolHttpService::new();
+        let mut last_cleanup: HashMap<String, Instant> = HashMap::new();
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;
+
+            let cfg = state.config.read().await;
+            let pools: Vec<_> = cfg
+                .tokens_pools
+                .iter()
+                .filter(|p| p.auto_cleanup)
+                .cloned()
+                .collect();
+            drop(cfg);
+
+            let now = Instant::now();
+            for pool in &pools {
+                let interval = std::time::Duration::from_secs(pool.auto_cleanup_interval_mins * 60);
+                let should_run = last_cleanup
+                    .get(&pool.name)
+                    .map(|last| now.duration_since(*last) >= interval)
+                    .unwrap_or(true);
+
+                if !should_run {
+                    continue;
+                }
+
+                match svc.delete_deactivated(pool).await {
+                    Ok(count) => {
+                        if count > 0 {
+                            crate::log_broadcast::broadcast_log(&format!(
+                                "[Tokens-AutoCleanup] 号池 {} 自动清理完成，删除 {} 个异常 token",
+                                pool.name, count
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        crate::log_broadcast::broadcast_log(&format!(
+                            "[Tokens-AutoCleanup] 号池 {} 自动清理失败: {e}",
+                            pool.name
+                        ));
+                    }
+                }
+                last_cleanup.insert(pool.name.clone(), now);
+            }
+
+            // 清理已删除号池的记录
+            last_cleanup.retain(|name, _| pools.iter().any(|p| &p.name == name));
+        }
+    });
+}
+
 // ─── Server entry point ─────────────────────────────────────────────────────
 
 pub async fn start_server(
@@ -3351,6 +3466,9 @@ pub async fn start_server(
 
     // 启动后台调度器
     crate::scheduler::start_scheduler(state.clone(), db);
+
+    // 启动 Tokens 号池自动清理后台任务
+    start_tokens_auto_cleanup(state.clone());
 
     let app = Router::new()
         // Frontend
@@ -3404,6 +3522,7 @@ pub async fn start_server(
         .route("/api/config/tokens_pools/{name}", put(update_tokens_pool_handler).delete(delete_tokens_pool_handler))
         .route("/api/config/tokens_pools/{name}/test", post(test_tokens_pool_handler))
         .route("/api/config/tokens_pools/{name}/stats", get(tokens_pool_stats_handler))
+        .route("/api/config/tokens_pools/{name}/cleanup", post(cleanup_tokens_pool_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
         .route("/api/tasks", get(list_tasks_handler))

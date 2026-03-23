@@ -721,6 +721,8 @@ tailwind.config={theme:{extend:{
         </select>
       </div>
       <div><label class="field-label">并发数</label><input id="atp-concurrency" type="number" min="1" value="50" class="field-input"></div>
+      <div class="flex items-center gap-2"><label class="flex items-center gap-2 cursor-pointer"><input id="atp-auto-cleanup" type="checkbox" class="w-4 h-4"><span class="field-label mb-0">自动清理异常</span></label></div>
+      <div><label class="field-label">清理间隔（分钟）</label><input id="atp-cleanup-interval" type="number" min="1" value="60" class="field-input"></div>
     </div>
     <div class="flex gap-2 mt-4">
       <button onclick="submitAddTp()" class="btn btn-teal">确认</button>
@@ -747,6 +749,8 @@ tailwind.config={theme:{extend:{
         </select>
       </div>
       <div><label class="field-label">并发数</label><input id="etp-concurrency" type="number" min="1" class="field-input"></div>
+      <div class="flex items-center gap-2"><label class="flex items-center gap-2 cursor-pointer"><input id="etp-auto-cleanup" type="checkbox" class="w-4 h-4"><span class="field-label mb-0">自动清理异常</span></label></div>
+      <div><label class="field-label">清理间隔（分钟）</label><input id="etp-cleanup-interval" type="number" min="1" value="60" class="field-input"></div>
     </div>
     <div class="flex gap-2 mt-4">
       <button onclick="submitEditTp()" class="btn btn-amber">保存</button>

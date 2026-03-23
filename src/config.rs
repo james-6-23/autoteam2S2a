@@ -286,6 +286,12 @@ pub struct TokensPoolConfig {
     /// 为空时由任务的 free_mode 自动决定。
     #[serde(default)]
     pub plan_type: Option<String>,
+    /// 自动清理异常 token 开关
+    #[serde(default)]
+    pub auto_cleanup: bool,
+    /// 自动清理间隔（分钟），默认 60
+    #[serde(default = "default_cleanup_interval")]
+    pub auto_cleanup_interval_mins: u64,
 }
 
 fn default_tokens_platform() -> String {
@@ -294,6 +300,10 @@ fn default_tokens_platform() -> String {
 
 fn default_tokens_concurrency() -> usize {
     50
+}
+
+fn default_cleanup_interval() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
