@@ -420,9 +420,11 @@ async fn run(
         register_log_mode: register_runtime.register_log_mode,
         register_perf_mode: register_runtime.register_perf_mode,
         tokens_pool: None,
+        cpa_pool: None,
     };
     let tokens_pool_service: Arc<dyn services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
-    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, tokens_pool_service, proxy_pool);
+    let cpa_pool_service: Arc<dyn services::CpaPoolService> = Arc::new(services::CpaPoolHttpService::new());
+    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, tokens_pool_service, cpa_pool_service, proxy_pool);
     let report = runner
         .run_one_team(&cfg, &selected_team, &options, cancel_flag.clone(), None)
         .await?;

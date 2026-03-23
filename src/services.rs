@@ -15,8 +15,8 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::config::{
-    CodexRuntimeConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig, S2aExtraConfig,
-    TokensPoolConfig,
+    CodexRuntimeConfig, CpaPoolConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig,
+    S2aExtraConfig, TokensPoolConfig,
 };
 use crate::email_service::{EmailService, WaitCodeOptions};
 use crate::fingerprint::{
@@ -2593,6 +2593,152 @@ impl TokensPoolService for TokensPoolHttpService {
         let resp_body = resp.text().await.unwrap_or_default();
         bail!(
             "Tokens Pool 批量推送失败: HTTP {} {}",
+            status,
+            truncate_text(&resp_body, 200)
+        );
+    }
+}
+
+// =================== CPA 号池 Service ===================
+
+/// CPA Token JSON 格式（与 protocol_keygen.py 兼容）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpaTokenJson {
+    pub r#type: String,
+    pub email: String,
+    pub expired: String,
+    pub id_token: String,
+    pub account_id: String,
+    pub access_token: String,
+    pub last_refresh: String,
+    pub refresh_token: String,
+}
+
+impl CpaTokenJson {
+    /// 从 AccountWithRt 构造 CPA Token JSON
+    pub fn from_account(acc: &crate::models::AccountWithRt) -> Self {
+        use base64::Engine;
+        // 解析 JWT 的 exp 字段计算过期时间
+        let expired = Self::extract_jwt_expiry(&acc.token).unwrap_or_default();
+        let now = chrono::Utc::now()
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap());
+        let last_refresh = now.format("%Y-%m-%dT%H:%M:%S+08:00").to_string();
+
+        Self {
+            r#type: "codex".to_string(),
+            email: acc.account.clone(),
+            expired,
+            id_token: String::new(),
+            account_id: acc.account_id.clone(),
+            access_token: acc.token.clone(),
+            last_refresh,
+            refresh_token: acc.refresh_token.clone(),
+        }
+    }
+
+    /// 从 JWT access_token 中解析 exp 字段
+    fn extract_jwt_expiry(token: &str) -> Option<String> {
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let payload = parts[1];
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .ok()?;
+        let json: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+        let exp = json.get("exp")?.as_i64()?;
+        let dt = chrono::DateTime::from_timestamp(exp, 0)?
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600)?);
+        Some(dt.format("%Y-%m-%dT%H:%M:%S+08:00").to_string())
+    }
+}
+
+#[async_trait]
+pub trait CpaPoolService: Send + Sync {
+    /// 测试 CPA 平台连接
+    async fn test_connection(&self, pool: &CpaPoolConfig) -> Result<()>;
+    /// 上传 Token JSON 到 CPA 平台（multipart 文件上传）
+    async fn upload_token(&self, pool: &CpaPoolConfig, token_json: &CpaTokenJson) -> Result<()>;
+}
+
+pub struct CpaPoolHttpService {
+    client: rquest::Client,
+}
+
+impl CpaPoolHttpService {
+    pub fn new() -> Self {
+        let client = rquest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| rquest::Client::new());
+        Self { client }
+    }
+
+    fn bearer(token: &str) -> String {
+        let t = token.trim();
+        if t.to_ascii_lowercase().starts_with("bearer ") {
+            t.to_string()
+        } else {
+            format!("Bearer {t}")
+        }
+    }
+}
+
+#[async_trait]
+impl CpaPoolService for CpaPoolHttpService {
+    async fn test_connection(&self, pool: &CpaPoolConfig) -> Result<()> {
+        let url = pool.upload_api_url.trim().trim_end_matches('/');
+        let bearer = Self::bearer(&pool.upload_api_token);
+
+        // 用 JSON POST 发送一个测试请求（空 body），验证连接和认证
+        let resp = self
+            .client
+            .post(url)
+            .header("Authorization", &bearer)
+            .header("Content-Type", "application/json")
+            .body("{}")
+            .send()
+            .await
+            .context("CPA 平台连接失败")?;
+
+        // 5xx 视为服务端错误
+        if resp.status().is_server_error() {
+            bail!("CPA 平台服务端错误: HTTP {}", resp.status());
+        }
+        Ok(())
+    }
+
+    async fn upload_token(&self, pool: &CpaPoolConfig, token_json: &CpaTokenJson) -> Result<()> {
+        let url = pool.upload_api_url.trim().trim_end_matches('/');
+        let bearer = Self::bearer(&pool.upload_api_token);
+
+        let json_bytes = serde_json::to_vec(token_json)
+            .context("序列化 CPA Token JSON 失败")?;
+        let filename = format!("{}.json", token_json.email);
+
+        // multipart 文件上传（与 protocol_keygen.py 一致）
+        let part = rquest::multipart::Part::bytes(json_bytes)
+            .file_name(filename)
+            .mime_str("application/json")?;
+        let form = rquest::multipart::Form::new().part("file", part);
+
+        let resp = self
+            .client
+            .post(url)
+            .header("Authorization", &bearer)
+            .multipart(form)
+            .send()
+            .await
+            .context("CPA 上传失败")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let resp_body = resp.text().await.unwrap_or_default();
+        bail!(
+            "CPA 上传失败: HTTP {} {}",
             status,
             truncate_text(&resp_body, 200)
         );

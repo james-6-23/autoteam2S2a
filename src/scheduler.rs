@@ -696,6 +696,8 @@ mod tests {
             register_log_mode: None,
             register_perf_mode: None,
             distribution: Vec::<DistributionEntry>::new(),
+            tokens_pool_name: None,
+            cpa_pool_name: None,
         }
     }
 

@@ -40,6 +40,8 @@ pub struct AppConfig {
     pub schedule: Vec<ScheduleConfig>,
     #[serde(default)]
     pub tokens_pools: Vec<TokensPoolConfig>,
+    #[serde(default)]
+    pub cpa_pools: Vec<CpaPoolConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -306,6 +308,22 @@ fn default_cleanup_interval() -> u64 {
     60
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CpaPoolConfig {
+    pub name: String,
+    /// CPA 上传 API 地址
+    pub upload_api_url: String,
+    /// Bearer Token 认证
+    pub upload_api_token: String,
+    /// 上传并发数，默认 5
+    #[serde(default = "default_cpa_concurrency")]
+    pub concurrency: usize,
+}
+
+fn default_cpa_concurrency() -> usize {
+    5
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct D1CleanupConfig {
     /// 是否启用 D1 清理，默认 false
@@ -394,6 +412,9 @@ pub struct ScheduleConfig {
     /// Tokens 号池名称（设置后走 Tokens 入库模式，忽略 push_s2a 和 distribution）
     #[serde(default)]
     pub tokens_pool_name: Option<String>,
+    /// CPA 号池名称（设置后走 CPA 入库模式）
+    #[serde(default)]
+    pub cpa_pool_name: Option<String>,
 }
 
 impl ScheduleConfig {

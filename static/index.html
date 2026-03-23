@@ -115,6 +115,15 @@ tailwind.config={theme:{extend:{
     </div>
     <div id="tokens-pool-list" class="team-grid"></div>
   </div>
+
+  <!-- CPA 号池 -->
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-4">
+      <div class="section-title mb-0">CPA 号池</div>
+      <button onclick="showAddCpaPoolForm()" class="btn btn-teal text-xs py-1.5">+ 添加</button>
+    </div>
+    <div id="cpa-pool-list" class="team-grid"></div>
+  </div>
 </div>
 
 <!-- Config -->
@@ -755,6 +764,40 @@ tailwind.config={theme:{extend:{
     <div class="flex gap-2 mt-4">
       <button onclick="submitEditTp()" class="btn btn-amber">保存</button>
       <button onclick="hideEditTpForm()" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- CPA 号池 Modal: 新建 -->
+<div id="add-cpa-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'add-cpa-modal','hideAddCpaForm')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div class="section-title">新建 CPA 号池</div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">名称 *</label><input id="acpa-name" class="field-input" placeholder="my-cpa-pool"></div>
+      <div><label class="field-label">并发数</label><input id="acpa-concurrency" type="number" min="1" value="5" class="field-input"></div>
+      <div class="md:col-span-2"><label class="field-label">上传 API 地址 *</label><input id="acpa-url" class="field-input" placeholder="https://cpa.example.com/upload"></div>
+      <div class="md:col-span-2"><label class="field-label">认证 Token *</label><input id="acpa-token" class="field-input" placeholder="Bearer eyJ..."></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitAddCpa()" class="btn btn-teal">确认</button>
+      <button onclick="hideAddCpaForm()" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- CPA 号池 Modal: 编辑 -->
+<div id="edit-cpa-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'edit-cpa-modal','hideEditCpaForm')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div class="section-title mb-0">编辑 CPA 号池</div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+      <div><label class="field-label">名称</label><input id="ecpa-name" class="field-input"></div>
+      <div><label class="field-label">并发数</label><input id="ecpa-concurrency" type="number" min="1" class="field-input"></div>
+      <div class="md:col-span-2"><label class="field-label">上传 API 地址</label><input id="ecpa-url" class="field-input"></div>
+      <div class="md:col-span-2"><label class="field-label">认证 Token</label><input id="ecpa-token" class="field-input"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitEditCpa()" class="btn btn-amber">保存</button>
+      <button onclick="hideEditCpaForm()" class="btn btn-ghost">取消</button>
     </div>
   </div>
 </div>

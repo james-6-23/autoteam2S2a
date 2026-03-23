@@ -71,7 +71,7 @@ async function checkHealth(){
 }
 
 // Config
-async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderTokensPools();renderConfigForm();applySiteTitle(configData.site_title)}catch{}}
+async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderTokensPools();renderCpaPools();renderConfigForm();applySiteTitle(configData.site_title)}catch{}}
 function resolveModeDefaults(mode){
   const d=configData?.defaults||{};
   const common={
@@ -111,7 +111,9 @@ function renderDashboard(){
   const sel=document.getElementById('q-team');
   const tokensPools=(configData.tokens_pools||[]);
   const tokensOpts=tokensPools.map(p=>`<option value="__tp__${p.name}">[T] ${p.name}</option>`).join('');
-  sel.innerHTML='<option value="__rt_only__" selected>仅生成RT</option>'+configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('')+tokensOpts;
+  const cpaPools=(configData.cpa_pools||[]);
+  const cpaOpts=cpaPools.map(p=>`<option value="__cpa__${p.name}">[CPA] ${p.name}</option>`).join('');
+  sel.innerHTML='<option value="__rt_only__" selected>仅生成RT</option>'+configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('')+tokensOpts+cpaOpts;
   const modeEl=document.getElementById('q-mode');
   const mode=modeEl?.value==='free'?'free':'team';
   applyQuickDefaultsByMode(mode);
@@ -628,8 +630,10 @@ async function quickCreateTask(){
   const teamVal=document.getElementById('q-team').value;
   const isRtOnly=teamVal==='__rt_only__';
   const isTokensPool=teamVal.startsWith('__tp__');
+  const isCpaPool=teamVal.startsWith('__cpa__');
   const body={target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'};
   if(isTokensPool){body.pool_type='tokens';body.pool_name=teamVal.slice(6);body.push_s2a=false}
+  else if(isCpaPool){body.pool_type='cpa';body.pool_name=teamVal.slice(7);body.push_s2a=false}
   else if(isRtOnly){body.push_s2a=false}else{body.team=teamVal;body.push_s2a=true}
   try{const d=await api('/api/tasks',{method:'POST',body});toast(`任务 ${d.task_id} 已创建`,'success');refreshTasks();setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
 }
@@ -1001,14 +1005,17 @@ function fillSchedPoolTargetOptions(prefix){
   const sel=document.getElementById(`${prefix}-pool-target`);
   const pools=configData?.tokens_pools||[];
   const tpOpts=pools.map(p=>`<option value="tp:${p.name}">[Tokens] ${p.name}</option>`).join('');
-  sel.innerHTML=`<option value="s2a">S2A 分发</option>${tpOpts}`;
+  const cpaPools=configData?.cpa_pools||[];
+  const cpaOpts=cpaPools.map(p=>`<option value="cpa:${p.name}">[CPA] ${p.name}</option>`).join('');
+  sel.innerHTML=`<option value="s2a">S2A 分发</option>${tpOpts}${cpaOpts}`;
 }
 function toggleSchedPoolTarget(prefix){
   const val=document.getElementById(`${prefix}-pool-target`).value;
   const isTokens=val.startsWith('tp:');
+  const isCpa=val.startsWith('cpa:');
   const distSection=document.getElementById(`${prefix}-dist-section`);
   const s2aSwitch=document.getElementById(`${prefix}-push-s2a`);
-  if(isTokens){
+  if(isTokens||isCpa){
     if(distSection) distSection.classList.add('hidden');
     if(s2aSwitch) s2aSwitch.closest('label').classList.add('hidden');
   }else{
@@ -1043,19 +1050,21 @@ async function submitAddSchedule(){
   if(startTime===endTime){toast('开始和结束时间不能相同','error');return}
   const poolTarget=document.getElementById('sched-pool-target').value;
   const isTokensTarget=poolTarget.startsWith('tp:');
+  const isCpaTarget=poolTarget.startsWith('cpa:');
   let distribution=[];
-  if(!isTokensTarget){
+  if(!isTokensTarget&&!isCpaTarget){
     document.querySelectorAll('#sched-dist-rows > div').forEach(r=>{const t=r.querySelector('.dist-team').value,p=parseInt(r.querySelector('.dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
     const tot=distribution.reduce((s,d)=>s+d.percent,0);
     if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
   }
   const isFree=document.getElementById('sched-mode').value==='free';
-  if(!isTokensTarget&&isFree&&distribution.length>0){
+  if(!isTokensTarget&&!isCpaTarget&&isFree&&distribution.length>0){
     const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
     if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
   }
-  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:isTokensTarget?false:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree};
+  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:(isTokensTarget||isCpaTarget)?false:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree};
   if(isTokensTarget) body.tokens_pool_name=poolTarget.slice(3);
+  if(isCpaTarget) body.cpa_pool_name=poolTarget.slice(4);
   const addLogMode=document.getElementById('sched-reg-log-mode').value;
   const addPerfMode=normalizeRegisterPerfMode(document.getElementById('sched-reg-perf-mode').value);
   body.register_log_mode=addLogMode==='inherit'?null:addLogMode;
@@ -1106,6 +1115,8 @@ async function editSchedule(name){
   fillSchedPoolTargetOptions('es');
   if(s.tokens_pool_name){
     document.getElementById('es-pool-target').value='tp:'+s.tokens_pool_name;
+  }else if(s.cpa_pool_name){
+    document.getElementById('es-pool-target').value='cpa:'+s.cpa_pool_name;
   }else{
     document.getElementById('es-pool-target').value='s2a';
   }
@@ -1132,6 +1143,7 @@ async function submitEditSchedule(){
   if(!newName){toast('名称不能为空','error');return}
   const poolTarget=document.getElementById('es-pool-target').value;
   const isTokensTarget=poolTarget.startsWith('tp:');
+  const isCpaTarget=poolTarget.startsWith('cpa:');
   const body={
     name:newName,
     start_time:document.getElementById('es-start').value,
@@ -1139,11 +1151,12 @@ async function submitEditSchedule(){
     target_count:parseInt(document.getElementById('es-target').value),
     batch_interval_mins:parseInt(document.getElementById('es-interval').value)||30,
     priority,
-    push_s2a:isTokensTarget?false:document.getElementById('es-push-s2a').checked,
+    push_s2a:(isTokensTarget||isCpaTarget)?false:document.getElementById('es-push-s2a').checked,
     mail_provider:document.getElementById('es-mail').value,
     free_mode:document.getElementById('es-mode').value==='free',
     enabled:document.getElementById('es-enabled').checked,
-    tokens_pool_name:isTokensTarget?poolTarget.slice(3):null
+    tokens_pool_name:isTokensTarget?poolTarget.slice(3):null,
+    cpa_pool_name:isCpaTarget?poolTarget.slice(4):null
   };
   const editLogMode=document.getElementById('es-reg-log-mode').value;
   const editPerfMode=normalizeRegisterPerfMode(document.getElementById('es-reg-perf-mode').value);
@@ -1151,7 +1164,7 @@ async function submitEditSchedule(){
   body.register_perf_mode=editPerfMode==='inherit'?null:editPerfMode;
   const rw=document.getElementById('es-reg-workers').value,rtw=document.getElementById('es-rt-workers').value,rtr=document.getElementById('es-rt-retries').value;
   if(rw) body.register_workers=parseInt(rw);if(rtw) body.rt_workers=parseInt(rtw);if(rtr) body.rt_retries=parseInt(rtr);
-  if(!isTokensTarget){
+  if(!isTokensTarget&&!isCpaTarget){
     const distribution=[];
     document.querySelectorAll('#es-dist-rows > div').forEach(r=>{const t=r.querySelector('.es-dist-team').value,p=parseInt(r.querySelector('.es-dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
     const tot=distribution.reduce((s,d)=>s+d.percent,0);
@@ -1643,4 +1656,74 @@ async function deleteTokensPool(name){
 }
 async function testTokensPool(name){
   try{const d=await api(`/api/config/tokens_pools/${encodeURIComponent(name)}/test`,{method:'POST'});toast(`${name}: ${d.message}`,'success')}catch(e){toast(`${name}: 连接失败`,'error')}
+}
+
+// =================== CPA 号池管理 ===================
+function renderCpaPools(){
+  const el=document.getElementById('cpa-pool-list');
+  if(!el)return;
+  const pools=configData?.cpa_pools||[];
+  if(pools.length===0){el.innerHTML='<p class="team-grid-empty text-sm text-dim text-center py-6">暂无 CPA 号池</p>';return}
+  el.innerHTML=pools.map((p,idx)=>{
+    const esc=escapeHtml(p.name).replace(/'/g,"\\'");
+    return `
+  <div class="row-item" id="cpa-card-${idx}">
+    <div class="flex items-start justify-between mb-2">
+      <div class="flex-1 grid grid-cols-2 lg:grid-cols-3 gap-2 text-[.8125rem]">
+        <div><span class="field-label">名称</span><div class="font-medium c-heading">${escapeHtml(p.name)}</div></div>
+        <div><span class="field-label">上传 API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[300px]">${escapeHtml(p.upload_api_url)}</div></div>
+        <div><span class="field-label">并发</span><div class="font-mono c-heading">${p.concurrency}</div></div>
+      </div>
+      <div class="flex items-center gap-1 ml-3 shrink-0">
+        <button onclick="testCpaPool('${esc}')" class="btn btn-ghost text-xs py-1 px-2">测试</button>
+        <button onclick="editCpaPool(${idx})" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
+        <button onclick="deleteCpaPool('${esc}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
+      </div>
+    </div>
+  </div>`}).join('');
+}
+function showAddCpaPoolForm(){
+  hideEditCpaForm();
+  document.getElementById('acpa-name').value='';
+  document.getElementById('acpa-url').value='';
+  document.getElementById('acpa-token').value='';
+  document.getElementById('acpa-concurrency').value='5';
+  document.getElementById('add-cpa-modal').classList.remove('hidden');
+}
+function hideAddCpaForm(){document.getElementById('add-cpa-modal').classList.add('hidden')}
+async function submitAddCpa(){
+  const name=document.getElementById('acpa-name').value.trim();
+  const url=document.getElementById('acpa-url').value.trim();
+  const token=document.getElementById('acpa-token').value.trim();
+  const concurrency=parseInt(document.getElementById('acpa-concurrency').value)||5;
+  if(!name||!url||!token){toast('请填写必填字段','error');return}
+  const body={name,upload_api_url:url,upload_api_token:token,concurrency};
+  try{await api('/api/config/cpa_pools',{method:'POST',body});toast(`CPA 号池 ${name} 已添加`,'success');hideAddCpaForm();loadConfig()}catch{}
+}
+let editCpaOrigName='';
+function editCpaPool(idx){
+  const p=(configData?.cpa_pools||[])[idx];if(!p)return;
+  editCpaOrigName=p.name;
+  document.getElementById('ecpa-name').value=p.name;
+  document.getElementById('ecpa-url').value=p.upload_api_url;
+  document.getElementById('ecpa-token').value=p.upload_api_token;
+  document.getElementById('ecpa-concurrency').value=p.concurrency;
+  document.getElementById('edit-cpa-modal').classList.remove('hidden');
+}
+function hideEditCpaForm(){document.getElementById('edit-cpa-modal').classList.add('hidden')}
+async function submitEditCpa(){
+  const body={};
+  const name=document.getElementById('ecpa-name').value.trim();
+  if(name&&name!==editCpaOrigName)body.name=name;
+  const url=document.getElementById('ecpa-url').value.trim();if(url)body.upload_api_url=url;
+  const token=document.getElementById('ecpa-token').value.trim();if(token)body.upload_api_token=token;
+  const c=parseInt(document.getElementById('ecpa-concurrency').value);if(c)body.concurrency=c;
+  try{await api(`/api/config/cpa_pools/${encodeURIComponent(editCpaOrigName)}`,{method:'PUT',body});toast('CPA 号池已更新','success');hideEditCpaForm();loadConfig()}catch{}
+}
+async function deleteCpaPool(name){
+  if(!confirm(`确定删除 CPA 号池 "${name}"？`))return;
+  try{await api(`/api/config/cpa_pools/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`CPA 号池 ${name} 已删除`,'success');loadConfig()}catch{}
+}
+async function testCpaPool(name){
+  try{const d=await api(`/api/config/cpa_pools/${encodeURIComponent(name)}/test`,{method:'POST'});toast(`${name}: ${d.message}`,'success')}catch(e){toast(`${name}: 连接失败`,'error')}
 }

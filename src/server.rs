@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::cors::CorsLayer;
 
-use crate::config::{AppConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2aExtraConfig, TokensPoolConfig};
+use crate::config::{AppConfig, CpaPoolConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2aExtraConfig, TokensPoolConfig};
 use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::{AccountWithRt, WorkflowReport};
@@ -319,6 +319,7 @@ struct CancelResponse {
 struct FullConfigResponse {
     teams: Vec<S2aConfig>,
     tokens_pools: Vec<TokensPoolConfig>,
+    cpa_pools: Vec<CpaPoolConfig>,
     defaults: DefaultsResp,
     register: RegisterResp,
     proxy_pool: Vec<String>,
@@ -572,6 +573,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(FullConfigResponse {
         teams,
         tokens_pools: cfg.tokens_pools.clone(),
+        cpa_pools: cfg.cpa_pools.clone(),
         defaults: DefaultsResp {
             target_count: common_target,
             register_workers: common_reg,
@@ -1852,6 +1854,99 @@ async fn cleanup_tokens_pool_handler(
     }
 }
 
+// ─── CPA Pool management ───────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AddCpaPoolRequest {
+    name: String,
+    upload_api_url: String,
+    upload_api_token: String,
+    concurrency: Option<usize>,
+}
+
+async fn add_cpa_pool_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AddCpaPoolRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    if cfg.cpa_pools.iter().any(|p| p.name == req.name) {
+        return Err(error_json(StatusCode::CONFLICT, &format!("CPA 号池已存在: {}", req.name)));
+    }
+    cfg.cpa_pools.push(CpaPoolConfig {
+        name: req.name.clone(),
+        upload_api_url: req.upload_api_url,
+        upload_api_token: req.upload_api_token,
+        concurrency: req.concurrency.unwrap_or(5),
+    });
+    auto_save(&cfg, &state.config_path);
+    Ok((StatusCode::CREATED, Json(MsgResponse { message: format!("CPA 号池 {} 已添加", req.name) })))
+}
+
+#[derive(Deserialize)]
+struct UpdateCpaPoolRequest {
+    name: Option<String>,
+    upload_api_url: Option<String>,
+    upload_api_token: Option<String>,
+    concurrency: Option<usize>,
+}
+
+async fn update_cpa_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateCpaPoolRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    let _pool = cfg.cpa_pools.iter_mut().find(|p| p.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到 CPA 号池: {name}")))?;
+    if let Some(ref v) = req.name {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() && trimmed != name {
+            if cfg.cpa_pools.iter().any(|p| p.name == trimmed && p.name != name) {
+                return Err(error_json(StatusCode::CONFLICT, &format!("CPA 号池名称 {trimmed} 已存在")));
+            }
+        }
+    }
+    let pool = cfg.cpa_pools.iter_mut().find(|p| p.name == name).unwrap();
+    if let Some(ref v) = req.name { let t = v.trim().to_string(); if !t.is_empty() { pool.name = t; } }
+    if let Some(v) = req.upload_api_url { pool.upload_api_url = v; }
+    if let Some(v) = req.upload_api_token { pool.upload_api_token = v; }
+    if let Some(v) = req.concurrency { pool.concurrency = v.max(1); }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse { message: "CPA 号池已更新".to_string() }))
+}
+
+async fn delete_cpa_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    let before = cfg.cpa_pools.len();
+    cfg.cpa_pools.retain(|p| p.name != name);
+    if cfg.cpa_pools.len() == before {
+        return Err(error_json(StatusCode::NOT_FOUND, &format!("未找到 CPA 号池: {name}")));
+    }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse { message: format!("CPA 号池 {name} 已删除") }))
+}
+
+async fn test_cpa_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let pool = cfg.cpa_pools.iter().find(|p| p.name == name)
+        .ok_or_else(|| error_json(StatusCode::NOT_FOUND, &format!("未找到 CPA 号池: {name}")))?
+        .clone();
+    drop(cfg);
+
+    let service = crate::services::CpaPoolHttpService::new();
+    use crate::services::CpaPoolService;
+    match service.test_connection(&pool).await {
+        Ok(_) => Ok(Json(MsgResponse { message: "CPA 平台连接成功".to_string() })),
+        Err(e) => Err(error_json(StatusCode::BAD_GATEWAY, &format!("CPA 平台连接失败: {e}"))),
+    }
+}
+
 // Task handlers
 async fn create_task_handler(
     State(state): State<AppState>,
@@ -1872,11 +1967,25 @@ async fn create_task_handler(
         None
     };
 
-    let team = if tokens_pool.is_some() {
-        // Tokens 号池模式：使用占位 S2aConfig
-        let pool_name = tokens_pool.as_ref().unwrap().name.clone();
+    // 解析 CPA 号池配置
+    let cpa_pool = if pool_type == "cpa" {
+        let pool_name = req.pool_name.as_deref().unwrap_or_default();
+        let pool = cfg.cpa_pools.iter().find(|p| p.name == pool_name)
+            .ok_or_else(|| error_json(StatusCode::BAD_REQUEST, &format!("未找到 CPA 号池: {pool_name}")))?;
+        Some(pool.clone())
+    } else {
+        None
+    };
+
+    let team = if tokens_pool.is_some() || cpa_pool.is_some() {
+        // Tokens/CPA 号池模式：使用占位 S2aConfig
+        let pool_label = if let Some(ref tp) = tokens_pool {
+            format!("[Tokens] {}", tp.name)
+        } else {
+            format!("[CPA] {}", cpa_pool.as_ref().unwrap().name)
+        };
         S2aConfig {
-            name: format!("[Tokens] {pool_name}"),
+            name: pool_label,
             api_base: String::new(),
             admin_key: String::new(),
             concurrency: 1,
@@ -2017,6 +2126,7 @@ async fn create_task_handler(
             free_mode,
             proxy_file,
             tokens_pool,
+            cpa_pool,
         )
         .await;
     });
@@ -2193,6 +2303,7 @@ async fn execute_task(
     free_mode: bool,
     proxy_file: Option<PathBuf>,
     tokens_pool: Option<TokensPoolConfig>,
+    cpa_pool: Option<CpaPoolConfig>,
 ) {
     task_manager.set_running(&task_id).await;
 
@@ -2357,12 +2468,14 @@ async fn execute_task(
         register_log_mode: register_runtime.register_log_mode,
         register_perf_mode: register_runtime.register_perf_mode,
         tokens_pool: tokens_pool.clone(),
+        cpa_pool: cpa_pool.clone(),
     };
 
     let progress = task_manager.get_progress(&task_id).await;
     let started = std::time::Instant::now();
     let tokens_pool_service: Arc<dyn crate::services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
-    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, tokens_pool_service, proxy_pool);
+    let cpa_pool_service: Arc<dyn crate::services::CpaPoolService> = Arc::new(crate::services::CpaPoolHttpService::new());
+    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, tokens_pool_service, cpa_pool_service, proxy_pool);
     match runner
         .run_one_team(&cfg, &team, &options, cancel_flag.clone(), progress)
         .await
@@ -2441,6 +2554,8 @@ struct CreateScheduleRequest {
     distribution: Vec<crate::config::DistributionEntry>,
     #[serde(default)]
     tokens_pool_name: Option<String>,
+    #[serde(default)]
+    cpa_pool_name: Option<String>,
 }
 
 fn default_true_serde() -> bool {
@@ -2475,6 +2590,7 @@ struct UpdateScheduleRequest {
     register_perf_mode: Option<Option<RegisterPerfMode>>,
     distribution: Option<Vec<crate::config::DistributionEntry>>,
     tokens_pool_name: Option<Option<String>>,
+    cpa_pool_name: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -2574,14 +2690,23 @@ async fn create_schedule_handler(
         ));
     }
 
-    // 校验分发配置（Tokens 号池模式下跳过）
+    // 校验分发配置（Tokens/CPA 号池模式下跳过）
     let is_tokens_mode = req.tokens_pool_name.as_ref().map_or(false, |n| !n.is_empty());
+    let is_cpa_mode = req.cpa_pool_name.as_ref().map_or(false, |n| !n.is_empty());
     if is_tokens_mode {
         let pool_name = req.tokens_pool_name.as_ref().unwrap();
         if !cfg.tokens_pools.iter().any(|p| p.name == *pool_name) {
             return Err(error_json(
                 StatusCode::BAD_REQUEST,
                 &format!("Tokens 号池不存在: {pool_name}"),
+            ));
+        }
+    } else if is_cpa_mode {
+        let pool_name = req.cpa_pool_name.as_ref().unwrap();
+        if !cfg.cpa_pools.iter().any(|p| p.name == *pool_name) {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                &format!("CPA 号池不存在: {pool_name}"),
             ));
         }
     } else {
@@ -2620,6 +2745,7 @@ async fn create_schedule_handler(
         register_perf_mode: req.register_perf_mode,
         distribution: req.distribution,
         tokens_pool_name: req.tokens_pool_name.filter(|s| !s.is_empty()),
+        cpa_pool_name: req.cpa_pool_name.filter(|s| !s.is_empty()),
     });
     auto_save(&cfg, &state.config_path);
 
@@ -2734,6 +2860,11 @@ async fn update_schedule_handler(
         let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
         let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
         sched.tokens_pool_name = tp_name.filter(|s| !s.is_empty());
+    }
+    if let Some(cpa_name) = req.cpa_pool_name {
+        let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+        let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
+        sched.cpa_pool_name = cpa_name.filter(|s| !s.is_empty());
     }
     if let Some(dist) = req.distribution {
         if is_tokens_mode {
@@ -3336,12 +3467,14 @@ pub async fn build_workflow_runner(
     let s2a_service: Arc<dyn crate::services::S2aService> = Arc::new(S2aHttpService::new());
 
     let tokens_pool_service: Arc<dyn crate::services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
+    let cpa_pool_service: Arc<dyn crate::services::CpaPoolService> = Arc::new(crate::services::CpaPoolHttpService::new());
 
     Ok(WorkflowRunner::new(
         register_service,
         codex_service,
         s2a_service,
         tokens_pool_service,
+        cpa_pool_service,
         proxy_pool,
     ))
 }
@@ -3523,6 +3656,10 @@ pub async fn start_server(
         .route("/api/config/tokens_pools/{name}/test", post(test_tokens_pool_handler))
         .route("/api/config/tokens_pools/{name}/stats", get(tokens_pool_stats_handler))
         .route("/api/config/tokens_pools/{name}/cleanup", post(cleanup_tokens_pool_handler))
+        // CPA Pool management
+        .route("/api/config/cpa_pools", post(add_cpa_pool_handler))
+        .route("/api/config/cpa_pools/{name}", put(update_cpa_pool_handler).delete(delete_cpa_pool_handler))
+        .route("/api/config/cpa_pools/{name}/test", post(test_cpa_pool_handler))
         // Task management
         .route("/api/tasks", post(create_task_handler))
         .route("/api/tasks", get(list_tasks_handler))

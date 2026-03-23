@@ -147,6 +147,7 @@ pub async fn run_distribution(
             .register_perf_mode
             .unwrap_or(register_runtime.register_perf_mode),
         tokens_pool: None,
+        cpa_pool: None,
     };
 
     // Tokens 号池模式
@@ -163,9 +164,23 @@ pub async fn run_distribution(
         }
     }
 
+    // CPA 号池模式
+    let is_cpa_mode = schedule.cpa_pool_name.is_some();
+    if let Some(ref pool_name) = schedule.cpa_pool_name {
+        if let Some(pool_cfg) = cfg.cpa_pools.iter().find(|p| p.name == *pool_name) {
+            options.cpa_pool = Some(pool_cfg.clone());
+            options.push_s2a = false;
+        } else {
+            broadcast_log(&format!(
+                "[分发] 警告: CPA 号池 {pool_name} 不存在，跳过入库"
+            ));
+            options.push_s2a = false;
+        }
+    }
+
     // 2. 注册 + RT + 流式入库
     let mode_label = if options.free_mode { "free" } else { "team" };
-    let push_label = if is_tokens_mode { "Tokens" } else { "S2A" };
+    let push_label = if is_tokens_mode { "Tokens" } else if is_cpa_mode { "CPA" } else { "S2A" };
     broadcast_log(&format!(
         "[分发] 开始注册 + RT + 流式{push_label}，目标: {mode_label} 模式 RT 成功 {} 个（兜底轮次={}）",
         schedule.target_count, retry_guard
