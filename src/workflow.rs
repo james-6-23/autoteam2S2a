@@ -1215,6 +1215,7 @@ impl WorkflowRunner {
             let retry_max = rt_retry_max;
             let cancel = cancel_flag.clone();
             let prog = progress.clone();
+            let stream_tx = s2a_tx.clone();
 
             join_set.spawn(async move {
                 let _permit = permit; // 持有信号量直到任务完成
@@ -1228,14 +1229,19 @@ impl WorkflowRunner {
                         "OK",
                         &format!("RT已在注册阶段获取 (耗时 {:.1}s)", started.elapsed().as_secs_f32()),
                     );
-                    return Ok(AccountWithRt {
+                    let result = AccountWithRt {
                         account: acc.account,
                         password: acc.password,
                         token: acc.token,
                         account_id: acc.account_id,
                         plan_type: acc.plan_type,
                         refresh_token: rt,
-                    });
+                    };
+                    // RT 成功后立即推送到流式入库 channel
+                    if let Some(ref tx) = stream_tx {
+                        let _ = tx.send(result.clone()).await;
+                    }
+                    return Ok(result);
                 }
 
                 // 高并发下开始日志会非常密集，跳过逐账号起始日志以降低广播压力
@@ -1263,14 +1269,19 @@ impl WorkflowRunner {
                                 "OK",
                                 &format!("RT获取成功 (耗时 {:.1}s)", elapsed_sec),
                             );
-                            return Ok(AccountWithRt {
+                            let result = AccountWithRt {
                                 account: acc.account,
                                 password: acc.password,
                                 token: acc.token,
                                 account_id: acc.account_id,
                                 plan_type: acc.plan_type,
                                 refresh_token: rt,
-                            });
+                            };
+                            // RT 成功后立即推送到流式入库 channel
+                            if let Some(ref tx) = stream_tx {
+                                let _ = tx.send(result.clone()).await;
+                            }
+                            return Ok(result);
                         }
                         Err(err) => {
                             if round + 1 < retries {
@@ -1320,16 +1331,12 @@ impl WorkflowRunner {
             });
         }
 
-        // 等待所有 RT 任务完成
+        // 等待所有 RT 任务完成（入库推送已在各 spawn 内完成）
         let mut rt_success = Vec::new();
         let mut rt_failed = Vec::new();
         while let Some(join_result) = join_set.join_next().await {
             match join_result {
                 Ok(Ok(acc_with_rt)) => {
-                    // S2A 流式入库：RT 成功后立即发送到 S2A consumer
-                    if let Some(ref tx) = s2a_tx {
-                        let _ = tx.send(acc_with_rt.clone()).await;
-                    }
                     rt_success.push(acc_with_rt);
                 }
                 Ok(Err(acc)) => rt_failed.push(acc),
