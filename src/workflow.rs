@@ -840,6 +840,17 @@ impl WorkflowRunner {
             .await
     }
 
+    /// CPA 流式消费者的公开静态入口，供 distribution.rs 调用
+    pub async fn cpa_streaming_consumer_static(
+        rx: mpsc::Receiver<AccountWithRt>,
+        cpa_service: Arc<dyn CpaPoolService>,
+        pool: &CpaPoolConfig,
+        progress: Option<&Arc<TaskProgress>>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> (usize, usize) {
+        Self::cpa_streaming_consumer(rx, cpa_service, pool, progress, cancel_flag).await
+    }
+
     async fn tokens_streaming_consumer(
         mut rx: mpsc::Receiver<AccountWithRt>,
         tokens_service: Arc<dyn TokensPoolService>,

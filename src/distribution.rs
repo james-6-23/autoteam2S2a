@@ -45,6 +45,32 @@ struct WeightedRouter {
     slots: Vec<(String, f64, AtomicUsize)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduleStreamMode {
+    None,
+    S2a,
+    Tokens,
+    Cpa,
+}
+
+fn choose_schedule_stream_mode(
+    push_s2a: bool,
+    is_tokens_mode: bool,
+    has_tokens_pool: bool,
+    is_cpa_mode: bool,
+    has_cpa_pool: bool,
+) -> ScheduleStreamMode {
+    if is_tokens_mode && has_tokens_pool {
+        ScheduleStreamMode::Tokens
+    } else if is_cpa_mode && has_cpa_pool {
+        ScheduleStreamMode::Cpa
+    } else if push_s2a {
+        ScheduleStreamMode::S2a
+    } else {
+        ScheduleStreamMode::None
+    }
+}
+
 impl WeightedRouter {
     fn new(distribution: &[DistributionEntry]) -> Self {
         let slots = distribution
@@ -186,8 +212,16 @@ pub async fn run_distribution(
         schedule.target_count, retry_guard
     ));
 
+    let stream_mode = choose_schedule_stream_mode(
+        options.push_s2a,
+        is_tokens_mode,
+        options.tokens_pool.is_some(),
+        is_cpa_mode,
+        options.cpa_pool.is_some(),
+    );
+
     // 创建 S2A 流式 channel
-    let (s2a_tx, s2a_rx) = if options.push_s2a && !is_tokens_mode {
+    let (s2a_tx, s2a_rx) = if matches!(stream_mode, ScheduleStreamMode::S2a) {
         let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
         (Some(tx), Some(rx))
     } else {
@@ -195,7 +229,15 @@ pub async fn run_distribution(
     };
 
     // 创建 Tokens 流式 channel
-    let (tokens_tx, tokens_rx) = if is_tokens_mode && options.tokens_pool.is_some() {
+    let (tokens_tx, tokens_rx) = if matches!(stream_mode, ScheduleStreamMode::Tokens) {
+        let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    // 创建 CPA 流式 channel
+    let (cpa_tx, cpa_rx) = if matches!(stream_mode, ScheduleStreamMode::Cpa) {
         let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
         (Some(tx), Some(rx))
     } else {
@@ -234,8 +276,21 @@ pub async fn run_distribution(
         None
     };
 
-    // 传给 run_register_and_rt 的 tx：优先 tokens_tx，其次 s2a_tx
-    let stream_tx = tokens_tx.or(s2a_tx);
+    // 启动 CPA 流式消费者
+    let cpa_handle = if let Some(rx) = cpa_rx {
+        let cpa_service = runner.cpa_pool_service();
+        let pool_cfg = options.cpa_pool.clone().unwrap();
+        let cancel = cancel_flag.clone();
+        Some(tokio::spawn(async move {
+            WorkflowRunner::cpa_streaming_consumer_static(rx, cpa_service, &pool_cfg, None, cancel)
+                .await
+        }))
+    } else {
+        None
+    };
+
+    // 传给 run_register_and_rt 的 tx：优先 tokens_tx，其次 cpa_tx，最后 s2a_tx
+    let stream_tx = tokens_tx.or(cpa_tx).or(s2a_tx);
 
     let reg_result = match runner
         .run_register_and_rt(cfg, &options, cancel_flag.clone(), None, stream_tx)
@@ -247,6 +302,9 @@ pub async fn run_distribution(
                 let _ = h.await;
             }
             if let Some(h) = tokens_handle {
+                let _ = h.await;
+            }
+            if let Some(h) = cpa_handle {
                 let _ = h.await;
             }
             let _ = db.enqueue_fail_run(run_id.clone(), format!("{e:#}"));
@@ -263,6 +321,9 @@ pub async fn run_distribution(
             let _ = h.await;
         }
         if let Some(h) = tokens_handle {
+            let _ = h.await;
+        }
+        if let Some(h) = cpa_handle {
             let _ = h.await;
         }
         let _ = db.enqueue_fail_run(run_id.clone(), "用户取消".to_string());
@@ -293,6 +354,17 @@ pub async fn run_distribution(
             Ok((tok_ok, tok_fail)) => {
                 total_s2a_ok += tok_ok;
                 total_s2a_failed += tok_fail;
+            }
+            Err(_) => {}
+        }
+    }
+
+    // 等待 CPA 流式消费者完成
+    if let Some(h) = cpa_handle {
+        match h.await {
+            Ok((cpa_ok, cpa_fail)) => {
+                total_s2a_ok += cpa_ok;
+                total_s2a_failed += cpa_fail;
             }
             Err(_) => {}
         }
@@ -637,4 +709,33 @@ pub fn validate_distribution(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ScheduleStreamMode, choose_schedule_stream_mode};
+
+    #[test]
+    fn choose_schedule_stream_mode_prefers_tokens_first() {
+        let mode = choose_schedule_stream_mode(true, true, true, true, true);
+        assert_eq!(mode, ScheduleStreamMode::Tokens);
+    }
+
+    #[test]
+    fn choose_schedule_stream_mode_selects_cpa_when_configured() {
+        let mode = choose_schedule_stream_mode(false, false, false, true, true);
+        assert_eq!(mode, ScheduleStreamMode::Cpa);
+    }
+
+    #[test]
+    fn choose_schedule_stream_mode_falls_back_to_s2a() {
+        let mode = choose_schedule_stream_mode(true, false, false, false, false);
+        assert_eq!(mode, ScheduleStreamMode::S2a);
+    }
+
+    #[test]
+    fn choose_schedule_stream_mode_returns_none_without_valid_target() {
+        let mode = choose_schedule_stream_mode(false, false, false, false, false);
+        assert_eq!(mode, ScheduleStreamMode::None);
+    }
 }
