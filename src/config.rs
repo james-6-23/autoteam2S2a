@@ -41,6 +41,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub tokens_pools: Vec<TokensPoolConfig>,
     #[serde(default)]
+    pub codexproxy_pools: Vec<CodexProxyPoolConfig>,
+    #[serde(default)]
     pub cpa_pools: Vec<CpaPoolConfig>,
 }
 
@@ -309,6 +311,19 @@ fn default_cleanup_interval() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CodexProxyPoolConfig {
+    pub name: String,
+    pub api_base: String,
+    pub admin_key: String,
+    #[serde(default = "default_codexproxy_concurrency")]
+    pub concurrency: usize,
+}
+
+fn default_codexproxy_concurrency() -> usize {
+    50
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CpaPoolConfig {
     pub name: String,
     /// CPA 管理平台基础地址（如 https://cpa.example.com）
@@ -480,6 +495,12 @@ pub struct ScheduleConfig {
     /// CPA 号池名称（设置后走 CPA 入库模式）
     #[serde(default)]
     pub cpa_pool_name: Option<String>,
+    /// CodexProxy 号池名称（设置后走 CodexProxy 单池入库模式）
+    #[serde(default)]
+    pub codexproxy_pool_name: Option<String>,
+    /// 是否启用 CodexProxy 多号池分发模式（distribution 中填写 CodexProxy 号池名）
+    #[serde(default)]
+    pub codexproxy_distribution: bool,
 }
 
 impl ScheduleConfig {

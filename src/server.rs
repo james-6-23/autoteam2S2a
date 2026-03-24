@@ -20,12 +20,18 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::cors::CorsLayer;
 
-use crate::config::{AppConfig, CpaPoolConfig, RegisterLogMode, RegisterPerfMode, S2aConfig, S2aExtraConfig, TokensPoolConfig};
+use crate::config::{
+    AppConfig, CodexProxyPoolConfig, CpaPoolConfig, RegisterLogMode, RegisterPerfMode, S2aConfig,
+    S2aExtraConfig, TokensPoolConfig,
+};
 use crate::db::RunHistoryDb;
 use crate::email_service;
 use crate::models::{AccountWithRt, WorkflowReport};
 use crate::proxy_pool::{ProxyPool, health_check, resolve_proxies};
-use crate::services::{LiveCodexService, LiveRegisterService, S2aHttpService, S2aService, TokensPoolHttpService, TokensPoolService};
+use crate::services::{
+    LiveCodexService, LiveRegisterService, S2aHttpService, S2aService, TokensPoolHttpService,
+    TokensPoolService,
+};
 use crate::workflow::{WorkflowOptions, WorkflowRunner};
 
 // ─── Embedded frontend ──────────────────────────────────────────────────────
@@ -319,6 +325,7 @@ struct CancelResponse {
 struct FullConfigResponse {
     teams: Vec<S2aConfig>,
     tokens_pools: Vec<TokensPoolConfig>,
+    codexproxy_pools: Vec<CodexProxyPoolConfig>,
     cpa_pools: Vec<CpaPoolConfig>,
     defaults: DefaultsResp,
     register: RegisterResp,
@@ -573,6 +580,7 @@ async fn config_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(FullConfigResponse {
         teams,
         tokens_pools: cfg.tokens_pools.clone(),
+        codexproxy_pools: cfg.codexproxy_pools.clone(),
         cpa_pools: cfg.cpa_pools.clone(),
         defaults: DefaultsResp {
             target_count: common_target,
@@ -1856,6 +1864,153 @@ async fn cleanup_tokens_pool_handler(
 
 // ─── CPA Pool management ───────────────────────────────────────────────────
 
+// ─── CodexProxy Pool management ───────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AddCodexProxyPoolRequest {
+    name: String,
+    api_base: String,
+    admin_key: String,
+    concurrency: Option<usize>,
+}
+
+async fn add_codexproxy_pool_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AddCodexProxyPoolRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    if cfg.codexproxy_pools.iter().any(|p| p.name == req.name) {
+        return Err(error_json(
+            StatusCode::CONFLICT,
+            &format!("CodexProxy 号池已存在: {}", req.name),
+        ));
+    }
+    cfg.codexproxy_pools.push(CodexProxyPoolConfig {
+        name: req.name.clone(),
+        api_base: req.api_base,
+        admin_key: req.admin_key,
+        concurrency: req.concurrency.unwrap_or(50).max(1),
+    });
+    auto_save(&cfg, &state.config_path);
+    Ok((
+        StatusCode::CREATED,
+        Json(MsgResponse {
+            message: format!("CodexProxy 号池 {} 已添加", req.name),
+        }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct UpdateCodexProxyPoolRequest {
+    name: Option<String>,
+    api_base: Option<String>,
+    admin_key: Option<String>,
+    concurrency: Option<usize>,
+}
+
+async fn update_codexproxy_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateCodexProxyPoolRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    let _pool = cfg
+        .codexproxy_pools
+        .iter_mut()
+        .find(|p| p.name == name)
+        .ok_or_else(|| {
+            error_json(
+                StatusCode::NOT_FOUND,
+                &format!("未找到 CodexProxy 号池: {name}"),
+            )
+        })?;
+    if let Some(ref v) = req.name {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() && trimmed != name {
+            if cfg
+                .codexproxy_pools
+                .iter()
+                .any(|p| p.name == trimmed && p.name != name)
+            {
+                return Err(error_json(
+                    StatusCode::CONFLICT,
+                    &format!("CodexProxy 号池名称已存在: {trimmed}"),
+                ));
+            }
+        }
+    }
+    let pool = cfg
+        .codexproxy_pools
+        .iter_mut()
+        .find(|p| p.name == name)
+        .unwrap();
+    if let Some(ref v) = req.name {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() {
+            pool.name = trimmed;
+        }
+    }
+    if let Some(v) = req.api_base {
+        pool.api_base = v;
+    }
+    if let Some(v) = req.admin_key {
+        pool.admin_key = v;
+    }
+    if let Some(v) = req.concurrency {
+        pool.concurrency = v.max(1);
+    }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse {
+        message: "CodexProxy 号池已更新".to_string(),
+    }))
+}
+
+async fn delete_codexproxy_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let mut cfg = state.config.write().await;
+    let before = cfg.codexproxy_pools.len();
+    cfg.codexproxy_pools.retain(|p| p.name != name);
+    if cfg.codexproxy_pools.len() == before {
+        return Err(error_json(
+            StatusCode::NOT_FOUND,
+            &format!("未找到 CodexProxy 号池: {name}"),
+        ));
+    }
+    auto_save(&cfg, &state.config_path);
+    Ok(Json(MsgResponse {
+        message: format!("CodexProxy 号池 {name} 已删除"),
+    }))
+}
+
+async fn test_codexproxy_pool_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let cfg = state.config.read().await;
+    let pool = cfg
+        .codexproxy_pools
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| {
+            error_json(
+                StatusCode::NOT_FOUND,
+                &format!("未找到 CodexProxy 号池: {name}"),
+            )
+        })?
+        .clone();
+    drop(cfg);
+
+    let svc = crate::services::CodexProxyPoolHttpService::new();
+    crate::services::CodexProxyPoolService::test_connection(&svc, &pool)
+        .await
+        .map_err(|e| error_json(StatusCode::BAD_GATEWAY, &format!("连接失败: {e:#}")))?;
+    Ok(Json(MsgResponse {
+        message: "连接成功".to_string(),
+    }))
+}
+
 #[derive(Deserialize)]
 struct AddCpaPoolRequest {
     name: String,
@@ -2072,10 +2227,30 @@ async fn create_task_handler(
         None
     };
 
-    let team = if tokens_pool.is_some() || cpa_pool.is_some() {
-        // Tokens/CPA 号池模式：使用占位 S2aConfig
+    // 解析 CodexProxy 号池配置
+    let codexproxy_pool = if pool_type == "codexproxy" {
+        let pool_name = req.pool_name.as_deref().unwrap_or_default();
+        let pool = cfg
+            .codexproxy_pools
+            .iter()
+            .find(|p| p.name == pool_name)
+            .ok_or_else(|| {
+                error_json(
+                    StatusCode::BAD_REQUEST,
+                    &format!("未找到 CodexProxy 号池: {pool_name}"),
+                )
+            })?;
+        Some(pool.clone())
+    } else {
+        None
+    };
+
+    let team = if tokens_pool.is_some() || cpa_pool.is_some() || codexproxy_pool.is_some() {
+        // Tokens/CPA/CodexProxy 号池模式：使用占位 S2aConfig
         let pool_label = if let Some(ref tp) = tokens_pool {
             format!("[Tokens] {}", tp.name)
+        } else if let Some(ref cp) = codexproxy_pool {
+            format!("[CodexProxy] {}", cp.name)
         } else {
             format!("[CPA] {}", cpa_pool.as_ref().unwrap().name)
         };
@@ -2222,6 +2397,7 @@ async fn create_task_handler(
             proxy_file,
             tokens_pool,
             cpa_pool,
+            codexproxy_pool,
         )
         .await;
     });
@@ -2399,6 +2575,7 @@ async fn execute_task(
     proxy_file: Option<PathBuf>,
     tokens_pool: Option<TokensPoolConfig>,
     cpa_pool: Option<CpaPoolConfig>,
+    codexproxy_pool: Option<CodexProxyPoolConfig>,
 ) {
     task_manager.set_running(&task_id).await;
 
@@ -2564,13 +2741,24 @@ async fn execute_task(
         register_perf_mode: register_runtime.register_perf_mode,
         tokens_pool: tokens_pool.clone(),
         cpa_pool: cpa_pool.clone(),
+        codexproxy_pool: codexproxy_pool.clone(),
     };
 
     let progress = task_manager.get_progress(&task_id).await;
     let started = std::time::Instant::now();
     let tokens_pool_service: Arc<dyn crate::services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
     let cpa_pool_service: Arc<dyn crate::services::CpaPoolService> = Arc::new(crate::services::CpaPoolHttpService::new());
-    let runner = WorkflowRunner::new(register_service, codex_service, s2a_service, tokens_pool_service, cpa_pool_service, proxy_pool);
+    let codexproxy_pool_service: Arc<dyn crate::services::CodexProxyPoolService> =
+        Arc::new(crate::services::CodexProxyPoolHttpService::new());
+    let runner = WorkflowRunner::new(
+        register_service,
+        codex_service,
+        s2a_service,
+        tokens_pool_service,
+        cpa_pool_service,
+        codexproxy_pool_service,
+        proxy_pool,
+    );
     match runner
         .run_one_team(&cfg, &team, &options, cancel_flag.clone(), progress)
         .await
@@ -2650,6 +2838,10 @@ struct CreateScheduleRequest {
     #[serde(default)]
     tokens_pool_name: Option<String>,
     #[serde(default)]
+    codexproxy_pool_name: Option<String>,
+    #[serde(default)]
+    codexproxy_distribution: bool,
+    #[serde(default)]
     cpa_pool_name: Option<String>,
 }
 
@@ -2685,6 +2877,8 @@ struct UpdateScheduleRequest {
     register_perf_mode: Option<Option<RegisterPerfMode>>,
     distribution: Option<Vec<crate::config::DistributionEntry>>,
     tokens_pool_name: Option<Option<String>>,
+    codexproxy_pool_name: Option<Option<String>>,
+    codexproxy_distribution: Option<bool>,
     cpa_pool_name: Option<Option<String>>,
 }
 
@@ -2785,9 +2979,29 @@ async fn create_schedule_handler(
         ));
     }
 
-    // 校验分发配置（Tokens/CPA 号池模式下跳过）
+    // 校验分发配置（单号池模式下跳过；CodexProxy 分发模式按 CodexProxy 池校验）
     let is_tokens_mode = req.tokens_pool_name.as_ref().map_or(false, |n| !n.is_empty());
+    let is_codexproxy_mode = req
+        .codexproxy_pool_name
+        .as_ref()
+        .map_or(false, |n| !n.is_empty());
+    let is_codexproxy_distribution_mode = req.codexproxy_distribution;
     let is_cpa_mode = req.cpa_pool_name.as_ref().map_or(false, |n| !n.is_empty());
+    let selected_modes = [
+        is_tokens_mode,
+        is_codexproxy_mode,
+        is_codexproxy_distribution_mode,
+        is_cpa_mode,
+    ]
+    .into_iter()
+    .filter(|enabled| *enabled)
+    .count();
+    if selected_modes > 1 {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            "入库目标只能选择一种模式",
+        ));
+    }
     if is_tokens_mode {
         let pool_name = req.tokens_pool_name.as_ref().unwrap();
         if !cfg.tokens_pools.iter().any(|p| p.name == *pool_name) {
@@ -2795,6 +3009,21 @@ async fn create_schedule_handler(
                 StatusCode::BAD_REQUEST,
                 &format!("Tokens 号池不存在: {pool_name}"),
             ));
+        }
+    } else if is_codexproxy_mode {
+        let pool_name = req.codexproxy_pool_name.as_ref().unwrap();
+        if !cfg.codexproxy_pools.iter().any(|p| p.name == *pool_name) {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                &format!("CodexProxy 号池不存在: {pool_name}"),
+            ));
+        }
+    } else if is_codexproxy_distribution_mode {
+        if let Err(e) = crate::distribution::validate_codexproxy_distribution(
+            &req.distribution,
+            &cfg.codexproxy_pools,
+        ) {
+            return Err(error_json(StatusCode::BAD_REQUEST, &e));
         }
     } else if is_cpa_mode {
         let pool_name = req.cpa_pool_name.as_ref().unwrap();
@@ -2838,8 +3067,14 @@ async fn create_schedule_handler(
         free_mode: req.free_mode,
         register_log_mode: req.register_log_mode,
         register_perf_mode: req.register_perf_mode,
-        distribution: req.distribution,
+        distribution: if is_tokens_mode || is_codexproxy_mode || is_cpa_mode {
+            vec![]
+        } else {
+            req.distribution
+        },
         tokens_pool_name: req.tokens_pool_name.filter(|s| !s.is_empty()),
+        codexproxy_pool_name: req.codexproxy_pool_name.filter(|s| !s.is_empty()),
+        codexproxy_distribution: req.codexproxy_distribution,
         cpa_pool_name: req.cpa_pool_name.filter(|s| !s.is_empty()),
     });
     auto_save(&cfg, &state.config_path);
@@ -2947,42 +3182,124 @@ async fn update_schedule_handler(
     if let Some(perf_mode) = req.register_perf_mode {
         sched.register_perf_mode = perf_mode;
     }
-    // 判断是否为 Tokens 号池模式（与 create 保持一致）
-    let is_tokens_mode = req.tokens_pool_name.as_ref().map_or(false, |tp| {
-        tp.as_ref().map_or(false, |n| !n.is_empty())
-    });
     if let Some(tp_name) = req.tokens_pool_name {
         let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
         let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
         sched.tokens_pool_name = tp_name.filter(|s| !s.is_empty());
+    }
+    if let Some(cp_name) = req.codexproxy_pool_name {
+        let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+        let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
+        sched.codexproxy_pool_name = cp_name.filter(|s| !s.is_empty());
+    }
+    if let Some(cp_dist) = req.codexproxy_distribution {
+        let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+        let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
+        sched.codexproxy_distribution = cp_dist;
     }
     if let Some(cpa_name) = req.cpa_pool_name {
         let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
         let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
         sched.cpa_pool_name = cpa_name.filter(|s| !s.is_empty());
     }
-    if let Some(dist) = req.distribution {
-        if is_tokens_mode {
-            // Tokens 号池模式下清空分发配置，跳过验证
-            let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
-            cfg.schedule
-                .iter_mut()
-                .find(|s| s.name == actual)
-                .unwrap()
-                .distribution = vec![];
-        } else {
-            let teams = cfg.effective_s2a_configs();
-            if let Err(e) = crate::distribution::validate_distribution(&dist, &teams) {
+    let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+    let current_sched = cfg
+        .schedule
+        .iter()
+        .find(|s| s.name == actual)
+        .unwrap()
+        .clone();
+    let is_tokens_mode = current_sched
+        .tokens_pool_name
+        .as_ref()
+        .map_or(false, |n| !n.is_empty());
+    let is_codexproxy_mode = current_sched
+        .codexproxy_pool_name
+        .as_ref()
+        .map_or(false, |n| !n.is_empty());
+    let is_codexproxy_distribution_mode = current_sched.codexproxy_distribution;
+    let is_cpa_mode = current_sched
+        .cpa_pool_name
+        .as_ref()
+        .map_or(false, |n| !n.is_empty());
+    let selected_modes = [
+        is_tokens_mode,
+        is_codexproxy_mode,
+        is_codexproxy_distribution_mode,
+        is_cpa_mode,
+    ]
+    .into_iter()
+    .filter(|enabled| *enabled)
+    .count();
+    if selected_modes > 1 {
+        return Err(error_json(
+            StatusCode::BAD_REQUEST,
+            "入库目标只能选择一种模式",
+        ));
+    }
+
+    if is_tokens_mode {
+        let pool_name = current_sched.tokens_pool_name.as_ref().unwrap();
+        if !cfg.tokens_pools.iter().any(|p| p.name == *pool_name) {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                &format!("Tokens 号池不存在: {pool_name}"),
+            ));
+        }
+        cfg.schedule
+            .iter_mut()
+            .find(|s| s.name == actual)
+            .unwrap()
+            .distribution = vec![];
+    } else if is_codexproxy_mode {
+        let pool_name = current_sched.codexproxy_pool_name.as_ref().unwrap();
+        if !cfg.codexproxy_pools.iter().any(|p| p.name == *pool_name) {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                &format!("CodexProxy 号池不存在: {pool_name}"),
+            ));
+        }
+        cfg.schedule
+            .iter_mut()
+            .find(|s| s.name == actual)
+            .unwrap()
+            .distribution = vec![];
+    } else if is_cpa_mode {
+        let pool_name = current_sched.cpa_pool_name.as_ref().unwrap();
+        if !cfg.cpa_pools.iter().any(|p| p.name == *pool_name) {
+            return Err(error_json(
+                StatusCode::BAD_REQUEST,
+                &format!("CPA 号池不存在: {pool_name}"),
+            ));
+        }
+        cfg.schedule
+            .iter_mut()
+            .find(|s| s.name == actual)
+            .unwrap()
+            .distribution = vec![];
+    } else {
+        let next_distribution = req
+            .distribution
+            .clone()
+            .unwrap_or_else(|| current_sched.distribution.clone());
+        if is_codexproxy_distribution_mode {
+            if let Err(e) = crate::distribution::validate_codexproxy_distribution(
+                &next_distribution,
+                &cfg.codexproxy_pools,
+            ) {
                 return Err(error_json(StatusCode::BAD_REQUEST, &e));
             }
-            // re-borrow since we used cfg above
-            let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
-            cfg.schedule
-                .iter_mut()
-                .find(|s| s.name == actual)
-                .unwrap()
-                .distribution = dist;
+        } else {
+            let teams = cfg.effective_s2a_configs();
+            if let Err(e) = crate::distribution::validate_distribution(&next_distribution, &teams) {
+                return Err(error_json(StatusCode::BAD_REQUEST, &e));
+            }
         }
+        cfg.schedule
+            .iter_mut()
+            .find(|s| s.name == actual)
+            .unwrap()
+            .distribution = next_distribution;
     }
     auto_save(&cfg, &state.config_path);
 
@@ -3563,6 +3880,8 @@ pub async fn build_workflow_runner(
 
     let tokens_pool_service: Arc<dyn crate::services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
     let cpa_pool_service: Arc<dyn crate::services::CpaPoolService> = Arc::new(crate::services::CpaPoolHttpService::new());
+    let codexproxy_pool_service: Arc<dyn crate::services::CodexProxyPoolService> =
+        Arc::new(crate::services::CodexProxyPoolHttpService::new());
 
     Ok(WorkflowRunner::new(
         register_service,
@@ -3570,6 +3889,7 @@ pub async fn build_workflow_runner(
         s2a_service,
         tokens_pool_service,
         cpa_pool_service,
+        codexproxy_pool_service,
         proxy_pool,
     ))
 }
@@ -3830,6 +4150,16 @@ pub async fn start_server(
         .route("/api/config/tokens_pools/{name}/test", post(test_tokens_pool_handler))
         .route("/api/config/tokens_pools/{name}/stats", get(tokens_pool_stats_handler))
         .route("/api/config/tokens_pools/{name}/cleanup", post(cleanup_tokens_pool_handler))
+        // CodexProxy Pool management
+        .route("/api/config/codexproxy_pools", post(add_codexproxy_pool_handler))
+        .route(
+            "/api/config/codexproxy_pools/{name}",
+            put(update_codexproxy_pool_handler).delete(delete_codexproxy_pool_handler),
+        )
+        .route(
+            "/api/config/codexproxy_pools/{name}/test",
+            post(test_codexproxy_pool_handler),
+        )
         // CPA Pool management
         .route("/api/config/cpa_pools", post(add_cpa_pool_handler))
         .route("/api/config/cpa_pools/{name}", put(update_cpa_pool_handler).delete(delete_cpa_pool_handler))

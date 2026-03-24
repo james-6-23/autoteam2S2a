@@ -50,6 +50,8 @@ enum ScheduleStreamMode {
     None,
     S2a,
     Tokens,
+    CodexProxy,
+    CodexProxyDistribution,
     Cpa,
 }
 
@@ -57,11 +59,19 @@ fn choose_schedule_stream_mode(
     push_s2a: bool,
     is_tokens_mode: bool,
     has_tokens_pool: bool,
+    is_codexproxy_mode: bool,
+    has_codexproxy_pool: bool,
+    is_codexproxy_distribution_mode: bool,
+    has_codexproxy_distribution_targets: bool,
     is_cpa_mode: bool,
     has_cpa_pool: bool,
 ) -> ScheduleStreamMode {
     if is_tokens_mode && has_tokens_pool {
         ScheduleStreamMode::Tokens
+    } else if is_codexproxy_distribution_mode && has_codexproxy_distribution_targets {
+        ScheduleStreamMode::CodexProxyDistribution
+    } else if is_codexproxy_mode && has_codexproxy_pool {
+        ScheduleStreamMode::CodexProxy
     } else if is_cpa_mode && has_cpa_pool {
         ScheduleStreamMode::Cpa
     } else if push_s2a {
@@ -174,6 +184,7 @@ pub async fn run_distribution(
             .unwrap_or(register_runtime.register_perf_mode),
         tokens_pool: None,
         cpa_pool: None,
+        codexproxy_pool: None,
     };
 
     // Tokens 号池模式
@@ -188,6 +199,44 @@ pub async fn run_distribution(
             ));
             options.push_s2a = false;
         }
+    }
+
+    // CodexProxy 单号池模式
+    let is_codexproxy_mode = schedule.codexproxy_pool_name.is_some();
+    if let Some(ref pool_name) = schedule.codexproxy_pool_name {
+        if let Some(pool_cfg) = cfg
+            .codexproxy_pools
+            .iter()
+            .find(|p| p.name == *pool_name)
+        {
+            options.codexproxy_pool = Some(pool_cfg.clone());
+            options.push_s2a = false;
+        } else {
+            broadcast_log(&format!(
+                "[分发] 警告: CodexProxy 号池 {pool_name} 不存在，跳过入库"
+            ));
+            options.push_s2a = false;
+        }
+    }
+
+    // CodexProxy 多号池分发模式
+    let is_codexproxy_distribution_mode = schedule.codexproxy_distribution;
+    let codexproxy_distribution_targets: Vec<_> = if is_codexproxy_distribution_mode {
+        schedule
+            .distribution
+            .iter()
+            .filter_map(|entry| {
+                cfg.codexproxy_pools
+                    .iter()
+                    .find(|p| p.name == entry.team)
+                    .cloned()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if is_codexproxy_distribution_mode {
+        options.push_s2a = false;
     }
 
     // CPA 号池模式
@@ -206,7 +255,15 @@ pub async fn run_distribution(
 
     // 2. 注册 + RT + 流式入库
     let mode_label = if options.free_mode { "free" } else { "team" };
-    let push_label = if is_tokens_mode { "Tokens" } else if is_cpa_mode { "CPA" } else { "S2A" };
+    let push_label = if is_tokens_mode {
+        "Tokens"
+    } else if is_codexproxy_distribution_mode || is_codexproxy_mode {
+        "CodexProxy"
+    } else if is_cpa_mode {
+        "CPA"
+    } else {
+        "S2A"
+    };
     broadcast_log(&format!(
         "[分发] 开始注册 + RT + 流式{push_label}，目标: {mode_label} 模式 RT 成功 {} 个（兜底轮次={}）",
         schedule.target_count, retry_guard
@@ -216,6 +273,10 @@ pub async fn run_distribution(
         options.push_s2a,
         is_tokens_mode,
         options.tokens_pool.is_some(),
+        is_codexproxy_mode,
+        options.codexproxy_pool.is_some(),
+        is_codexproxy_distribution_mode,
+        !codexproxy_distribution_targets.is_empty(),
         is_cpa_mode,
         options.cpa_pool.is_some(),
     );
@@ -230,6 +291,26 @@ pub async fn run_distribution(
 
     // 创建 Tokens 流式 channel
     let (tokens_tx, tokens_rx) = if matches!(stream_mode, ScheduleStreamMode::Tokens) {
+        let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    // 创建 CodexProxy 单池流式 channel
+    let (codexproxy_tx, codexproxy_rx) =
+        if matches!(stream_mode, ScheduleStreamMode::CodexProxy) {
+            let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+    // 创建 CodexProxy 分发流式 channel
+    let (codexproxy_dist_tx, codexproxy_dist_rx) = if matches!(
+        stream_mode,
+        ScheduleStreamMode::CodexProxyDistribution
+    ) {
         let (tx, rx) = mpsc::channel::<AccountWithRt>(256);
         (Some(tx), Some(rx))
     } else {
@@ -276,6 +357,45 @@ pub async fn run_distribution(
         None
     };
 
+    // 启动 CodexProxy 单池流式消费者
+    let codexproxy_handle = if let Some(rx) = codexproxy_rx {
+        let codexproxy_service = runner.codexproxy_pool_service();
+        let pool_cfg = options.codexproxy_pool.clone().unwrap();
+        let cancel = cancel_flag.clone();
+        Some(tokio::spawn(async move {
+            WorkflowRunner::codexproxy_streaming_consumer_static(
+                rx,
+                codexproxy_service,
+                &pool_cfg,
+                None,
+                cancel,
+            )
+            .await
+        }))
+    } else {
+        None
+    };
+
+    // 启动 CodexProxy 多池分发流式消费者
+    let codexproxy_dist_handle = if let Some(rx) = codexproxy_dist_rx {
+        let codexproxy_service = runner.codexproxy_pool_service();
+        let distribution = schedule.distribution.clone();
+        let pools = codexproxy_distribution_targets.clone();
+        let cancel = cancel_flag.clone();
+        Some(tokio::spawn(async move {
+            dist_codexproxy_streaming_consumer(
+                rx,
+                codexproxy_service,
+                &distribution,
+                &pools,
+                cancel,
+            )
+            .await
+        }))
+    } else {
+        None
+    };
+
     // 启动 CPA 流式消费者
     let cpa_handle = if let Some(rx) = cpa_rx {
         let cpa_service = runner.cpa_pool_service();
@@ -289,8 +409,12 @@ pub async fn run_distribution(
         None
     };
 
-    // 传给 run_register_and_rt 的 tx：优先 tokens_tx，其次 cpa_tx，最后 s2a_tx
-    let stream_tx = tokens_tx.or(cpa_tx).or(s2a_tx);
+    // 传给 run_register_and_rt 的 tx：优先 tokens/codexproxy/cpa，最后才是 s2a
+    let stream_tx = tokens_tx
+        .or(codexproxy_tx)
+        .or(codexproxy_dist_tx)
+        .or(cpa_tx)
+        .or(s2a_tx);
 
     let reg_result = match runner
         .run_register_and_rt(cfg, &options, cancel_flag.clone(), None, stream_tx)
@@ -302,6 +426,12 @@ pub async fn run_distribution(
                 let _ = h.await;
             }
             if let Some(h) = tokens_handle {
+                let _ = h.await;
+            }
+            if let Some(h) = codexproxy_handle {
+                let _ = h.await;
+            }
+            if let Some(h) = codexproxy_dist_handle {
                 let _ = h.await;
             }
             if let Some(h) = cpa_handle {
@@ -323,6 +453,12 @@ pub async fn run_distribution(
         if let Some(h) = tokens_handle {
             let _ = h.await;
         }
+        if let Some(h) = codexproxy_handle {
+            let _ = h.await;
+        }
+        if let Some(h) = codexproxy_dist_handle {
+            let _ = h.await;
+        }
         if let Some(h) = cpa_handle {
             let _ = h.await;
         }
@@ -339,7 +475,7 @@ pub async fn run_distribution(
     let output_files = reg_result.output_files;
 
     // 等待 S2A 流式消费者完成
-    let (mut total_s2a_ok, mut total_s2a_failed, team_results) = if let Some(h) = s2a_handle {
+    let (mut total_s2a_ok, mut total_s2a_failed, mut team_results) = if let Some(h) = s2a_handle {
         match h.await {
             Ok(r) => r,
             Err(_) => (0, 0, Vec::new()),
@@ -354,6 +490,29 @@ pub async fn run_distribution(
             Ok((tok_ok, tok_fail)) => {
                 total_s2a_ok += tok_ok;
                 total_s2a_failed += tok_fail;
+            }
+            Err(_) => {}
+        }
+    }
+
+    // 等待 CodexProxy 单池流式消费者完成
+    if let Some(h) = codexproxy_handle {
+        match h.await {
+            Ok((cp_ok, cp_fail)) => {
+                total_s2a_ok += cp_ok;
+                total_s2a_failed += cp_fail;
+            }
+            Err(_) => {}
+        }
+    }
+
+    // 等待 CodexProxy 多池分发流式消费者完成
+    if let Some(h) = codexproxy_dist_handle {
+        match h.await {
+            Ok((cp_ok, cp_fail, cp_team_results)) => {
+                total_s2a_ok += cp_ok;
+                total_s2a_failed += cp_fail;
+                team_results = cp_team_results;
             }
             Err(_) => {}
         }
@@ -685,10 +844,124 @@ async fn dist_s2a_streaming_consumer(
     (total_ok, total_fail, team_results)
 }
 
-/// 校验分发配置的百分比之和是否为 100，且引用的号池都存在
-pub fn validate_distribution(
+/// 分发流式 CodexProxy 消费者：按加权比例把 RT 推送到多个 CodexProxy 号池。
+async fn dist_codexproxy_streaming_consumer(
+    mut rx: mpsc::Receiver<AccountWithRt>,
+    codexproxy_service: Arc<dyn crate::services::CodexProxyPoolService>,
     distribution: &[DistributionEntry],
-    available_teams: &[crate::config::S2aConfig],
+    pools: &[crate::config::CodexProxyPoolConfig],
+    cancel_flag: Arc<AtomicBool>,
+) -> (usize, usize, Vec<TeamDistResult>) {
+    let router = Arc::new(WeightedRouter::new(distribution));
+    let mut senders = Vec::new();
+    let mut handles = Vec::new();
+
+    for entry in distribution {
+        let Some(pool_cfg) = pools.iter().find(|p| p.name == entry.team).cloned() else {
+            broadcast_log(&format!(
+                "[CodexProxy-分发] 号池配置不存在 {}，跳过该分发项",
+                entry.team
+            ));
+            continue;
+        };
+        let (tx, pool_rx) = mpsc::channel::<AccountWithRt>(256);
+        let service = Arc::clone(&codexproxy_service);
+        let cancel = cancel_flag.clone();
+        let pool_name = entry.team.clone();
+        let percent = entry.percent;
+        senders.push((pool_name.clone(), tx));
+        handles.push(tokio::spawn(async move {
+            let result = WorkflowRunner::codexproxy_streaming_consumer_static(
+                pool_rx,
+                service,
+                &pool_cfg,
+                None,
+                cancel,
+            )
+            .await;
+            (pool_name, percent, result)
+        }));
+    }
+
+    broadcast_log(&format!(
+        "[CodexProxy-分发] 流式分发已启动，{} 个号池",
+        senders.len()
+    ));
+
+    loop {
+        let recv_result = tokio::select! {
+            acc = rx.recv() => acc,
+            _ = async {
+                loop {
+                    if cancel_flag.load(Ordering::Relaxed) { return; }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            } => {
+                broadcast_log("[CodexProxy-分发] 收到中断信号");
+                None
+            }
+        };
+        let Some(acc) = recv_result else {
+            break;
+        };
+
+        let target_pool_name = router.next_team().to_string();
+        if let Some((_, tx)) = senders.iter().find(|(name, _)| *name == target_pool_name) {
+            if tx.send(acc).await.is_err() {
+                broadcast_log(&format!(
+                    "[CodexProxy-分发] 发送到号池 {} 失败，接收通道已关闭",
+                    target_pool_name
+                ));
+            }
+        } else {
+            broadcast_log(&format!(
+                "[CodexProxy-分发] 未找到目标号池 {}，跳过账号",
+                target_pool_name
+            ));
+        }
+    }
+
+    drop(senders);
+
+    let mut total_ok = 0usize;
+    let mut total_fail = 0usize;
+    let mut team_results = Vec::new();
+
+    for handle in handles {
+        match handle.await {
+            Ok((pool_name, percent, (ok, fail))) => {
+                total_ok += ok;
+                total_fail += fail;
+                team_results.push(TeamDistResult {
+                    team_name: pool_name,
+                    percent,
+                    assigned_count: ok + fail,
+                    s2a_ok: ok,
+                    s2a_failed: fail,
+                });
+            }
+            Err(err) => {
+                broadcast_log(&format!(
+                    "[CodexProxy-分发] 子消费者异常退出: {err}"
+                ));
+            }
+        }
+    }
+
+    broadcast_log(&format!(
+        "[CodexProxy-分发] 流式分发完成: ok={} fail={} 分配={:?}",
+        total_ok,
+        total_fail,
+        router.counts()
+    ));
+
+    (total_ok, total_fail, team_results)
+}
+
+/// 校验分发配置的百分比之和是否为 100，且引用的号池都存在
+pub fn validate_distribution_targets(
+    distribution: &[DistributionEntry],
+    available_names: &[String],
 ) -> Result<(), String> {
     if distribution.is_empty() {
         return Err("分发配置不能为空".to_string());
@@ -700,7 +973,7 @@ pub fn validate_distribution(
     }
 
     for entry in distribution {
-        if !available_teams.iter().any(|t| t.name == entry.team) {
+        if !available_names.iter().any(|name| name == &entry.team) {
             return Err(format!("号池不存在: {}", entry.team));
         }
         if entry.percent == 0 {
@@ -711,31 +984,75 @@ pub fn validate_distribution(
     Ok(())
 }
 
+pub fn validate_distribution(
+    distribution: &[DistributionEntry],
+    available_teams: &[crate::config::S2aConfig],
+) -> Result<(), String> {
+    let available_names = available_teams
+        .iter()
+        .map(|team| team.name.clone())
+        .collect::<Vec<_>>();
+    validate_distribution_targets(distribution, &available_names)
+}
+
+pub fn validate_codexproxy_distribution(
+    distribution: &[DistributionEntry],
+    available_pools: &[crate::config::CodexProxyPoolConfig],
+) -> Result<(), String> {
+    let available_names = available_pools
+        .iter()
+        .map(|pool| pool.name.clone())
+        .collect::<Vec<_>>();
+    validate_distribution_targets(distribution, &available_names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ScheduleStreamMode, choose_schedule_stream_mode};
 
     #[test]
     fn choose_schedule_stream_mode_prefers_tokens_first() {
-        let mode = choose_schedule_stream_mode(true, true, true, true, true);
+        let mode = choose_schedule_stream_mode(true, true, true, false, false, false, false, true, true);
         assert_eq!(mode, ScheduleStreamMode::Tokens);
     }
 
     #[test]
+    fn choose_schedule_stream_mode_selects_codexproxy_distribution() {
+        let mode = choose_schedule_stream_mode(
+            false, false, false, false, false, true, true, false, false,
+        );
+        assert_eq!(mode, ScheduleStreamMode::CodexProxyDistribution);
+    }
+
+    #[test]
+    fn choose_schedule_stream_mode_selects_codexproxy_single_pool() {
+        let mode = choose_schedule_stream_mode(
+            false, false, false, true, true, false, false, false, false,
+        );
+        assert_eq!(mode, ScheduleStreamMode::CodexProxy);
+    }
+
+    #[test]
     fn choose_schedule_stream_mode_selects_cpa_when_configured() {
-        let mode = choose_schedule_stream_mode(false, false, false, true, true);
+        let mode = choose_schedule_stream_mode(
+            false, false, false, false, false, false, false, true, true,
+        );
         assert_eq!(mode, ScheduleStreamMode::Cpa);
     }
 
     #[test]
     fn choose_schedule_stream_mode_falls_back_to_s2a() {
-        let mode = choose_schedule_stream_mode(true, false, false, false, false);
+        let mode = choose_schedule_stream_mode(
+            true, false, false, false, false, false, false, false, false,
+        );
         assert_eq!(mode, ScheduleStreamMode::S2a);
     }
 
     #[test]
     fn choose_schedule_stream_mode_returns_none_without_valid_target() {
-        let mode = choose_schedule_stream_mode(false, false, false, false, false);
+        let mode = choose_schedule_stream_mode(
+            false, false, false, false, false, false, false, false, false,
+        );
         assert_eq!(mode, ScheduleStreamMode::None);
     }
 }

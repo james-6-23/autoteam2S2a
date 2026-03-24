@@ -58,7 +58,7 @@ tailwind.config={theme:{extend:{
 <!-- ====== Nav ====== -->
 <nav class="flex gap-0.5 px-5 pt-3 pb-0 overflow-x-auto" style="border-bottom:1px solid var(--nav-border)">
   <button onclick="switchTab('dashboard')" id="tab-dashboard" class="tab-btn tab-active px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">概览</button>
-  <button onclick="switchTab('teams')" id="tab-teams" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">S2A与Tokens</button>
+  <button onclick="switchTab('teams')" id="tab-teams" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">S2A / Tokens / CodexProxy</button>
   <button onclick="switchTab('cpa')" id="tab-cpa" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">CPA</button>
   <button onclick="switchTab('config')" id="tab-config" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">配置</button>
   <button onclick="switchTab('email')" id="tab-email" class="tab-btn px-4 py-2.5 text-[.8125rem] font-medium whitespace-nowrap">邮箱</button>
@@ -115,6 +115,13 @@ tailwind.config={theme:{extend:{
       <button onclick="showAddTokensPoolForm()" class="btn btn-teal text-xs py-1.5">+ 添加</button>
     </div>
     <div id="tokens-pool-list" class="team-grid"></div>
+  </div>
+  <div class="card p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div class="section-title mb-0">CodexProxy 号池</div>
+      <button onclick="showAddCodexProxyPoolForm()" class="btn btn-teal text-xs py-1.5">+ 添加</button>
+    </div>
+    <div id="codexproxy-pool-list" class="team-grid"></div>
   </div>
 </div>
 
@@ -767,6 +774,41 @@ tailwind.config={theme:{extend:{
     <div class="flex gap-2 mt-4">
       <button onclick="submitEditTp()" class="btn btn-amber">保存</button>
       <button onclick="hideEditTpForm()" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ====== CodexProxy Pool Modals ====== -->
+<div id="add-cpx-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'add-cpx-modal','hideAddCodexProxyPoolForm')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div class="section-title">新建 CodexProxy 号池</div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">名称 *</label><input id="acpx-name" class="field-input" placeholder="my-codexproxy-pool"></div>
+      <div><label class="field-label">并发数</label><input id="acpx-concurrency" type="number" min="1" value="50" class="field-input"></div>
+      <div class="md:col-span-2"><label class="field-label">API 地址 *</label><input id="acpx-api" class="field-input" placeholder="http://localhost:8080"></div>
+      <div class="md:col-span-2"><label class="field-label">管理密钥 *</label><input id="acpx-key" class="field-input" placeholder="your-admin-key"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitAddCodexProxyPool()" class="btn btn-teal">确认</button>
+      <button onclick="hideAddCodexProxyPoolForm()" class="btn btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+<div id="edit-cpx-modal" class="team-modal hidden" onclick="handleTeamModalBackdrop(event,'edit-cpx-modal','hideEditCodexProxyPoolForm')">
+  <div class="team-modal-card p-5" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between mb-3">
+      <div class="section-title mb-0">编辑 CodexProxy 号池</div>
+      <button onclick="hideEditCodexProxyPoolForm()" class="btn btn-ghost text-xs py-1">关闭</button>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div><label class="field-label">名称</label><input id="ecpx-name" class="field-input"></div>
+      <div><label class="field-label">并发数</label><input id="ecpx-concurrency" type="number" min="1" class="field-input"></div>
+      <div class="md:col-span-2"><label class="field-label">API 地址</label><input id="ecpx-api" class="field-input"></div>
+      <div class="md:col-span-2"><label class="field-label">管理密钥</label><input id="ecpx-key" class="field-input"></div>
+    </div>
+    <div class="flex gap-2 mt-4">
+      <button onclick="submitEditCodexProxyPool()" class="btn btn-amber">保存</button>
+      <button onclick="hideEditCodexProxyPoolForm()" class="btn btn-ghost">取消</button>
     </div>
   </div>
 </div>

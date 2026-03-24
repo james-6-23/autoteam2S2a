@@ -71,7 +71,7 @@ async function checkHealth(){
 }
 
 // Config
-async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderTokensPools();renderCpaPools();renderConfigForm();applySiteTitle(configData.site_title)}catch{}}
+async function loadConfig(){try{configData=await api('/api/config');renderDashboard();renderTeams();renderTokensPools();renderCodexProxyPools();renderCpaPools();renderConfigForm();applySiteTitle(configData.site_title)}catch{}}
 function resolveModeDefaults(mode){
   const d=configData?.defaults||{};
   const common={
@@ -111,9 +111,11 @@ function renderDashboard(){
   const sel=document.getElementById('q-team');
   const tokensPools=(configData.tokens_pools||[]);
   const tokensOpts=tokensPools.map(p=>`<option value="__tp__${p.name}">[T] ${p.name}</option>`).join('');
+  const codexProxyPools=(configData.codexproxy_pools||[]);
+  const codexProxyOpts=codexProxyPools.map(p=>`<option value="__cpx__${p.name}">[CPX] ${p.name}</option>`).join('');
   const cpaPools=(configData.cpa_pools||[]);
   const cpaOpts=cpaPools.map(p=>`<option value="__cpa__${p.name}">[CPA] ${p.name}</option>`).join('');
-  sel.innerHTML='<option value="__rt_only__" selected>仅生成RT</option>'+configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('')+tokensOpts+cpaOpts;
+  sel.innerHTML='<option value="__rt_only__" selected>仅生成RT</option>'+configData.teams.map(t=>`<option value="${t.name}">${t.name}</option>`).join('')+tokensOpts+codexProxyOpts+cpaOpts;
   const modeEl=document.getElementById('q-mode');
   const mode=modeEl?.value==='free'?'free':'team';
   applyQuickDefaultsByMode(mode);
@@ -630,9 +632,11 @@ async function quickCreateTask(){
   const teamVal=document.getElementById('q-team').value;
   const isRtOnly=teamVal==='__rt_only__';
   const isTokensPool=teamVal.startsWith('__tp__');
+  const isCodexProxyPool=teamVal.startsWith('__cpx__');
   const isCpaPool=teamVal.startsWith('__cpa__');
   const body={target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'};
   if(isTokensPool){body.pool_type='tokens';body.pool_name=teamVal.slice(6);body.push_s2a=false}
+  else if(isCodexProxyPool){body.pool_type='codexproxy';body.pool_name=teamVal.slice(7);body.push_s2a=false}
   else if(isCpaPool){body.pool_type='cpa';body.pool_name=teamVal.slice(7);body.push_s2a=false}
   else if(isRtOnly){body.push_s2a=false}else{body.team=teamVal;body.push_s2a=true}
   try{const d=await api('/api/tasks',{method:'POST',body});toast(`任务 ${d.task_id} 已创建`,'success');refreshTasks();setTimeout(()=>showTaskDetail(d.task_id),300)}catch{}
@@ -936,6 +940,15 @@ async function loadSchedules(){
     const bc=s.running?'badge-run':isCooldown?'badge-warn':isPending?'badge-warn':s.enabled?'badge-ok':'badge-off';
     const bt=s.running?'运行中':isCooldown?'准备中':isPending?'等待中':s.enabled?'已启用':'已禁用';
     const dt=s.distribution.map(d=>`${d.team}:${d.percent}%`).join(' / ');
+    const targetLabel=s.tokens_pool_name
+      ?`[Tokens] ${s.tokens_pool_name}`
+      :s.codexproxy_pool_name
+        ?`[CodexProxy] ${s.codexproxy_pool_name}`
+        :s.codexproxy_distribution
+          ?'[CodexProxy 分发]'
+          :s.cpa_pool_name
+            ?`[CPA] ${s.cpa_pool_name}`
+            :'[S2A 分发]';
     const logModeTxt=scheduleLogModeText(s.register_log_mode);
     const perfModeTxt=schedulePerfModeText(s.register_perf_mode);
     const esc=n=>String(n).replace(/'/g,"\\'");
@@ -997,31 +1010,56 @@ async function loadSchedules(){
         <span>模式 <span class="text-dim-2">${s.free_mode?'free':'team'}</span></span>
         <span>日志 <span class="text-dim-2">${logModeTxt}</span></span>
         <span>性能 <span class="text-dim-2">${perfModeTxt}</span></span>
+        <span>目标 <span class="text-dim-2 font-mono">${targetLabel}</span></span>
         <span>分发 <span class="text-dim-2 font-mono">${dt||'无'}</span></span>
       </div>${runHtml}
     </div>`}).join('')}catch{}
+}
+function isCodexProxyDistributionTarget(val){return val==='cpxd'}
+function isSinglePoolTarget(val){return val.startsWith('tp:')||val.startsWith('cpx:')||val.startsWith('cpa:')}
+function buildDistributionPoolOptions(val,selected){
+  const list=isCodexProxyDistributionTarget(val)?(configData?.codexproxy_pools||[]):(configData?.teams||[]);
+  return list.map(p=>`<option value="${p.name}" ${p.name===selected?'selected':''}>${p.name}</option>`).join('');
+}
+function refreshDistributionRows(prefix){
+  const val=document.getElementById(`${prefix}-pool-target`).value;
+  const rows=document.querySelectorAll(`#${prefix}-dist-rows > div`);
+  rows.forEach(row=>{
+    const select=row.querySelector('select');
+    if(!select)return;
+    const current=select.value;
+    const html=buildDistributionPoolOptions(val,current);
+    select.innerHTML=html;
+    if(current&&Array.from(select.options).some(o=>o.value===current))select.value=current;
+  });
 }
 function fillSchedPoolTargetOptions(prefix){
   const sel=document.getElementById(`${prefix}-pool-target`);
   const pools=configData?.tokens_pools||[];
   const tpOpts=pools.map(p=>`<option value="tp:${p.name}">[Tokens] ${p.name}</option>`).join('');
+  const codexProxyPools=configData?.codexproxy_pools||[];
+  const cpxOpts=codexProxyPools.map(p=>`<option value="cpx:${p.name}">[CodexProxy] ${p.name}</option>`).join('');
+  const cpxDistOpt=codexProxyPools.length?'<option value="cpxd">CodexProxy 分发</option>':'';
   const cpaPools=configData?.cpa_pools||[];
   const cpaOpts=cpaPools.map(p=>`<option value="cpa:${p.name}">[CPA] ${p.name}</option>`).join('');
-  sel.innerHTML=`<option value="s2a">S2A 分发</option>${tpOpts}${cpaOpts}`;
+  sel.innerHTML=`<option value="s2a">S2A 分发</option>${tpOpts}${cpxOpts}${cpxDistOpt}${cpaOpts}`;
 }
 function toggleSchedPoolTarget(prefix){
   const val=document.getElementById(`${prefix}-pool-target`).value;
-  const isTokens=val.startsWith('tp:');
-  const isCpa=val.startsWith('cpa:');
+  const hideDistribution=isSinglePoolTarget(val);
+  const hideS2aSwitch=val!=='s2a';
   const distSection=document.getElementById(`${prefix}-dist-section`);
   const s2aSwitch=document.getElementById(`${prefix}-push-s2a`);
-  if(isTokens||isCpa){
+  if(hideDistribution){
     if(distSection) distSection.classList.add('hidden');
-    if(s2aSwitch) s2aSwitch.closest('label').classList.add('hidden');
   }else{
     if(distSection) distSection.classList.remove('hidden');
-    if(s2aSwitch) s2aSwitch.closest('label').classList.remove('hidden');
   }
+  if(s2aSwitch){
+    if(hideS2aSwitch) s2aSwitch.closest('label').classList.add('hidden');
+    else s2aSwitch.closest('label').classList.remove('hidden');
+  }
+  refreshDistributionRows(prefix);
 }
 function showAddScheduleForm(){
   document.getElementById('add-schedule-form').classList.remove('hidden');
@@ -1037,7 +1075,8 @@ function hideAddScheduleForm(){document.getElementById('add-schedule-form').clas
 let distRowCount=0;
 function addDistRow(){
   const id=distRowCount++;const rows=document.getElementById('sched-dist-rows');
-  const opts=(configData?.teams||[]).map(t=>`<option value="${t.name}">${t.name}</option>`).join('');
+  const poolTarget=document.getElementById('sched-pool-target').value;
+  const opts=buildDistributionPoolOptions(poolTarget,'');
   const row=document.createElement('div');row.className='flex items-center gap-2';row.id=`dist-row-${id}`;
   row.innerHTML=`<select class="dist-team field-input flex-1">${opts}</select><input class="dist-percent field-input w-24" type="number" min="1" max="100" placeholder="%" value="100"><button onclick="document.getElementById('dist-row-${id}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
   rows.appendChild(row);
@@ -1050,20 +1089,23 @@ async function submitAddSchedule(){
   if(startTime===endTime){toast('开始和结束时间不能相同','error');return}
   const poolTarget=document.getElementById('sched-pool-target').value;
   const isTokensTarget=poolTarget.startsWith('tp:');
+  const isCodexProxyTarget=poolTarget.startsWith('cpx:');
+  const isCodexProxyDistTarget=isCodexProxyDistributionTarget(poolTarget);
   const isCpaTarget=poolTarget.startsWith('cpa:');
   let distribution=[];
-  if(!isTokensTarget&&!isCpaTarget){
+  if(!isTokensTarget&&!isCodexProxyTarget&&!isCpaTarget){
     document.querySelectorAll('#sched-dist-rows > div').forEach(r=>{const t=r.querySelector('.dist-team').value,p=parseInt(r.querySelector('.dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
     const tot=distribution.reduce((s,d)=>s+d.percent,0);
     if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
   }
   const isFree=document.getElementById('sched-mode').value==='free';
-  if(!isTokensTarget&&!isCpaTarget&&isFree&&distribution.length>0){
+  if(poolTarget==='s2a'&&isFree&&distribution.length>0){
     const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
     if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
   }
-  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:(isTokensTarget||isCpaTarget)?false:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree};
+  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:(isTokensTarget||isCodexProxyTarget||isCodexProxyDistTarget||isCpaTarget)?false:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree,codexproxy_distribution:isCodexProxyDistTarget};
   if(isTokensTarget) body.tokens_pool_name=poolTarget.slice(3);
+  if(isCodexProxyTarget) body.codexproxy_pool_name=poolTarget.slice(4);
   if(isCpaTarget) body.cpa_pool_name=poolTarget.slice(4);
   const addLogMode=document.getElementById('sched-reg-log-mode').value;
   const addPerfMode=normalizeRegisterPerfMode(document.getElementById('sched-reg-perf-mode').value);
@@ -1115,6 +1157,10 @@ async function editSchedule(name){
   fillSchedPoolTargetOptions('es');
   if(s.tokens_pool_name){
     document.getElementById('es-pool-target').value='tp:'+s.tokens_pool_name;
+  }else if(s.codexproxy_pool_name){
+    document.getElementById('es-pool-target').value='cpx:'+s.codexproxy_pool_name;
+  }else if(s.codexproxy_distribution){
+    document.getElementById('es-pool-target').value='cpxd';
   }else if(s.cpa_pool_name){
     document.getElementById('es-pool-target').value='cpa:'+s.cpa_pool_name;
   }else{
@@ -1130,7 +1176,8 @@ async function editSchedule(name){
 let editDistCount=0;
 function addEditDistRow(team,pct){
   const id=editDistCount++;const rows=document.getElementById('es-dist-rows');
-  const opts=(configData?.teams||[]).map(t=>`<option value="${t.name}" ${t.name===team?'selected':''}>${t.name}</option>`).join('');
+  const poolTarget=document.getElementById('es-pool-target')?.value||'s2a';
+  const opts=buildDistributionPoolOptions(poolTarget,team);
   const row=document.createElement('div');row.className='flex items-center gap-2';row.id=`es-dist-row-${id}`;
   row.innerHTML=`<select class="es-dist-team field-input flex-1">${opts}</select><input class="es-dist-percent field-input w-24" type="number" min="1" max="100" value="${pct||100}"><button onclick="document.getElementById('es-dist-row-${id}').remove()" class="btn btn-danger text-xs py-1 px-2">&times;</button>`;
   rows.appendChild(row);
@@ -1143,6 +1190,8 @@ async function submitEditSchedule(){
   if(!newName){toast('名称不能为空','error');return}
   const poolTarget=document.getElementById('es-pool-target').value;
   const isTokensTarget=poolTarget.startsWith('tp:');
+  const isCodexProxyTarget=poolTarget.startsWith('cpx:');
+  const isCodexProxyDistTarget=isCodexProxyDistributionTarget(poolTarget);
   const isCpaTarget=poolTarget.startsWith('cpa:');
   const body={
     name:newName,
@@ -1151,11 +1200,13 @@ async function submitEditSchedule(){
     target_count:parseInt(document.getElementById('es-target').value),
     batch_interval_mins:parseInt(document.getElementById('es-interval').value)||30,
     priority,
-    push_s2a:(isTokensTarget||isCpaTarget)?false:document.getElementById('es-push-s2a').checked,
+    push_s2a:(isTokensTarget||isCodexProxyTarget||isCodexProxyDistTarget||isCpaTarget)?false:document.getElementById('es-push-s2a').checked,
     mail_provider:document.getElementById('es-mail').value,
     free_mode:document.getElementById('es-mode').value==='free',
     enabled:document.getElementById('es-enabled').checked,
     tokens_pool_name:isTokensTarget?poolTarget.slice(3):null,
+    codexproxy_pool_name:isCodexProxyTarget?poolTarget.slice(4):null,
+    codexproxy_distribution:isCodexProxyDistTarget,
     cpa_pool_name:isCpaTarget?poolTarget.slice(4):null
   };
   const editLogMode=document.getElementById('es-reg-log-mode').value;
@@ -1164,13 +1215,13 @@ async function submitEditSchedule(){
   body.register_perf_mode=editPerfMode==='inherit'?null:editPerfMode;
   const rw=document.getElementById('es-reg-workers').value,rtw=document.getElementById('es-rt-workers').value,rtr=document.getElementById('es-rt-retries').value;
   if(rw) body.register_workers=parseInt(rw);if(rtw) body.rt_workers=parseInt(rtw);if(rtr) body.rt_retries=parseInt(rtr);
-  if(!isTokensTarget&&!isCpaTarget){
+  if(!isTokensTarget&&!isCodexProxyTarget&&!isCpaTarget){
     const distribution=[];
     document.querySelectorAll('#es-dist-rows > div').forEach(r=>{const t=r.querySelector('.es-dist-team').value,p=parseInt(r.querySelector('.es-dist-percent').value);if(t&&p>0) distribution.push({team:t,percent:p})});
     const tot=distribution.reduce((s,d)=>s+d.percent,0);
     if(tot!==100){toast(`百分比总和必须为100，当前${tot}`,'error');return}
     const isFree=document.getElementById('es-mode').value==='free';
-    if(isFree&&distribution.length>0){
+    if(poolTarget==='s2a'&&isFree&&distribution.length>0){
       const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
       if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
     }
@@ -1656,6 +1707,82 @@ async function deleteTokensPool(name){
 }
 async function testTokensPool(name){
   try{const d=await api(`/api/config/tokens_pools/${encodeURIComponent(name)}/test`,{method:'POST'});toast(`${name}: ${d.message}`,'success')}catch(e){toast(`${name}: 连接失败`,'error')}
+}
+
+// =================== CodexProxy 号池管理 ===================
+function renderCodexProxyPools(){
+  const el=document.getElementById('codexproxy-pool-list');
+  if(!el)return;
+  const pools=configData?.codexproxy_pools||[];
+  if(pools.length===0){el.innerHTML='<p class="team-grid-empty text-sm text-dim text-center py-6">暂无 CodexProxy 号池</p>';return}
+  el.innerHTML=pools.map((p,idx)=>{
+    const esc=escapeHtml(p.name).replace(/'/g,"\\'");
+    return `
+  <div class="row-item">
+    <div class="flex items-start justify-between mb-2">
+      <div class="flex-1 grid grid-cols-2 lg:grid-cols-3 gap-2 text-[.8125rem]">
+        <div><span class="field-label">名称</span><div class="font-medium c-heading">${escapeHtml(p.name)}</div></div>
+        <div><span class="field-label">API</span><div class="font-mono text-xs text-dim-2 truncate max-w-[240px]">${escapeHtml(p.api_base)}</div></div>
+        <div><span class="field-label">并发</span><div class="font-mono c-heading">${p.concurrency||50}</div></div>
+      </div>
+      <div class="flex items-center gap-1 ml-3 shrink-0">
+        <button onclick="testCodexProxyPool('${esc}')" class="btn btn-ghost text-xs py-1 px-2">测试</button>
+        <button onclick="editCodexProxyPool(${idx})" class="btn btn-ghost text-xs py-1 px-2">编辑</button>
+        <button onclick="deleteCodexProxyPool('${esc}')" class="btn btn-danger text-xs py-1 px-2">删除</button>
+      </div>
+    </div>
+    <div class="text-xs text-dim">提交格式：refresh_token 使用 \\n 换行拼接批量 RT</div>
+  </div>`}).join('');
+}
+function showAddCodexProxyPoolForm(){
+  hideEditCodexProxyPoolForm();
+  document.getElementById('acpx-name').value='';
+  document.getElementById('acpx-api').value='';
+  document.getElementById('acpx-key').value='';
+  document.getElementById('acpx-concurrency').value='50';
+  document.getElementById('add-cpx-modal').classList.remove('hidden');
+}
+function hideAddCodexProxyPoolForm(){document.getElementById('add-cpx-modal').classList.add('hidden')}
+async function submitAddCodexProxyPool(){
+  const name=document.getElementById('acpx-name').value.trim();
+  const apiBase=document.getElementById('acpx-api').value.trim();
+  const adminKey=document.getElementById('acpx-key').value.trim();
+  const concurrency=parseInt(document.getElementById('acpx-concurrency').value)||50;
+  if(!name||!apiBase||!adminKey){toast('请填写必填字段','error');return}
+  const body={name,api_base:apiBase,admin_key:adminKey,concurrency};
+  try{await api('/api/config/codexproxy_pools',{method:'POST',body});toast(`CodexProxy 号池 ${name} 已添加`,'success');hideAddCodexProxyPoolForm();loadConfig()}catch{}
+}
+let editCodexProxyOrigName=null;
+function editCodexProxyPool(idx){
+  const pool=configData?.codexproxy_pools?.[idx];
+  if(!pool)return;
+  editCodexProxyOrigName=pool.name;
+  document.getElementById('ecpx-name').value=pool.name||'';
+  document.getElementById('ecpx-api').value=pool.api_base||'';
+  document.getElementById('ecpx-key').value=pool.admin_key||'';
+  document.getElementById('ecpx-concurrency').value=pool.concurrency||50;
+  hideAddCodexProxyPoolForm();
+  document.getElementById('edit-cpx-modal').classList.remove('hidden');
+}
+function hideEditCodexProxyPoolForm(){
+  document.getElementById('edit-cpx-modal').classList.add('hidden');
+  editCodexProxyOrigName=null;
+}
+async function submitEditCodexProxyPool(){
+  if(!editCodexProxyOrigName)return;
+  const body={};
+  const name=document.getElementById('ecpx-name').value.trim();if(name)body.name=name;
+  const apiBase=document.getElementById('ecpx-api').value.trim();if(apiBase)body.api_base=apiBase;
+  const adminKey=document.getElementById('ecpx-key').value.trim();if(adminKey)body.admin_key=adminKey;
+  const concurrency=parseInt(document.getElementById('ecpx-concurrency').value);if(concurrency)body.concurrency=concurrency;
+  try{await api(`/api/config/codexproxy_pools/${encodeURIComponent(editCodexProxyOrigName)}`,{method:'PUT',body});toast('CodexProxy 号池已更新','success');hideEditCodexProxyPoolForm();loadConfig()}catch{}
+}
+async function deleteCodexProxyPool(name){
+  if(!confirm(`确定删除 CodexProxy 号池 "${name}"？`))return;
+  try{await api(`/api/config/codexproxy_pools/${encodeURIComponent(name)}`,{method:'DELETE'});toast(`CodexProxy 号池 ${name} 已删除`,'success');loadConfig()}catch{}
+}
+async function testCodexProxyPool(name){
+  try{const d=await api(`/api/config/codexproxy_pools/${encodeURIComponent(name)}/test`,{method:'POST'});toast(`${name}: ${d.message}`,'success')}catch(e){toast(`${name}: 连接失败`,'error')}
 }
 
 // =================== CPA 号池管理 ===================

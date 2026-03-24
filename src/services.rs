@@ -15,8 +15,8 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::config::{
-    CodexRuntimeConfig, CpaPoolConfig, RegisterPerfMode, RegisterRuntimeConfig, S2aConfig,
-    S2aExtraConfig, TokensPoolConfig,
+    CodexProxyPoolConfig, CodexRuntimeConfig, CpaPoolConfig, RegisterPerfMode,
+    RegisterRuntimeConfig, S2aConfig, S2aExtraConfig, TokensPoolConfig,
 };
 use crate::email_service::{EmailService, WaitCodeOptions};
 use crate::fingerprint::{
@@ -2606,6 +2606,115 @@ impl TokensPoolService for TokensPoolHttpService {
             "Tokens Pool 批量推送失败: HTTP {} {}",
             status,
             truncate_text(&resp_body, 200)
+        );
+    }
+}
+
+// =================== CodexProxy 号池 Service ===================
+
+#[async_trait]
+pub trait CodexProxyPoolService: Send + Sync {
+    async fn test_connection(&self, pool: &CodexProxyPoolConfig) -> Result<()>;
+    async fn add_accounts_batch(
+        &self,
+        pool: &CodexProxyPoolConfig,
+        refresh_tokens: &[String],
+    ) -> Result<usize>;
+}
+
+pub struct CodexProxyPoolHttpService {
+    client: rquest::Client,
+}
+
+impl CodexProxyPoolHttpService {
+    pub fn new() -> Self {
+        let client = rquest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| rquest::Client::new());
+        Self { client }
+    }
+
+    fn normalized_base(api_base: &str) -> String {
+        api_base.trim().trim_end_matches('/').to_string()
+    }
+
+    fn endpoint(pool: &CodexProxyPoolConfig) -> String {
+        format!(
+            "{}/api/admin/accounts",
+            Self::normalized_base(&pool.api_base)
+        )
+    }
+}
+
+#[async_trait]
+impl CodexProxyPoolService for CodexProxyPoolHttpService {
+    async fn test_connection(&self, pool: &CodexProxyPoolConfig) -> Result<()> {
+        let url = Self::endpoint(pool);
+        let payload = serde_json::json!({ "refresh_token": "" });
+        let resp = self
+            .client
+            .post(&url)
+            .header("X-Admin-Key", pool.admin_key.trim())
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .context("CodexProxy 连接失败")?;
+
+        let status = resp.status();
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            bail!("CodexProxy 管理密钥认证失败: HTTP {}", status);
+        }
+        if status == StatusCode::NOT_FOUND {
+            bail!("CodexProxy 接口不存在: HTTP 404");
+        }
+        if status.is_server_error() {
+            bail!("CodexProxy 服务端错误: HTTP {}", status);
+        }
+        Ok(())
+    }
+
+    async fn add_accounts_batch(
+        &self,
+        pool: &CodexProxyPoolConfig,
+        refresh_tokens: &[String],
+    ) -> Result<usize> {
+        let tokens: Vec<String> = refresh_tokens
+            .iter()
+            .map(|rt| rt.trim())
+            .filter(|rt| !rt.is_empty())
+            .map(|rt| rt.to_string())
+            .collect();
+        if tokens.is_empty() {
+            return Ok(0);
+        }
+
+        let url = Self::endpoint(pool);
+        let payload = serde_json::json!({
+            "refresh_token": tokens.join("\n")
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("X-Admin-Key", pool.admin_key.trim())
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .context("CodexProxy 批量推送失败")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(tokens.len());
+        }
+
+        let body = resp.text().await.unwrap_or_default();
+        bail!(
+            "CodexProxy 批量推送失败: HTTP {} {}",
+            status,
+            truncate_text(&body, 200)
         );
     }
 }

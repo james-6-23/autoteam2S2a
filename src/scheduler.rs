@@ -698,6 +698,8 @@ mod tests {
             distribution: Vec::<DistributionEntry>::new(),
             tokens_pool_name: None,
             cpa_pool_name: None,
+            codexproxy_pool_name: None,
+            codexproxy_distribution: false,
         }
     }
 
