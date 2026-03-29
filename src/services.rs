@@ -361,8 +361,12 @@ impl LiveRegisterService {
             &format!("Token: {}", token_preview(&access_token)),
         );
 
-        // 注册阶段不再尝试获取 RT，全部交由独立 RT 阶段处理（成功率更高）
-        let refresh_token: Option<String> = None;
+        // 复用注册会话 Cookie 直接获取 refresh_token
+        log_worker(input.worker_id, "RT", "注册阶段尝试获取 RT...");
+        let refresh_token = self
+            .try_get_refresh_token(client, input.worker_id)
+            .await
+            .map(|(rt, _id_token)| rt);
 
         // ========== 支付步骤 ==========
         if !input.skip_payment && self.cfg.payment.payment_retries > 0 {
