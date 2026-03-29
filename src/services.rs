@@ -156,181 +156,264 @@ impl LiveRegisterService {
             .await?;
 
         log_worker(input.worker_id, "注册", "启动授权...");
-        self.start_authorize(client, navigation_headers, &authorize_url)
+        let authorize_final_url = self
+            .start_authorize(client, navigation_headers, &authorize_url)
             .await?;
-        log_worker(input.worker_id, "OK", "授权成功");
+        let final_path = authorize_final_url
+            .split('?')
+            .next()
+            .unwrap_or(&authorize_final_url);
+        log_worker(
+            input.worker_id,
+            "OK",
+            &format!("授权 → {}", truncate_text(final_path, 80)),
+        );
 
-        log_worker(input.worker_id, "注册", "注册账户...");
-        self.register_account(client, &input.seed.account, &input.seed.password)
-            .await?;
-        log_worker(input.worker_id, "OK", "注册接口成功");
+        // 根据 authorize 最终 URL 分支处理（对齐 Python reg.py）
+        //   create-account/password → 全新注册：register + send_otp + wait + validate
+        //   email-verification / email-otp → authorize 已触发 OTP，只等验证码
+        //   about-you → 跳过注册和 OTP，直接填写信息
+        //   callback / chatgpt.com → 已完成注册，直接获取 token
+        let already_done =
+            final_path.contains("callback") || authorize_final_url.contains("chatgpt.com");
+        let skip_otp = already_done || final_path.contains("about-you");
+        let skip_register = skip_otp
+            || final_path.contains("email-verification")
+            || final_path.contains("email-otp");
+        let skip_send_otp = skip_register;
 
-        let mail_proxy = if self.cfg.use_proxy_for_mail {
-            input.proxy.as_deref()
+        if already_done {
+            log_worker(input.worker_id, "OK", "账号已完成注册，跳到获取 token");
+        } else if skip_otp {
+            log_worker(input.worker_id, "注册", "跳到填写信息阶段（无需 OTP）");
+        } else if skip_register {
+            log_worker(
+                input.worker_id,
+                "注册",
+                "进入 OTP 验证阶段（authorize 已触发发送）",
+            );
         } else {
-            None
-        };
+            log_worker(input.worker_id, "注册", "全新注册流程");
+        }
 
-        let optimized_poll = matches!(self.cfg.register_perf_mode, RegisterPerfMode::Adaptive);
-        let turbo_mode = matches!(self.cfg.register_perf_mode, RegisterPerfMode::Turbo);
-        let primary_timeout_secs = if turbo_mode {
-            25
-        } else if optimized_poll {
-            32
-        } else {
-            35
-        };
-        let retry_timeout_secs = if optimized_poll { 24 } else { 20 };
-        let primary_options = if turbo_mode {
-            WaitCodeOptions {
-                after_email_id: 0,
-                prefetch_latest_email_id: true,
-                max_retries: (self.cfg.otp_max_retries + 8).max(12),
-                interval_ms: (self.cfg.otp_interval_ms / 5).clamp(150, 300),
-                max_interval_ms: self.cfg.otp_interval_ms.max(800).min(1200),
-                interval_backoff_step_ms: 80,
-                size: 3,
-                subject_must_contain_code_word: false,
-                strict_fetch: false,
-            }
-        } else if optimized_poll {
-            WaitCodeOptions {
-                after_email_id: 0,
-                prefetch_latest_email_id: true,
-                max_retries: (self.cfg.otp_max_retries + 6).max(8),
-                interval_ms: (self.cfg.otp_interval_ms / 3).clamp(250, 500),
-                max_interval_ms: self.cfg.otp_interval_ms.max(1100).min(1800),
-                interval_backoff_step_ms: 120,
-                size: 3,
-                subject_must_contain_code_word: false,
-                strict_fetch: false,
-            }
-        } else {
-            WaitCodeOptions {
-                after_email_id: 0,
-                prefetch_latest_email_id: true,
-                max_retries: self.cfg.otp_max_retries,
-                interval_ms: self.cfg.otp_interval_ms,
-                max_interval_ms: self.cfg.otp_interval_ms,
-                interval_backoff_step_ms: 0,
-                size: 5,
-                subject_must_contain_code_word: false,
-                strict_fetch: true,
-            }
-        };
-        let retry_options = if optimized_poll {
-            WaitCodeOptions {
-                after_email_id: 0,
-                prefetch_latest_email_id: false,
-                max_retries: 18,
-                interval_ms: 900,
-                max_interval_ms: 1800,
-                interval_backoff_step_ms: 180,
-                size: 6,
-                subject_must_contain_code_word: false,
-                strict_fetch: false,
-            }
-        } else {
-            WaitCodeOptions {
-                after_email_id: 0,
-                prefetch_latest_email_id: false,
-                max_retries: 15,
-                interval_ms: 800,
-                max_interval_ms: 800,
-                interval_backoff_step_ms: 0,
-                size: 5,
-                subject_must_contain_code_word: false,
-                strict_fetch: false, // 网络异常不中断
-            }
-        };
-
-        // 先启动后台轮询再发送验证码，利用发送耗时提前开始轮询。
-        let mut otp_handle = self
-            .email_service
-            .start_background_poll(&input.seed.account, mail_proxy, primary_options)
-            .await?;
-
-        log_worker(input.worker_id, "注册", "发送验证码...");
-        self.send_verification_email(client).await?;
-
-        let wait_hint = if turbo_mode {
-            format!("等待验证码 (turbo, {}s超时)...", primary_timeout_secs)
-        } else if optimized_poll {
-            format!("等待验证码 (自适应轮询, {}s超时)...", primary_timeout_secs)
-        } else {
-            format!("等待验证码 ({}s超时)...", primary_timeout_secs)
-        };
-        log_worker(input.worker_id, "注册", &wait_hint);
-
-        // === 分级超时策略 ===
-        // 第1轮：主超时等待后台轮询结果
-        let otp_code = match tokio::time::timeout(
-            Duration::from_secs(primary_timeout_secs),
-            otp_handle.wait(),
-        )
-        .await
-        {
-            Ok(Ok(Ok(code))) => code,
-            Ok(Ok(Err(e))) => bail!("验证码轮询失败: {e}"),
-            Ok(Err(_)) => bail!("后台验证码轮询任务意外终止"),
-            Err(_) => {
-                otp_handle.cancel();
-                // Turbo 模式：不做补偿轮询，直接跳过
-                if turbo_mode {
-                    bail!("otp_timeout_skip");
-                }
-                // 第1轮超时，重新轮询邮箱
-                let retry_hint = if optimized_poll {
-                    format!(
-                        "验证码主轮询超时，进入补偿轮询 ({}s)...",
-                        retry_timeout_secs
-                    )
-                } else {
-                    format!(
-                        "验证码 {}s 超时，重新轮询邮箱 ({}s重试)...",
-                        primary_timeout_secs, retry_timeout_secs
-                    )
-                };
-                log_worker(input.worker_id, "注册", &retry_hint);
-
-                let mail_proxy_retry = if self.cfg.use_proxy_for_mail {
-                    input.proxy.as_deref()
-                } else {
-                    None
-                };
-                let mut retry_handle = self
-                    .email_service
-                    .start_background_poll(&input.seed.account, mail_proxy_retry, retry_options)
-                    .await?;
-
-                match tokio::time::timeout(
-                    Duration::from_secs(retry_timeout_secs),
-                    retry_handle.wait(),
-                )
+        // --- 已完成分支：跳过注册/OTP/create_account，直接获取 session ---
+        if already_done {
+            let access_token = self.get_session_token(client).await?;
+            log_worker(
+                input.worker_id,
+                "OK",
+                &format!("Token: {}", token_preview(&access_token)),
+            );
+            let refresh_token = self
+                .try_get_refresh_token(client, input.worker_id)
                 .await
-                {
-                    Ok(Ok(Ok(code))) => code,
-                    _ => {
-                        retry_handle.cancel();
-                        log_worker(input.worker_id, "ERR", "验证码补偿轮询仍超时，跳过此账号");
+                .map(|(rt, _)| rt);
+            let (account_id, plan_type) = self
+                .check_account_status_with_timeout(client, &access_token)
+                .await?;
+            log_worker(input.worker_id, "OK", "注册成功（已存在账号）");
+            return Ok(RegisteredAccount {
+                account: input.seed.account.clone(),
+                password: input.seed.password.clone(),
+                token: access_token,
+                account_id,
+                plan_type,
+                proxy: input.proxy.clone(),
+                refresh_token,
+            });
+        }
+
+        // --- 注册接口（仅全新注册和未知路径） ---
+        if !skip_register {
+            log_worker(input.worker_id, "注册", "注册账户...");
+            self.register_account(client, &input.seed.account, &input.seed.password)
+                .await?;
+            log_worker(input.worker_id, "OK", "注册接口成功");
+        }
+
+        // --- OTP 验证（全新注册 + email-verification 分支） ---
+        if !skip_otp {
+            let mail_proxy = if self.cfg.use_proxy_for_mail {
+                input.proxy.as_deref()
+            } else {
+                None
+            };
+
+            let optimized_poll =
+                matches!(self.cfg.register_perf_mode, RegisterPerfMode::Adaptive);
+            let turbo_mode = matches!(self.cfg.register_perf_mode, RegisterPerfMode::Turbo);
+            let primary_timeout_secs = if turbo_mode {
+                25
+            } else if optimized_poll {
+                32
+            } else {
+                35
+            };
+            let retry_timeout_secs = if optimized_poll { 24 } else { 20 };
+            let primary_options = if turbo_mode {
+                WaitCodeOptions {
+                    after_email_id: 0,
+                    prefetch_latest_email_id: true,
+                    max_retries: (self.cfg.otp_max_retries + 8).max(12),
+                    interval_ms: (self.cfg.otp_interval_ms / 5).clamp(150, 300),
+                    max_interval_ms: self.cfg.otp_interval_ms.max(800).min(1200),
+                    interval_backoff_step_ms: 80,
+                    size: 3,
+                    subject_must_contain_code_word: false,
+                    strict_fetch: false,
+                }
+            } else if optimized_poll {
+                WaitCodeOptions {
+                    after_email_id: 0,
+                    prefetch_latest_email_id: true,
+                    max_retries: (self.cfg.otp_max_retries + 6).max(8),
+                    interval_ms: (self.cfg.otp_interval_ms / 3).clamp(250, 500),
+                    max_interval_ms: self.cfg.otp_interval_ms.max(1100).min(1800),
+                    interval_backoff_step_ms: 120,
+                    size: 3,
+                    subject_must_contain_code_word: false,
+                    strict_fetch: false,
+                }
+            } else {
+                WaitCodeOptions {
+                    after_email_id: 0,
+                    prefetch_latest_email_id: true,
+                    max_retries: self.cfg.otp_max_retries,
+                    interval_ms: self.cfg.otp_interval_ms,
+                    max_interval_ms: self.cfg.otp_interval_ms,
+                    interval_backoff_step_ms: 0,
+                    size: 5,
+                    subject_must_contain_code_word: false,
+                    strict_fetch: true,
+                }
+            };
+            let retry_options = if optimized_poll {
+                WaitCodeOptions {
+                    after_email_id: 0,
+                    prefetch_latest_email_id: false,
+                    max_retries: 18,
+                    interval_ms: 900,
+                    max_interval_ms: 1800,
+                    interval_backoff_step_ms: 180,
+                    size: 6,
+                    subject_must_contain_code_word: false,
+                    strict_fetch: false,
+                }
+            } else {
+                WaitCodeOptions {
+                    after_email_id: 0,
+                    prefetch_latest_email_id: false,
+                    max_retries: 15,
+                    interval_ms: 800,
+                    max_interval_ms: 800,
+                    interval_backoff_step_ms: 0,
+                    size: 5,
+                    subject_must_contain_code_word: false,
+                    strict_fetch: false,
+                }
+            };
+
+            // 先启动后台轮询
+            let mut otp_handle = self
+                .email_service
+                .start_background_poll(&input.seed.account, mail_proxy, primary_options)
+                .await?;
+
+            // 全新注册需要主动发送验证码；email-verification 阶段 authorize 已触发，不重发
+            if !skip_send_otp {
+                log_worker(input.worker_id, "注册", "发送验证码...");
+                self.send_verification_email(client).await?;
+            } else {
+                log_worker(
+                    input.worker_id,
+                    "注册",
+                    "等待验证码（authorize 已触发发送）...",
+                );
+            }
+
+            let wait_hint = if turbo_mode {
+                format!("等待验证码 (turbo, {}s超时)...", primary_timeout_secs)
+            } else if optimized_poll {
+                format!("等待验证码 (自适应轮询, {}s超时)...", primary_timeout_secs)
+            } else {
+                format!("等待验证码 ({}s超时)...", primary_timeout_secs)
+            };
+            log_worker(input.worker_id, "注册", &wait_hint);
+
+            // === 分级超时策略 ===
+            let otp_code = match tokio::time::timeout(
+                Duration::from_secs(primary_timeout_secs),
+                otp_handle.wait(),
+            )
+            .await
+            {
+                Ok(Ok(Ok(code))) => code,
+                Ok(Ok(Err(e))) => bail!("验证码轮询失败: {e}"),
+                Ok(Err(_)) => bail!("后台验证码轮询任务意外终止"),
+                Err(_) => {
+                    otp_handle.cancel();
+                    if turbo_mode {
                         bail!("otp_timeout_skip");
                     }
+                    let retry_hint = if optimized_poll {
+                        format!(
+                            "验证码主轮询超时，进入补偿轮询 ({}s)...",
+                            retry_timeout_secs
+                        )
+                    } else {
+                        format!(
+                            "验证码 {}s 超时，重新轮询邮箱 ({}s重试)...",
+                            primary_timeout_secs, retry_timeout_secs
+                        )
+                    };
+                    log_worker(input.worker_id, "注册", &retry_hint);
+
+                    let mail_proxy_retry = if self.cfg.use_proxy_for_mail {
+                        input.proxy.as_deref()
+                    } else {
+                        None
+                    };
+                    let mut retry_handle = self
+                        .email_service
+                        .start_background_poll(
+                            &input.seed.account,
+                            mail_proxy_retry,
+                            retry_options,
+                        )
+                        .await?;
+
+                    match tokio::time::timeout(
+                        Duration::from_secs(retry_timeout_secs),
+                        retry_handle.wait(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(Ok(code))) => code,
+                        _ => {
+                            retry_handle.cancel();
+                            log_worker(
+                                input.worker_id,
+                                "ERR",
+                                "验证码补偿轮询仍超时，跳过此账号",
+                            );
+                            bail!("otp_timeout_skip");
+                        }
+                    }
                 }
-            }
-        };
-        log_worker(input.worker_id, "OK", &format!("验证码: {otp_code}"));
-        log_worker(input.worker_id, "注册", &format!("验证码: {otp_code}"));
+            };
+            log_worker(input.worker_id, "OK", &format!("验证码: {otp_code}"));
 
-        self.validate_otp(client, &otp_code).await?;
-        log_worker(input.worker_id, "OK", "OTP 校验成功");
+            self.validate_otp(client, &otp_code).await?;
+            log_worker(input.worker_id, "OK", "OTP 校验成功");
+        }
 
+        // --- Sentinel token + 创建账户 ---
         log_worker(input.worker_id, "注册", "获取 Sentinel token...");
         let sentinel_cfg = sentinel::SentinelConfig {
             enabled: self.cfg.sentinel_enabled,
             strict: self.cfg.strict_sentinel,
             pow_max_iterations: self.cfg.pow_max_iterations,
         };
-        // 使用 oai_did 作为 device_id，user_agent 从配置获取
         let mut sentinel_state = sentinel::SentinelState::new(&oai_did, &self.cfg.user_agent);
         let sentinel_header = sentinel::build_sentinel_header_cached(
             client,
@@ -623,12 +706,13 @@ impl LiveRegisterService {
         bail!("授权 URL 非预期");
     }
 
+    /// 启动授权流程，返回重定向后的最终 URL 用于后续分支判断
     async fn start_authorize(
         &self,
         client: &rquest::Client,
         navigation_headers: &HeaderMap,
         authorize_url: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let resp = client
             .get(authorize_url)
             .headers(navigation_headers.clone())
@@ -637,11 +721,7 @@ impl LiveRegisterService {
         if !resp.status().is_success() {
             bail!("启动授权失败: HTTP {}", resp.status());
         }
-        let final_url = resp.url().to_string();
-        if final_url.contains("create-account") || final_url.contains("log-in") {
-            return Ok(());
-        }
-        bail!("授权流程启动失败，final_url={final_url}");
+        Ok(resp.url().to_string())
     }
 
     async fn register_account(
@@ -657,6 +737,9 @@ impl LiveRegisterService {
         let resp = client
             .post("https://auth.openai.com/api/accounts/user/register")
             .header("Origin", "https://auth.openai.com")
+            .header("Accept", "application/json")
+            .header("Referer", "https://auth.openai.com/create-account/password")
+            .headers(make_trace_headers())
             .json(&payload)
             .send()
             .await?;
@@ -669,6 +752,12 @@ impl LiveRegisterService {
     async fn send_verification_email(&self, client: &rquest::Client) -> Result<()> {
         let resp = client
             .get("https://auth.openai.com/api/accounts/email-otp/send")
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .header("Referer", "https://auth.openai.com/create-account/password")
+            .header("Upgrade-Insecure-Requests", "1")
             .send()
             .await?;
         if resp.status() == StatusCode::OK {
@@ -684,6 +773,9 @@ impl LiveRegisterService {
         let resp = client
             .post("https://auth.openai.com/api/accounts/email-otp/validate")
             .header("Origin", "https://auth.openai.com")
+            .header("Accept", "application/json")
+            .header("Referer", "https://auth.openai.com/email-verification")
+            .headers(make_trace_headers())
             .json(&payload)
             .send()
             .await?;
@@ -706,7 +798,10 @@ impl LiveRegisterService {
         };
         let mut req = client
             .post("https://auth.openai.com/api/accounts/create_account")
-            .header("Origin", "https://auth.openai.com");
+            .header("Origin", "https://auth.openai.com")
+            .header("Accept", "application/json")
+            .header("Referer", "https://auth.openai.com/about-you")
+            .headers(make_trace_headers());
         if let Some(header) = sentinel_header {
             req = req.header("OpenAI-Sentinel-Token", header);
         }
@@ -2383,6 +2478,34 @@ fn truncate_text(text: &str, max_len: usize) -> &str {
         end -= 1;
     }
     &text[..end]
+}
+
+/// 生成 DataDog APM 追踪头，模拟真实浏览器 RUM 请求
+fn make_trace_headers() -> HeaderMap {
+    let mut rng = rand::rng();
+    let trace_id: u64 = rng.random_range(100_000_000_000_000_000..999_999_999_999_999_999);
+    let parent_id: u64 = rng.random_range(100_000_000_000_000_000..999_999_999_999_999_999);
+    let tp = format!("00-{}-{:016x}-01", Uuid::new_v4().as_simple(), parent_id);
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = tp.parse() {
+        headers.insert("traceparent", v);
+    }
+    if let Ok(v) = "dd=s:1;o:rum".parse() {
+        headers.insert("tracestate", v);
+    }
+    if let Ok(v) = "rum".parse() {
+        headers.insert("x-datadog-origin", v);
+    }
+    if let Ok(v) = "1".parse() {
+        headers.insert("x-datadog-sampling-priority", v);
+    }
+    if let Ok(v) = trace_id.to_string().parse() {
+        headers.insert("x-datadog-trace-id", v);
+    }
+    if let Ok(v) = parent_id.to_string().parse() {
+        headers.insert("x-datadog-parent-id", v);
+    }
+    headers
 }
 
 fn fingerprint_salt(proxy: Option<&str>, retry: usize, entropy: usize) -> usize {
