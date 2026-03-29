@@ -185,6 +185,7 @@ pub async fn run_distribution(
         tokens_pool: None,
         cpa_pool: None,
         codexproxy_pool: None,
+        at_only: schedule.at_only,
     };
 
     // Tokens 号池模式

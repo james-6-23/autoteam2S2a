@@ -422,6 +422,7 @@ async fn run(
         tokens_pool: None,
         cpa_pool: None,
         codexproxy_pool: None,
+        at_only: false,
     };
     let tokens_pool_service: Arc<dyn services::TokensPoolService> = Arc::new(TokensPoolHttpService::new());
     let cpa_pool_service: Arc<dyn services::CpaPoolService> = Arc::new(services::CpaPoolHttpService::new());

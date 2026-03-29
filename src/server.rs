@@ -280,6 +280,9 @@ pub struct CreateTaskRequest {
     pub pool_type: Option<String>,
     /// Tokens 号池名称（pool_type="tokens" 时使用）
     pub pool_name: Option<String>,
+    /// AT-only 模式：注册后只取 AT 不取 RT，直接推送到 CodexProxy /accounts/at
+    #[serde(default)]
+    pub at_only: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -2377,6 +2380,7 @@ async fn create_task_handler(
 
     let task_id_clone = task_id.clone();
     let task_manager = state.task_manager.clone();
+    let at_only = req.at_only.unwrap_or(false);
     let proxy_file = state.proxy_file.clone();
     let run_history_db = state.run_history_db.clone();
 
@@ -2398,6 +2402,7 @@ async fn create_task_handler(
             tokens_pool,
             cpa_pool,
             codexproxy_pool,
+            at_only,
         )
         .await;
     });
@@ -2576,6 +2581,7 @@ async fn execute_task(
     tokens_pool: Option<TokensPoolConfig>,
     cpa_pool: Option<CpaPoolConfig>,
     codexproxy_pool: Option<CodexProxyPoolConfig>,
+    at_only: bool,
 ) {
     task_manager.set_running(&task_id).await;
 
@@ -2742,6 +2748,7 @@ async fn execute_task(
         tokens_pool: tokens_pool.clone(),
         cpa_pool: cpa_pool.clone(),
         codexproxy_pool: codexproxy_pool.clone(),
+        at_only,
     };
 
     let progress = task_manager.get_progress(&task_id).await;
@@ -2843,6 +2850,8 @@ struct CreateScheduleRequest {
     codexproxy_distribution: bool,
     #[serde(default)]
     cpa_pool_name: Option<String>,
+    #[serde(default)]
+    at_only: bool,
 }
 
 fn default_true_serde() -> bool {
@@ -2880,6 +2889,7 @@ struct UpdateScheduleRequest {
     codexproxy_pool_name: Option<Option<String>>,
     codexproxy_distribution: Option<bool>,
     cpa_pool_name: Option<Option<String>>,
+    at_only: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -3076,6 +3086,7 @@ async fn create_schedule_handler(
         codexproxy_pool_name: req.codexproxy_pool_name.filter(|s| !s.is_empty()),
         codexproxy_distribution: req.codexproxy_distribution,
         cpa_pool_name: req.cpa_pool_name.filter(|s| !s.is_empty()),
+        at_only: req.at_only,
     });
     auto_save(&cfg, &state.config_path);
 
@@ -3201,6 +3212,11 @@ async fn update_schedule_handler(
         let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
         let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
         sched.cpa_pool_name = cpa_name.filter(|s| !s.is_empty());
+    }
+    if let Some(ao) = req.at_only {
+        let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
+        let sched = cfg.schedule.iter_mut().find(|s| s.name == actual).unwrap();
+        sched.at_only = ao;
     }
     let actual = req.name.as_deref().map(|n| n.trim()).unwrap_or(&name);
     let current_sched = cfg

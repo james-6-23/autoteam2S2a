@@ -90,6 +90,8 @@ pub struct WorkflowOptions {
     pub cpa_pool: Option<CpaPoolConfig>,
     /// CodexProxy 号池配置
     pub codexproxy_pool: Option<CodexProxyPoolConfig>,
+    /// AT-only 模式：跳过 RT，注册后直接推送 access_token
+    pub at_only: bool,
 }
 
 pub struct WorkflowRunner {
@@ -206,8 +208,9 @@ impl WorkflowRunner {
                 ));
             } else {
                 let plan_label = if options.free_mode { "free" } else { "team" };
+                let pipeline_label = if options.at_only { "AT" } else { "RT" };
                 broadcast_log(&format!(
-                    "阶段1+2: 注册 {plan_label} 账号 → RT (流水线模式, 目标{plan_label} RT成功 {target})"
+                    "阶段1+2: 注册 {plan_label} 账号 → {pipeline_label} (流水线模式, 目标{plan_label} {pipeline_label}成功 {target})"
                 ));
             }
             let round_no = round + 1;
@@ -299,6 +302,7 @@ impl WorkflowRunner {
                 let base_idx = total_task_index;
                 let cancel = cancel_flag.clone();
                 let prog = progress.cloned();
+                let at_only_flag = options.at_only;
                 let free_mode = options.free_mode;
                 let log_mode = options.register_log_mode;
                 let round_no = round + 1;
@@ -386,6 +390,8 @@ impl WorkflowRunner {
                                     task_index: task_no,
                                     task_total: target,
                                     skip_payment: free_mode,
+                                    at_only: at_only_flag,
+                                    cancel_flag: Some(cancel.clone()),
                                 };
                                 match register_service.register(input).await {
                                     Ok(acc) => match reg_tx.send(acc).await {
@@ -435,7 +441,21 @@ impl WorkflowRunner {
                         })
                         .buffer_unordered(reg_concurrency);
 
-                    while result_stream.next().await.is_some() {}
+                    loop {
+                        tokio::select! {
+                            item = result_stream.next() => {
+                                if item.is_none() { break; }
+                            }
+                            _ = async {
+                                while !cancel.load(Ordering::Relaxed) {
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                            } => {
+                                // 取消时立即丢弃 stream，不等剩余 future 完成
+                                break;
+                            }
+                        }
+                    }
                     drop(result_stream);
                     summary_stop.store(true, Ordering::Relaxed);
                     if let Some(handle) = summary_handle {
@@ -448,8 +468,16 @@ impl WorkflowRunner {
                 })
             };
 
-            // RT 消费者
-            let rt_handle = {
+            // RT/AT 消费者
+            let rt_handle = if options.at_only {
+                // AT-only: 直接将注册结果转为 AccountWithRt 推入下游
+                let cancel = cancel_flag.clone();
+                let prog = progress.cloned();
+                let s2a_tx = s2a_tx.clone();
+                tokio::spawn(async move {
+                    Self::at_pipeline_consumer(rt_rx, cancel, prog, s2a_tx).await
+                })
+            } else {
                 let codex_service = Arc::clone(&self.codex_service);
                 let proxy_pool = Arc::clone(&self.proxy_pool);
                 let rt_retry_max = options.rt_retry_max;
@@ -1033,6 +1061,162 @@ impl WorkflowRunner {
         (ok, fail)
     }
 
+    /// AT-only 模式的 CodexProxy 流式推送消费者：推送 access_token 而非 refresh_token
+    async fn codexproxy_at_streaming_consumer(
+        mut rx: mpsc::Receiver<AccountWithRt>,
+        codexproxy_service: Arc<dyn CodexProxyPoolService>,
+        pool: &CodexProxyPoolConfig,
+        progress: Option<&Arc<TaskProgress>>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> (usize, usize) {
+        use tokio::sync::Semaphore;
+
+        const MAX_RETRIES: usize = 3;
+        const RETRY_DELAY_SECS: u64 = 3;
+        const BATCH_SIZE: usize = 100;
+        const BATCH_TIMEOUT_MS: u64 = 2000;
+
+        let concurrency = pool.concurrency.max(1);
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let mut join_set = tokio::task::JoinSet::new();
+
+        let ok_count = Arc::new(AtomicUsize::new(0));
+        let fail_count = Arc::new(AtomicUsize::new(0));
+
+        broadcast_log(&format!(
+            "[CodexProxy-AT-Stream] AT 流式推送已启动 [{}] (batch={BATCH_SIZE}, concurrency={concurrency})",
+            pool.name
+        ));
+
+        let mut batch_tokens: Vec<String> = Vec::with_capacity(BATCH_SIZE);
+        let mut batch_accounts: Vec<String> = Vec::with_capacity(BATCH_SIZE);
+        let mut channel_closed = false;
+
+        loop {
+            if channel_closed && batch_tokens.is_empty() {
+                break;
+            }
+
+            if !channel_closed && batch_tokens.len() < BATCH_SIZE {
+                let recv_result = if batch_tokens.is_empty() {
+                    tokio::select! {
+                        acc = rx.recv() => acc,
+                        _ = Self::wait_for_cancel(cancel_flag.clone()) => {
+                            broadcast_log("[CodexProxy-AT-Stream] 收到中断信号，停止接收");
+                            channel_closed = true;
+                            None
+                        }
+                    }
+                } else {
+                    tokio::select! {
+                        acc = rx.recv() => acc,
+                        _ = tokio::time::sleep(Duration::from_millis(BATCH_TIMEOUT_MS)) => None,
+                        _ = Self::wait_for_cancel(cancel_flag.clone()) => {
+                            broadcast_log("[CodexProxy-AT-Stream] 收到中断信号，停止接收");
+                            channel_closed = true;
+                            None
+                        }
+                    }
+                };
+
+                match recv_result {
+                    Some(acc) => {
+                        // AT-only: 从 token 字段取 access_token
+                        let access_token = acc.token.trim().to_string();
+                        if access_token.is_empty() {
+                            if let Some(ref p) = progress {
+                                p.s2a_failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                            fail_count.fetch_add(1, Ordering::Relaxed);
+                            broadcast_log(&format!(
+                                "[CodexProxy-AT-Stream] 跳过空 AT: {}",
+                                acc.account
+                            ));
+                            continue;
+                        }
+                        batch_tokens.push(access_token);
+                        batch_accounts.push(acc.account);
+                        continue;
+                    }
+                    None => {
+                        if batch_tokens.is_empty() {
+                            channel_closed = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if batch_tokens.is_empty() {
+                if channel_closed {
+                    break;
+                }
+                continue;
+            }
+
+            let tokens_to_send: Vec<String> = batch_tokens.drain(..).collect();
+            let accounts_to_send: Vec<String> = batch_accounts.drain(..).collect();
+            let count = tokens_to_send.len();
+
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let codexproxy_service = Arc::clone(&codexproxy_service);
+            let pool_cfg = pool.clone();
+            let ok_count = Arc::clone(&ok_count);
+            let fail_count = Arc::clone(&fail_count);
+            let prog = progress.map(Arc::clone);
+
+            join_set.spawn(async move {
+                let _permit = permit;
+                let mut last_err = None;
+                for retry in 0..MAX_RETRIES {
+                    if retry > 0 {
+                        tokio::time::sleep(Duration::from_secs(RETRY_DELAY_SECS)).await;
+                    }
+                    match codexproxy_service
+                        .add_at_batch(&pool_cfg, &tokens_to_send)
+                        .await
+                    {
+                        Ok(_) => {
+                            if let Some(ref p) = prog {
+                                p.s2a_ok.fetch_add(count, Ordering::Relaxed);
+                            }
+                            ok_count.fetch_add(count, Ordering::Relaxed);
+                            broadcast_log(&format!(
+                                "[CodexProxy-AT-Stream] AT 批量推送成功 {}个 ({}...)",
+                                count,
+                                accounts_to_send.first().unwrap_or(&String::new())
+                            ));
+                            return;
+                        }
+                        Err(e) => {
+                            last_err = Some(e);
+                        }
+                    }
+                }
+                if let Some(ref p) = prog {
+                    p.s2a_failed.fetch_add(count, Ordering::Relaxed);
+                }
+                fail_count.fetch_add(count, Ordering::Relaxed);
+                broadcast_log(&format!(
+                    "[CodexProxy-AT-Stream] AT 批量推送失败 {}个 ({}轮重试): {}",
+                    count,
+                    MAX_RETRIES,
+                    last_err.map(|e| format!("{e}")).unwrap_or_default()
+                ));
+            });
+        }
+
+        while join_set.join_next().await.is_some() {}
+
+        let ok = ok_count.load(Ordering::Relaxed);
+        let fail = fail_count.load(Ordering::Relaxed);
+        broadcast_log(&format!(
+            "[CodexProxy-AT-Stream] AT 流式推送完成: ok={ok} fail={fail}"
+        ));
+
+        (ok, fail)
+    }
+
     async fn tokens_streaming_consumer(
         mut rx: mpsc::Receiver<AccountWithRt>,
         tokens_service: Arc<dyn TokensPoolService>,
@@ -1337,16 +1521,17 @@ impl WorkflowRunner {
         }
 
         if let Some(ref p) = progress {
+            let rt_label = if options.at_only { "AT" } else { "RT" };
             if options.tokens_pool.is_some() {
-                p.set_stage("注册 + RT + Tokens");
+                p.set_stage(&format!("注册 + {rt_label} + Tokens"));
             } else if options.codexproxy_pool.is_some() {
-                p.set_stage("注册 + RT + CodexProxy");
+                p.set_stage(&format!("注册 + {rt_label} + CodexProxy"));
             } else if options.cpa_pool.is_some() {
-                p.set_stage("注册 + RT + CPA");
+                p.set_stage(&format!("注册 + {rt_label} + CPA"));
             } else if options.push_s2a {
-                p.set_stage("注册 + RT + S2A");
+                p.set_stage(&format!("注册 + {rt_label} + S2A"));
             } else {
-                p.set_stage("注册 + RT");
+                p.set_stage(&format!("注册 + {rt_label}"));
             }
         }
 
@@ -1419,15 +1604,27 @@ impl WorkflowRunner {
             let pool_cfg = options.codexproxy_pool.clone().unwrap();
             let prog = progress.clone();
             let cancel = cancel_flag.clone();
+            let at_only = options.at_only;
             Some(tokio::spawn(async move {
-                Self::codexproxy_streaming_consumer(
-                    rx,
-                    codexproxy_service,
-                    &pool_cfg,
-                    prog.as_ref(),
-                    cancel,
-                )
-                .await
+                if at_only {
+                    Self::codexproxy_at_streaming_consumer(
+                        rx,
+                        codexproxy_service,
+                        &pool_cfg,
+                        prog.as_ref(),
+                        cancel,
+                    )
+                    .await
+                } else {
+                    Self::codexproxy_streaming_consumer(
+                        rx,
+                        codexproxy_service,
+                        &pool_cfg,
+                        prog.as_ref(),
+                        cancel,
+                    )
+                    .await
+                }
             }))
         } else {
             None
@@ -1701,7 +1898,12 @@ impl WorkflowRunner {
             });
         }
 
-        // 等待所有 RT 任务完成（入库推送已在各 spawn 内完成）
+        // 取消时 abort 所有正在运行的 RT 任务，不再等待完成
+        if cancel_flag.load(Ordering::Relaxed) {
+            broadcast_log("已收到中断信号，abort 所有 RT 任务...");
+            join_set.abort_all();
+        }
+
         let mut rt_success = Vec::new();
         let mut rt_failed = Vec::new();
         while let Some(join_result) = join_set.join_next().await {
@@ -1710,10 +1912,52 @@ impl WorkflowRunner {
                     rt_success.push(acc_with_rt);
                 }
                 Ok(Err(acc)) => rt_failed.push(acc),
-                Err(_) => {} // JoinError，任务 panicked
+                Err(_) => {} // JoinError / abort
             }
         }
         (rt_success, rt_failed)
+    }
+
+    /// AT-only 管线消费者：直接将 RegisteredAccount 转为 AccountWithRt，推入下游
+    async fn at_pipeline_consumer(
+        mut rx: mpsc::Receiver<crate::models::RegisteredAccount>,
+        cancel_flag: Arc<AtomicBool>,
+        progress: Option<Arc<TaskProgress>>,
+        s2a_tx: Option<mpsc::Sender<AccountWithRt>>,
+    ) -> (Vec<AccountWithRt>, Vec<crate::models::RegisteredAccount>) {
+        let mut success = Vec::new();
+
+        loop {
+            let recv_result = tokio::select! {
+                acc = rx.recv() => acc,
+                _ = Self::wait_for_cancel(cancel_flag.clone()) => {
+                    broadcast_log("AT-only: 收到中断信号，停止接收...");
+                    None
+                }
+            };
+            let Some(acc) = recv_result else {
+                break;
+            };
+
+            if let Some(ref p) = progress {
+                p.rt_ok.fetch_add(1, Ordering::Relaxed);
+            }
+            let result = AccountWithRt {
+                account: acc.account,
+                password: acc.password,
+                token: acc.token,
+                account_id: acc.account_id,
+                plan_type: acc.plan_type,
+                refresh_token: String::new(),
+                id_token: String::new(),
+            };
+            if let Some(ref tx) = s2a_tx {
+                let _ = tx.send(result.clone()).await;
+            }
+            success.push(result);
+        }
+
+        (success, Vec::new())
     }
 
     fn is_target_mode_account(acc: &AccountWithRt, free_mode: bool) -> bool {

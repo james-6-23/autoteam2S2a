@@ -634,7 +634,8 @@ async function quickCreateTask(){
   const isTokensPool=teamVal.startsWith('__tp__');
   const isCodexProxyPool=teamVal.startsWith('__cpx__');
   const isCpaPool=teamVal.startsWith('__cpa__');
-  const body={target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free'};
+  const atOnly=document.getElementById('q-token-type').value==='at';
+  const body={target:parseInt(document.getElementById('q-target').value),register_workers:parseInt(document.getElementById('q-reg-workers').value),rt_workers:parseInt(document.getElementById('q-rt-workers').value),mail_provider:document.getElementById('q-mail').value,free_mode:document.getElementById('q-mode').value==='free',at_only:atOnly};
   if(isTokensPool){body.pool_type='tokens';body.pool_name=teamVal.slice(6);body.push_s2a=false}
   else if(isCodexProxyPool){body.pool_type='codexproxy';body.pool_name=teamVal.slice(7);body.push_s2a=false}
   else if(isCpaPool){body.pool_type='cpa';body.pool_name=teamVal.slice(7);body.push_s2a=false}
@@ -1001,13 +1002,13 @@ async function loadSchedules(){
         </div>
       </div>
       <div class="flex items-center gap-4 text-xs text-dim flex-wrap">
-        <span>每批RT目标 <span class="font-mono text-dim-2">${s.target_count}</span></span>
+        <span>每批${s.at_only?'AT':'RT'}目标 <span class="font-mono text-dim-2">${s.target_count}</span></span>
         <span>间隔 <span class="font-mono text-dim-2">${s.batch_interval_mins}分</span></span>
         <span>优先级 <span class="font-mono text-dim-2">${s.priority??100}</span></span>
         <span>注册 <span class="font-mono text-dim-2">${s.register_workers||'默认'}</span></span>
         <span>RT <span class="font-mono text-dim-2">${s.rt_workers||'默认'}</span></span>
         <span>邮箱 <span class="text-dim-2">${s.mail_provider||(s.use_chatgpt_mail?'chatgpt':'kyx')}</span></span>
-        <span>模式 <span class="text-dim-2">${s.free_mode?'free':'team'}</span></span>
+        <span>模式 <span class="text-dim-2">${s.free_mode?'free':'team'}${s.at_only?' (AT-only)':''}</span></span>
         <span>日志 <span class="text-dim-2">${logModeTxt}</span></span>
         <span>性能 <span class="text-dim-2">${perfModeTxt}</span></span>
         <span>目标 <span class="text-dim-2 font-mono">${targetLabel}</span></span>
@@ -1103,7 +1104,7 @@ async function submitAddSchedule(){
     const noFreeGroups=distribution.filter(d=>{const t=configData?.teams?.find(x=>x.name===d.team);return!t||!t.free_group_ids||!t.free_group_ids.length});
     if(noFreeGroups.length){toast(`Free 模式下以下号池未配置 Free 分组: ${noFreeGroups.map(d=>d.team).join(', ')}，请先在号池配置中添加 Free 分组`,'error');return}
   }
-  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:(isTokensTarget||isCodexProxyTarget||isCodexProxyDistTarget||isCpaTarget)?false:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree,codexproxy_distribution:isCodexProxyDistTarget};
+  const body={name,start_time:startTime,end_time:endTime,target_count:target,batch_interval_mins:interval,priority,distribution,enabled:document.getElementById('sched-enabled').checked,push_s2a:(isTokensTarget||isCodexProxyTarget||isCodexProxyDistTarget||isCpaTarget)?false:document.getElementById('sched-push-s2a').checked,mail_provider:document.getElementById('sched-mail').value,free_mode:isFree,codexproxy_distribution:isCodexProxyDistTarget,at_only:document.getElementById('sched-token-type').value==='at'};
   if(isTokensTarget) body.tokens_pool_name=poolTarget.slice(3);
   if(isCodexProxyTarget) body.codexproxy_pool_name=poolTarget.slice(4);
   if(isCpaTarget) body.cpa_pool_name=poolTarget.slice(4);
@@ -1150,6 +1151,7 @@ async function editSchedule(name){
   document.getElementById('es-rt-retries').value=s.rt_retries||'';
   document.getElementById('es-mail').value=s.mail_provider||(s.use_chatgpt_mail?'chatgpt':'kyx');
   document.getElementById('es-mode').value=s.free_mode?'free':'team';
+  document.getElementById('es-token-type').value=s.at_only?'at':'rt';
   document.getElementById('es-reg-log-mode').value=s.register_log_mode||'inherit';
   document.getElementById('es-reg-perf-mode').value=normalizeRegisterPerfMode(s.register_perf_mode||'inherit');
   document.getElementById('es-push-s2a').checked=s.push_s2a;
@@ -1207,7 +1209,8 @@ async function submitEditSchedule(){
     tokens_pool_name:isTokensTarget?poolTarget.slice(3):null,
     codexproxy_pool_name:isCodexProxyTarget?poolTarget.slice(4):null,
     codexproxy_distribution:isCodexProxyDistTarget,
-    cpa_pool_name:isCpaTarget?poolTarget.slice(4):null
+    cpa_pool_name:isCpaTarget?poolTarget.slice(4):null,
+    at_only:document.getElementById('es-token-type').value==='at'
   };
   const editLogMode=document.getElementById('es-reg-log-mode').value;
   const editPerfMode=normalizeRegisterPerfMode(document.getElementById('es-reg-perf-mode').value);

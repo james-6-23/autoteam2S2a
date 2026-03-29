@@ -34,6 +34,10 @@ pub struct RegisterInput {
     pub task_index: usize,
     pub task_total: usize,
     pub skip_payment: bool,
+    /// AT-only 模式：跳过 RT 获取和账号状态检查
+    pub at_only: bool,
+    /// 任务取消标志（外部设为 true 时，注册流程各步骤间立即中断）
+    pub cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[async_trait]
@@ -134,15 +138,27 @@ impl LiveRegisterService {
         Ok((builder.build()?, navigation_headers, fp_label))
     }
 
+    /// 检查取消标志，若已取消则立即 bail
+    fn check_cancelled(input: &RegisterInput) -> Result<()> {
+        if let Some(ref flag) = input.cancel_flag {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                bail!("task_cancelled");
+            }
+        }
+        Ok(())
+    }
+
     async fn do_register(
         &self,
         client: &rquest::Client,
         navigation_headers: &HeaderMap,
         input: &RegisterInput,
     ) -> Result<RegisteredAccount> {
+        Self::check_cancelled(input)?;
         let auth_session_logging_id = Uuid::new_v4().to_string();
         let (oai_did, csrf_token) = self.init_session(client, navigation_headers).await?;
         log_worker(input.worker_id, "OK", "初始化会话成功");
+        Self::check_cancelled(input)?;
 
         log_worker(input.worker_id, "注册", "获取授权链接...");
         let authorize_url = self
@@ -154,6 +170,7 @@ impl LiveRegisterService {
                 &input.seed.account,
             )
             .await?;
+        Self::check_cancelled(input)?;
 
         log_worker(input.worker_id, "注册", "启动授权...");
         let authorize_final_url = self
@@ -169,6 +186,7 @@ impl LiveRegisterService {
             &format!("授权 → {}", truncate_text(final_path, 80)),
         );
 
+        Self::check_cancelled(input)?;
         // 根据 authorize 最终 URL 分支处理（对齐 Python reg.py）
         //   create-account/password → 全新注册：register + send_otp + wait + validate
         //   email-verification / email-otp → authorize 已触发 OTP，只等验证码
@@ -225,6 +243,7 @@ impl LiveRegisterService {
 
         // --- 注册接口（仅全新注册和未知路径） ---
         if !skip_register {
+            Self::check_cancelled(input)?;
             log_worker(input.worker_id, "注册", "注册账户...");
             self.register_account(client, &input.seed.account, &input.seed.password)
                 .await?;
@@ -233,6 +252,7 @@ impl LiveRegisterService {
 
         // --- OTP 验证（全新注册 + email-verification 分支） ---
         if !skip_otp {
+            Self::check_cancelled(input)?;
             let mail_proxy = if self.cfg.use_proxy_for_mail {
                 input.proxy.as_deref()
             } else {
@@ -340,18 +360,36 @@ impl LiveRegisterService {
             };
             log_worker(input.worker_id, "注册", &wait_hint);
 
-            // === 分级超时策略 ===
-            let otp_code = match tokio::time::timeout(
-                Duration::from_secs(primary_timeout_secs),
-                otp_handle.wait(),
-            )
-            .await
-            {
-                Ok(Ok(Ok(code))) => code,
-                Ok(Ok(Err(e))) => bail!("验证码轮询失败: {e}"),
-                Ok(Err(_)) => bail!("后台验证码轮询任务意外终止"),
+            // === 分级超时策略（支持任务取消） ===
+            let cancel_flag_clone = input.cancel_flag.clone();
+            let otp_result: Result<String, &str> = tokio::select! {
+                result = tokio::time::timeout(
+                    Duration::from_secs(primary_timeout_secs),
+                    otp_handle.wait(),
+                ) => match result {
+                    Ok(Ok(Ok(code))) => Ok(code),
+                    Ok(Ok(Err(e))) => bail!("验证码轮询失败: {e}"),
+                    Ok(Err(_)) => bail!("后台验证码轮询任务意外终止"),
+                    Err(_) => Err("timeout"),
+                },
+                _ = async {
+                    if let Some(ref flag) = cancel_flag_clone {
+                        while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    otp_handle.cancel();
+                    bail!("task_cancelled");
+                },
+            };
+            let otp_code = match otp_result {
+                Ok(code) => code,
                 Err(_) => {
                     otp_handle.cancel();
+                    Self::check_cancelled(input)?;
                     if turbo_mode {
                         bail!("otp_timeout_skip");
                     }
@@ -382,15 +420,33 @@ impl LiveRegisterService {
                         )
                         .await?;
 
-                    match tokio::time::timeout(
-                        Duration::from_secs(retry_timeout_secs),
-                        retry_handle.wait(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(Ok(code))) => code,
-                        _ => {
+                    let cancel_flag_retry = input.cancel_flag.clone();
+                    let retry_result: Result<String, &str> = tokio::select! {
+                        result = tokio::time::timeout(
+                            Duration::from_secs(retry_timeout_secs),
+                            retry_handle.wait(),
+                        ) => match result {
+                            Ok(Ok(Ok(code))) => Ok(code),
+                            _ => Err("timeout"),
+                        },
+                        _ = async {
+                            if let Some(ref flag) = cancel_flag_retry {
+                                while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                            } else {
+                                std::future::pending::<()>().await;
+                            }
+                        } => {
                             retry_handle.cancel();
+                            bail!("task_cancelled");
+                        },
+                    };
+                    match retry_result {
+                        Ok(code) => code,
+                        Err(_) => {
+                            retry_handle.cancel();
+                            Self::check_cancelled(input)?;
                             log_worker(
                                 input.worker_id,
                                 "ERR",
@@ -401,6 +457,7 @@ impl LiveRegisterService {
                     }
                 }
             };
+            Self::check_cancelled(input)?;
             log_worker(input.worker_id, "OK", &format!("验证码: {otp_code}"));
 
             self.validate_otp(client, &otp_code).await?;
@@ -408,6 +465,7 @@ impl LiveRegisterService {
         }
 
         // --- Sentinel token + 创建账户 ---
+        Self::check_cancelled(input)?;
         log_worker(input.worker_id, "注册", "获取 Sentinel token...");
         let sentinel_cfg = sentinel::SentinelConfig {
             enabled: self.cfg.sentinel_enabled,
@@ -443,6 +501,24 @@ impl LiveRegisterService {
             "OK",
             &format!("Token: {}", token_preview(&access_token)),
         );
+
+        // AT-only 模式：拿到 AT 即完成，跳过 RT/支付/check
+        if input.at_only {
+            log_worker(input.worker_id, "OK", "AT-only 模式，注册完成");
+            return Ok(RegisteredAccount {
+                account: input.seed.account.clone(),
+                password: input.seed.password.clone(),
+                token: access_token,
+                account_id: String::new(),
+                plan_type: if input.skip_payment {
+                    "free".to_string()
+                } else {
+                    "unknown".to_string()
+                },
+                proxy: input.proxy.clone(),
+                refresh_token: None,
+            });
+        }
 
         // 复用注册会话 Cookie 直接获取 refresh_token
         log_worker(input.worker_id, "RT", "注册阶段尝试获取 RT...");
@@ -2747,6 +2823,12 @@ pub trait CodexProxyPoolService: Send + Sync {
         pool: &CodexProxyPoolConfig,
         refresh_tokens: &[String],
     ) -> Result<usize>;
+    /// AT-only 模式：批量推送 access_token 到 /api/admin/accounts/at
+    async fn add_at_batch(
+        &self,
+        pool: &CodexProxyPoolConfig,
+        access_tokens: &[String],
+    ) -> Result<usize>;
 }
 
 pub struct CodexProxyPoolHttpService {
@@ -2769,6 +2851,13 @@ impl CodexProxyPoolHttpService {
     fn endpoint(pool: &CodexProxyPoolConfig) -> String {
         format!(
             "{}/api/admin/accounts",
+            Self::normalized_base(&pool.api_base)
+        )
+    }
+
+    fn at_endpoint(pool: &CodexProxyPoolConfig) -> String {
+        format!(
+            "{}/api/admin/accounts/at",
             Self::normalized_base(&pool.api_base)
         )
     }
@@ -2840,6 +2929,49 @@ impl CodexProxyPoolService for CodexProxyPoolHttpService {
         let body = resp.text().await.unwrap_or_default();
         bail!(
             "CodexProxy 批量推送失败: HTTP {} {}",
+            status,
+            truncate_text(&body, 200)
+        );
+    }
+
+    async fn add_at_batch(
+        &self,
+        pool: &CodexProxyPoolConfig,
+        access_tokens: &[String],
+    ) -> Result<usize> {
+        let tokens: Vec<String> = access_tokens
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_string())
+            .collect();
+        if tokens.is_empty() {
+            return Ok(0);
+        }
+
+        let url = Self::at_endpoint(pool);
+        let payload = serde_json::json!({
+            "access_token": tokens.join("\n")
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("X-Admin-Key", pool.admin_key.trim())
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .context("CodexProxy AT 批量推送失败")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(tokens.len());
+        }
+
+        let body = resp.text().await.unwrap_or_default();
+        bail!(
+            "CodexProxy AT 批量推送失败: HTTP {} {}",
             status,
             truncate_text(&body, 200)
         );

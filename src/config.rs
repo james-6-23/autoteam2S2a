@@ -501,6 +501,9 @@ pub struct ScheduleConfig {
     /// 是否启用 CodexProxy 多号池分发模式（distribution 中填写 CodexProxy 号池名）
     #[serde(default)]
     pub codexproxy_distribution: bool,
+    /// AT-only 模式：注册后只取 AT 不取 RT，推送到 CodexProxy /accounts/at
+    #[serde(default)]
+    pub at_only: bool,
 }
 
 impl ScheduleConfig {
