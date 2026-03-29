@@ -358,20 +358,32 @@ pub async fn run_distribution(
         None
     };
 
-    // 启动 CodexProxy 单池流式消费者
+    // 启动 CodexProxy 单池流式消费者（AT-only 时走 AT 版本）
     let codexproxy_handle = if let Some(rx) = codexproxy_rx {
         let codexproxy_service = runner.codexproxy_pool_service();
         let pool_cfg = options.codexproxy_pool.clone().unwrap();
         let cancel = cancel_flag.clone();
+        let at_only = options.at_only;
         Some(tokio::spawn(async move {
-            WorkflowRunner::codexproxy_streaming_consumer_static(
-                rx,
-                codexproxy_service,
-                &pool_cfg,
-                None,
-                cancel,
-            )
-            .await
+            if at_only {
+                WorkflowRunner::codexproxy_at_streaming_consumer_static(
+                    rx,
+                    codexproxy_service,
+                    &pool_cfg,
+                    None,
+                    cancel,
+                )
+                .await
+            } else {
+                WorkflowRunner::codexproxy_streaming_consumer_static(
+                    rx,
+                    codexproxy_service,
+                    &pool_cfg,
+                    None,
+                    cancel,
+                )
+                .await
+            }
         }))
     } else {
         None
@@ -383,6 +395,7 @@ pub async fn run_distribution(
         let distribution = schedule.distribution.clone();
         let pools = codexproxy_distribution_targets.clone();
         let cancel = cancel_flag.clone();
+        let at_only = options.at_only;
         Some(tokio::spawn(async move {
             dist_codexproxy_streaming_consumer(
                 rx,
@@ -390,6 +403,7 @@ pub async fn run_distribution(
                 &distribution,
                 &pools,
                 cancel,
+                at_only,
             )
             .await
         }))
@@ -845,13 +859,14 @@ async fn dist_s2a_streaming_consumer(
     (total_ok, total_fail, team_results)
 }
 
-/// 分发流式 CodexProxy 消费者：按加权比例把 RT 推送到多个 CodexProxy 号池。
+/// 分发流式 CodexProxy 消费者：按加权比例把 RT/AT 推送到多个 CodexProxy 号池。
 async fn dist_codexproxy_streaming_consumer(
     mut rx: mpsc::Receiver<AccountWithRt>,
     codexproxy_service: Arc<dyn crate::services::CodexProxyPoolService>,
     distribution: &[DistributionEntry],
     pools: &[crate::config::CodexProxyPoolConfig],
     cancel_flag: Arc<AtomicBool>,
+    at_only: bool,
 ) -> (usize, usize, Vec<TeamDistResult>) {
     let router = Arc::new(WeightedRouter::new(distribution));
     let mut senders = Vec::new();
@@ -872,14 +887,17 @@ async fn dist_codexproxy_streaming_consumer(
         let percent = entry.percent;
         senders.push((pool_name.clone(), tx));
         handles.push(tokio::spawn(async move {
-            let result = WorkflowRunner::codexproxy_streaming_consumer_static(
-                pool_rx,
-                service,
-                &pool_cfg,
-                None,
-                cancel,
-            )
-            .await;
+            let result = if at_only {
+                WorkflowRunner::codexproxy_at_streaming_consumer_static(
+                    pool_rx, service, &pool_cfg, None, cancel,
+                )
+                .await
+            } else {
+                WorkflowRunner::codexproxy_streaming_consumer_static(
+                    pool_rx, service, &pool_cfg, None, cancel,
+                )
+                .await
+            };
             (pool_name, percent, result)
         }));
     }

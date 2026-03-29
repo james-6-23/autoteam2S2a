@@ -907,6 +907,17 @@ impl WorkflowRunner {
             .await
     }
 
+    pub async fn codexproxy_at_streaming_consumer_static(
+        rx: mpsc::Receiver<AccountWithRt>,
+        codexproxy_service: Arc<dyn CodexProxyPoolService>,
+        pool: &CodexProxyPoolConfig,
+        progress: Option<&Arc<TaskProgress>>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> (usize, usize) {
+        Self::codexproxy_at_streaming_consumer(rx, codexproxy_service, pool, progress, cancel_flag)
+            .await
+    }
+
     async fn codexproxy_streaming_consumer(
         mut rx: mpsc::Receiver<AccountWithRt>,
         codexproxy_service: Arc<dyn CodexProxyPoolService>,
