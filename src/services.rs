@@ -148,6 +148,19 @@ impl LiveRegisterService {
         Ok(())
     }
 
+    /// 将 oai-did cookie 显式注入到 auth.openai.com 域名（对齐 Python prepare_initial_session）
+    fn inject_oai_did_cookie(client: &rquest::Client, oai_did: &str) {
+        for domain in &["auth.openai.com", ".auth.openai.com"] {
+            if let Ok(url) = rquest::Url::parse("https://auth.openai.com/") {
+                if let Ok(val) = header::HeaderValue::from_str(
+                    &format!("oai-did={oai_did}; Domain={domain}; Path=/"),
+                ) {
+                    client.set_cookies(&url, &[val]);
+                }
+            }
+        }
+    }
+
     async fn do_register(
         &self,
         client: &rquest::Client,
@@ -157,8 +170,13 @@ impl LiveRegisterService {
         Self::check_cancelled(input)?;
         let auth_session_logging_id = Uuid::new_v4().to_string();
         let (oai_did, csrf_token) = self.init_session(client, navigation_headers).await?;
+        // 显式注入 oai-did 到 auth.openai.com（对齐 Python prepare_initial_session）
+        Self::inject_oai_did_cookie(client, &oai_did);
         log_worker(input.worker_id, "OK", "初始化会话成功");
         Self::check_cancelled(input)?;
+
+        // 人类模拟延迟（对齐 Python establish_signup_session 的 0.2-0.5s）
+        sleep(Duration::from_millis(random_delay_ms(200, 500))).await;
 
         log_worker(input.worker_id, "注册", "获取授权链接...");
         let authorize_url = self
@@ -171,6 +189,9 @@ impl LiveRegisterService {
             )
             .await?;
         Self::check_cancelled(input)?;
+
+        // 人类模拟延迟（对齐 Python 的 0.3-0.8s）
+        sleep(Duration::from_millis(random_delay_ms(300, 800))).await;
 
         log_worker(input.worker_id, "注册", "启动授权...");
         let authorize_final_url = self
@@ -187,6 +208,8 @@ impl LiveRegisterService {
         );
 
         Self::check_cancelled(input)?;
+        // 人类模拟延迟（对齐 Python 的 0.3-0.8s）
+        sleep(Duration::from_millis(random_delay_ms(300, 800))).await;
         // 根据 authorize 最终 URL 分支处理（对齐 Python reg.py）
         //   create-account/password → 全新注册：register + send_otp + wait + validate
         //   email-verification / email-otp → authorize 已触发 OTP，只等验证码
@@ -244,10 +267,14 @@ impl LiveRegisterService {
         // --- 注册接口（仅全新注册和未知路径） ---
         if !skip_register {
             Self::check_cancelled(input)?;
+            // 人类模拟延迟（对齐 Python _complete_signup 的 0.5-1.0s）
+            sleep(Duration::from_millis(random_delay_ms(500, 1000))).await;
             log_worker(input.worker_id, "注册", "注册账户...");
             self.register_account(client, &input.seed.account, &input.seed.password)
                 .await?;
             log_worker(input.worker_id, "OK", "注册接口成功");
+            // 注册后延迟（对齐 Python 的 0.3-0.8s）
+            sleep(Duration::from_millis(random_delay_ms(300, 800))).await;
         }
 
         // --- OTP 验证（全新注册 + email-verification 分支） ---
@@ -458,11 +485,74 @@ impl LiveRegisterService {
                 }
             };
             Self::check_cancelled(input)?;
+            // 人类模拟延迟（对齐 Python 的 0.3-0.8s）
+            sleep(Duration::from_millis(random_delay_ms(300, 800))).await;
             log_worker(input.worker_id, "OK", &format!("验证码: {otp_code}"));
 
-            self.validate_otp(client, &otp_code).await?;
-            log_worker(input.worker_id, "OK", "OTP 校验成功");
+            // OTP 验证 + 失败重发重试（对齐 Python complete_email_verification）
+            match self.validate_otp(client, &otp_code).await {
+                Ok(()) => {
+                    log_worker(input.worker_id, "OK", "OTP 校验成功");
+                }
+                Err(first_err) => {
+                    log_worker(
+                        input.worker_id,
+                        "WARN",
+                        &format!("OTP 校验失败: {first_err:#}，尝试重发验证码"),
+                    );
+                    // 重发 OTP（对齐 Python: send_otp → sleep → wait → validate）
+                    if let Err(resend_err) = self.send_verification_email(client).await {
+                        log_worker(
+                            input.worker_id,
+                            "ERR",
+                            &format!("重发验证码失败: {resend_err:#}"),
+                        );
+                        return Err(first_err);
+                    }
+                    sleep(Duration::from_millis(random_delay_ms(1000, 2000))).await;
+                    let mail_proxy_resend = if self.cfg.use_proxy_for_mail {
+                        input.proxy.as_deref()
+                    } else {
+                        None
+                    };
+                    let resend_opts = WaitCodeOptions {
+                        after_email_id: 0,
+                        prefetch_latest_email_id: false,
+                        max_retries: 15,
+                        interval_ms: 800,
+                        max_interval_ms: 1500,
+                        interval_backoff_step_ms: 100,
+                        size: 5,
+                        subject_must_contain_code_word: false,
+                        strict_fetch: false,
+                    };
+                    let mut resend_handle = self
+                        .email_service
+                        .start_background_poll(&input.seed.account, mail_proxy_resend, resend_opts)
+                        .await?;
+                    log_worker(input.worker_id, "注册", "等待重发验证码...");
+                    let resend_result = tokio::time::timeout(
+                        Duration::from_secs(retry_timeout_secs),
+                        resend_handle.wait(),
+                    )
+                    .await;
+                    match resend_result {
+                        Ok(Ok(Ok(code2))) => {
+                            sleep(Duration::from_millis(random_delay_ms(300, 800))).await;
+                            self.validate_otp(client, &code2).await?;
+                            log_worker(input.worker_id, "OK", "OTP 重试校验成功");
+                        }
+                        _ => {
+                            resend_handle.cancel();
+                            bail!("OTP 重试后仍失败");
+                        }
+                    }
+                }
+            }
         }
+
+        // 人类模拟延迟（对齐 Python 的 0.5-1.5s）
+        sleep(Duration::from_millis(random_delay_ms(500, 1500))).await;
 
         // --- Sentinel token + 创建账户 ---
         Self::check_cancelled(input)?;
@@ -490,6 +580,7 @@ impl LiveRegisterService {
             client,
             &input.seed.real_name,
             &input.seed.birthdate,
+            &oai_did,
             sentinel_header.as_deref(),
         )
         .await?;
@@ -679,6 +770,7 @@ impl LiveRegisterService {
         client: &rquest::Client,
         navigation_headers: &HeaderMap,
     ) -> Result<(String, String)> {
+        // 1. 访问首页获取 oai-did
         let resp = client
             .get("https://chatgpt.com")
             .headers(navigation_headers.clone())
@@ -697,26 +789,73 @@ impl LiveRegisterService {
         }
 
         let headers = resp.headers().clone();
-        let oai_did = extract_cookie_value(&headers, "oai-did");
-        let csrf_cookie = extract_cookie_value(&headers, "__Host-next-auth.csrf-token");
-        let (oai_did, csrf_cookie) = match (oai_did, csrf_cookie) {
-            (Some(oai_did), Some(csrf_cookie)) => (oai_did, csrf_cookie),
-            _ => {
+        let oai_did = match extract_cookie_value(&headers, "oai-did") {
+            Some(v) => v,
+            None => {
                 let body = resp.text().await.unwrap_or_default();
                 if looks_like_challenge_page(&body) {
                     bail!("init_session_challenge");
                 }
-                bail!("无法获取初始化会话 cookie");
+                bail!("无法获取 oai-did cookie");
             }
         };
-        let decoded = urlencoding::decode(&csrf_cookie).context("csrf 解码失败")?;
-        let csrf_token = decoded
-            .split('|')
-            .next()
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| anyhow!("无法解析 csrf token"))?
-            .to_string();
 
+        // 2. 通过 /api/auth/csrf 接口获取 CSRF token（对齐 Python get_csrf，带重试）
+        let mut csrf_token = String::new();
+        for attempt in 0..2u8 {
+            if attempt > 0 {
+                sleep(Duration::from_millis(random_delay_ms(400, 1000))).await;
+                // 重试前重新访问首页（对齐 Python visit_homepage + get_csrf 重试流程）
+                let _ = client
+                    .get("https://chatgpt.com/")
+                    .headers(navigation_headers.clone())
+                    .send()
+                    .await;
+            }
+            let csrf_resp = client
+                .get("https://chatgpt.com/api/auth/csrf")
+                .header("Accept", "application/json")
+                .header("Referer", "https://chatgpt.com/")
+                .send()
+                .await;
+            if let Ok(resp) = csrf_resp {
+                if resp.status() == StatusCode::OK {
+                    if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        if let Some(token) = data.get("csrfToken").and_then(|v| v.as_str()) {
+                            if !token.is_empty() {
+                                csrf_token = token.to_string();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 如果 API 方式失败，回退到 cookie 方式
+        if csrf_token.is_empty() {
+            if let Ok(url) = rquest::Url::parse("https://chatgpt.com/") {
+                if let Some(cookie_val) = client.get_cookies(&url) {
+                    if let Ok(text) = cookie_val.to_str() {
+                        for pair in text.split("; ") {
+                            if let Some(raw) = pair.strip_prefix("__Host-next-auth.csrf-token=") {
+                                let decoded = urlencoding::decode(raw).unwrap_or_default();
+                                if let Some(token) =
+                                    decoded.split('|').next().filter(|v| !v.is_empty())
+                                {
+                                    csrf_token = token.to_string();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if csrf_token.is_empty() {
+            bail!("无法获取 csrf token（API + cookie 均失败）");
+        }
+
+        // 3. 访问登录页建立会话
         let login_url = format!("https://chatgpt.com/auth/login?openaicom-did={oai_did}");
         client
             .get(login_url)
@@ -812,6 +951,7 @@ impl LiveRegisterService {
         };
         let resp = client
             .post("https://auth.openai.com/api/accounts/user/register")
+            .header("Content-Type", "application/json")
             .header("Origin", "https://auth.openai.com")
             .header("Accept", "application/json")
             .header("Referer", "https://auth.openai.com/create-account/password")
@@ -822,7 +962,9 @@ impl LiveRegisterService {
         if resp.status() == StatusCode::OK {
             return Ok(());
         }
-        bail!("注册失败: HTTP {}", resp.status());
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!("注册失败: HTTP {} {}", status, truncate_text(&body, 200));
     }
 
     async fn send_verification_email(&self, client: &rquest::Client) -> Result<()> {
@@ -836,7 +978,8 @@ impl LiveRegisterService {
             .header("Upgrade-Insecure-Requests", "1")
             .send()
             .await?;
-        if resp.status() == StatusCode::OK {
+        // 对齐 Python: status_code < 400 即视为成功
+        if resp.status().as_u16() < 400 {
             return Ok(());
         }
         bail!("发送验证码失败: HTTP {}", resp.status());
@@ -848,6 +991,7 @@ impl LiveRegisterService {
         };
         let resp = client
             .post("https://auth.openai.com/api/accounts/email-otp/validate")
+            .header("Content-Type", "application/json")
             .header("Origin", "https://auth.openai.com")
             .header("Accept", "application/json")
             .header("Referer", "https://auth.openai.com/email-verification")
@@ -858,7 +1002,9 @@ impl LiveRegisterService {
         if resp.status() == StatusCode::OK {
             return Ok(());
         }
-        bail!("OTP 校验失败: HTTP {}", resp.status());
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        bail!("OTP 校验失败: HTTP {} {}", status, truncate_text(&body, 200));
     }
 
     async fn create_account(
@@ -866,6 +1012,7 @@ impl LiveRegisterService {
         client: &rquest::Client,
         real_name: &str,
         birthdate: &str,
+        oai_did: &str,
         sentinel_header: Option<&str>,
     ) -> Result<()> {
         let payload = CreateAccountPayload {
@@ -874,9 +1021,11 @@ impl LiveRegisterService {
         };
         let mut req = client
             .post("https://auth.openai.com/api/accounts/create_account")
+            .header("Content-Type", "application/json")
             .header("Origin", "https://auth.openai.com")
             .header("Accept", "application/json")
             .header("Referer", "https://auth.openai.com/about-you")
+            .header("oai-device-id", oai_did)
             .headers(make_trace_headers());
         if let Some(header) = sentinel_header {
             req = req.header("OpenAI-Sentinel-Token", header);

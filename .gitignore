@@ -15,3 +15,4 @@ d1_cleanup.py
 proxy_failures.json
 .claude/settings.local.json
 openai_registror.py
+admin/
